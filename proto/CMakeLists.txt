@@ -1,4 +1,4 @@
-find_package(protobuf CONFIG REQUIRED)
+find_package(Protobuf CONFIG REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
 
 set(PROTO_IMPORT_DIRS ${CMAKE_CURRENT_LIST_DIR})
