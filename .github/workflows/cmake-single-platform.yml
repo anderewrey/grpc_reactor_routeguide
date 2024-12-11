@@ -22,9 +22,9 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Install gRPC
+    - name: Install gRPC and protobuf
       # gRPC 1.51.1 and protobuf 3.21.12
-      run: sudo apt-get install -y libgrpc-dev libprotobuf-dev
+      run: sudo apt-get install -y libgrpc-dev libprotobuf-dev protobuf-compiler 
       
     - name: Configure CMake
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
