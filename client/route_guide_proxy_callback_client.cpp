@@ -45,7 +45,7 @@ class RouteGuideClient {
  public:
   explicit RouteGuideClient(const std::shared_ptr<grpc::Channel>& channel)
       : stub_(routeguide::RouteGuide::NewStub(channel)) {
-    EventLoop::RegisterEvent(kGetFeatureOnDone, [&reactor_ = reactor_map_[routeguide::GetFeature::RpcKey]](const Event* event) {
+    EventLoop::RegisterEvent(kGetFeatureOnDone, [&reactor_ = reactor_map_[routeguide::GetFeature::RpcKey]](const EventLoop::Event* event) {
       // (Point 3.5) ProceedEvent: OnDone
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::GetFeature::ClientReactor*>(event->getData());
@@ -64,7 +64,7 @@ class RouteGuideClient {
       reactor_.reset();
       std::cout << "RouteGuide::GetFeature[" << std::this_thread::get_id() << "]          | reactor[" << reactor << "] ended" << std::endl;
     });
-    EventLoop::RegisterEvent(kListFeaturesOnReadDoneOk, [this, &reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey]](const Event* event) {
+    EventLoop::RegisterEvent(kListFeaturesOnReadDoneOk, [this, &reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey]](const EventLoop::Event* event) {
       // (Point 2.7) ProceedEvent: OnReadDoneOk
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
@@ -81,7 +81,7 @@ class RouteGuideClient {
       GetFeature(response.location());
 #endif
     });
-    EventLoop::RegisterEvent(kListFeaturesOnReadDoneNOk, [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey]](const Event* event) {
+    EventLoop::RegisterEvent(kListFeaturesOnReadDoneNOk, [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey]](const EventLoop::Event* event) {
       // (Point 4.7) ProceedEvent: OnReadDoneNOk
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
@@ -89,7 +89,7 @@ class RouteGuideClient {
       // (Point 4.8) update application
       std::cout << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "]          | " << event->getName() << " reactor: " << reactor << std::endl;
     });
-    EventLoop::RegisterEvent(kListFeaturesOnDone, [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey]](const Event* event) {
+    EventLoop::RegisterEvent(kListFeaturesOnDone, [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey]](const EventLoop::Event* event) {
       // (Point 4.9) ProceedEvent: OnDone
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());

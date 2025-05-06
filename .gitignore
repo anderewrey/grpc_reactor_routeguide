@@ -13,6 +13,7 @@
 
 # Compiled Dynamic libraries
 *.so
+*.so.*
 *.dylib
 *.dll
 
@@ -30,5 +31,9 @@
 *.exe
 *.out
 *.app
-.idea
-cmake-build-debug/
+
+# IDE config files
+.idea/
+
+# CMake build directory
+cmake-*/

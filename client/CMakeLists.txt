@@ -1,9 +1,10 @@
 include(FetchContent)
 # Minimalist EventLoop support
 FetchContent_Declare(EventLoop
-        GIT_REPOSITORY https://github.com/amoldhamale1105/EventLoop.git
-        GIT_TAG v1.2.0
+        GIT_REPOSITORY https://github.com/anderewrey/EventLoop.git
+        GIT_TAG anderewrey/bugfix-lib-directory
         GIT_SHALLOW TRUE
+        UPDATE_DISCONNECTED 1
 )
 FetchContent_MakeAvailable(EventLoop)
 
