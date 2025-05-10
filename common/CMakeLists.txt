@@ -7,7 +7,14 @@ FetchContent_Declare(glaze
         GIT_TAG v2.9.5
         GIT_SHALLOW TRUE
 )
-FetchContent_MakeAvailable(glaze)
+# Underlying logging system, instead of stdout and stderr.
+FetchContent_Declare(spdlog
+        GIT_REPOSITORY https://github.com/gabime/spdlog.git
+        GIT_TAG v1.15.2
+        GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(glaze spdlog)
 
 #
 # rg_common
@@ -20,6 +27,8 @@ target_include_directories(rg_common
         ${CMAKE_SOURCE_DIR}
 )
 target_link_libraries(rg_common
+    PUBLIC
+        spdlog::spdlog
     PRIVATE
         glaze::glaze
         rg_proto_utils

@@ -21,6 +21,9 @@
 #include <grpcpp/server_builder.h>
 #include <grpcpp/server_context.h>
 
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -49,6 +52,12 @@ using std::chrono::system_clock;
 namespace {
 std::thread::id main_thread = std::this_thread::get_id();
 FeatureList feature_list_;
+
+// Create and return a shared_ptr to a multithreaded console logger.
+auto logger_GetFeature = spdlog::stdout_color_mt("GetFeature");
+auto logger_ListFeatures = spdlog::stdout_color_mt("ListFeatures");
+auto logger_RecordRoute = spdlog::stdout_color_mt("RecordRoute");
+auto logger_RouteChat = spdlog::stdout_color_mt("RouteChat");
 }  // anonymous namespace
 
 class RouteGuideImpl final : public RouteGuide::CallbackService {
@@ -56,13 +65,14 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
   grpc::ServerUnaryReactor* GetFeature(CallbackServerContext* context,
                                        const Point* point,
                                        Feature* feature) override {
-    std::cout << "RouteGuide::GetFeature[" << std::this_thread::get_id() << "] ENTER    |" << std::endl;
-    std::cout << "RouteGuide::GetFeature[" << std::this_thread::get_id() << "] REQUEST  | Point: " << point->ShortDebugString()  << std::endl;
+    auto& logger = *logger_GetFeature;
+    logger.info("ENTER    |");
+    logger.info("REQUEST  | Point: {}", point->ShortDebugString());
     *feature = proto_utils::GetFeatureFromPoint(feature_list_, *point);
     auto* reactor = context->DefaultReactor();
-    std::cout << "RouteGuide::GetFeature[" << std::this_thread::get_id() << "] RESPONSE | Feature: " << feature->ShortDebugString()  << std::endl;
+    logger.info("RESPONSE | Feature: {}", feature->ShortDebugString());
     reactor->Finish(Status::OK);
-    std::cout << "RouteGuide::GetFeature[" << std::this_thread::get_id() << "] EXIT     |" << std::endl;
+    logger.info("EXIT     |");
     return reactor;
   }
 
@@ -74,12 +84,12 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
           : rectangle_(rectangle),
             feature_list_(feature_list),
             next_feature_(feature_list_.begin()) {
-        std::cout << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "] ENTER    |" << std::endl;
-        std::cout << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "] REQUEST  | Rectangle: " << rectangle_.ShortDebugString()  << std::endl;
+        logger_.info("ENTER    |");
+        logger_.info("REQUEST  | Rectangle: {}", rectangle_.ShortDebugString());
         NextWrite();
       }
       void OnDone() override {
-        std::cout << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "] EXIT     | OnDone()" << std::endl;
+        logger_.info("EXIT     |");
         delete this;
       }
       void OnWriteDone(bool /*ok*/) override { NextWrite(); }
@@ -98,16 +108,17 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
         while (next_feature_ != feature_list_.end()) {
           const Feature& f = *next_feature_++;
           if (proto_utils::IsPointWithinRectangle(rectangle_, f.location())) {
-            std::cout << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "] RESPONSE | Feature: " << f.ShortDebugString()  << std::endl;
+            logger_.info("RESPONSE | Feature: {}", f.ShortDebugString());
             StartWrite(&f);
             return;
           }
         }
         // Didn't write anything, all is done.
-        std::cout << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "] EXIT     | Pre-Finish()" << std::endl;
+        logger_.info("EXIT     | Pre-Finish()");
         Finish(Status::OK);
-        std::cout << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "] EXIT     | Post-Finish()" << std::endl;
+        logger_.info("EXIT     | Post-Finish()");
       }
+      spdlog::logger& logger_ = *logger_ListFeatures;
       const Rectangle& rectangle_;
       const FeatureList& feature_list_;
       FeatureList::const_iterator next_feature_;
@@ -122,16 +133,16 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
       Recorder(RouteSummary& summary, const FeatureList& feature_list)
           : summary_(summary),
             feature_list_(feature_list) {
-        std::cout << "RouteGuide::RecordRoute[" << std::this_thread::get_id() << "] ENTER    |" << std::endl;
+        logger_.info("ENTER    |");
         StartRead(&point_);
       }
       void OnDone() override {
-        std::cout << "RouteGuide::RecordRoute[" << std::this_thread::get_id() << "] EXIT     |" << std::endl;
+        logger_.info("EXIT     |");
         delete this;
       }
       void OnReadDone(bool ok) override {
         if (ok) {
-          std::cout << "RouteGuide::RecordRoute[" << std::this_thread::get_id() << "] REQUEST  | Point: " << point_.ShortDebugString()  << std::endl;
+          logger_.info("REQUEST  | Point: {}", point_.ShortDebugString());
           point_count_++;
           if (const auto name = proto_utils::GetFeatureName(point_, feature_list_); name && strlen(name) > 0) {
             feature_count_++;
@@ -148,7 +159,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
           using namespace std::chrono;
           auto secs = duration_cast<seconds>(system_clock::now() - start_time_).count();
           summary_.set_elapsed_time(secs);
-          std::cout << "RouteGuide::RecordRoute[" << std::this_thread::get_id() << "] RESPONSE | RouteSummary: " << summary_.ShortDebugString()  << std::endl;
+          logger_.info("RESPONSE | RouteSummary: {}", summary_.ShortDebugString());
           Finish(Status::OK);
         }
       }
@@ -157,10 +168,11 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
       system_clock::time_point start_time_ = system_clock::now();
       RouteSummary& summary_;
       const FeatureList& feature_list_;
+      spdlog::logger& logger_ = *logger_RecordRoute;
       Point point_;
       int point_count_ = 0;
       int feature_count_ = 0;
-      float distance_ = 0.0;
+      double distance_ = 0.0;
       Point previous_;
     };
     return new Recorder(*summary, feature_list_);
@@ -171,19 +183,19 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
      public:
       Chatter(std::mutex& mu, std::vector<RouteNote>& received_notes)
           : mu_(mu), received_notes_(received_notes) {
-        std::cout << "RouteGuide::RouteChat[" << std::this_thread::get_id() << "] ENTER    |" << std::endl;
+        logger_.info("ENTER    |");
         StartRead(&note_);
       }
       void OnDone() override {
-        std::cout << "RouteGuide::RouteChat[" << std::this_thread::get_id() << "] EXIT     | OnDone()" << std::endl;
+        logger_.info("EXIT     | OnDone()");
         delete this;
       }
       void OnReadDone(bool ok) override {
         if (ok) {
           if (note_.message().empty()) {
-            std::cout << "RouteGuide::RouteChat[" << std::this_thread::get_id() << "] RESPONSE | RouteNote: " << note_.ShortDebugString()  << std::endl;
+            logger_.info("RESPONSE | RouteNote: {}", note_.ShortDebugString());
             StartWriteAndFinish(&note_, grpc::WriteOptions(), Status::OK);
-            std::cout << "RouteGuide::RouteChat[" << std::this_thread::get_id() << "] EXIT     | StartWriteAndFinish()" << std::endl;
+            logger_.info("EXIT     | StartWriteAndFinish()");
             return;
           }
           // Unlike the other example in this directory that's not using
@@ -194,7 +206,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
           // list of nodes we're going to send, then we'll grab the lock
           // again to append the received note to the existing vector.
           mu_.lock();
-          std::cout << "RouteGuide::RouteChat[" << std::this_thread::get_id() << "] REQUEST  | RouteNote: " << note_.ShortDebugString()  << std::endl;
+          logger_.info("REQUEST  | RouteNote: {}", note_.ShortDebugString());
           std::copy_if(received_notes_.begin(), received_notes_.end(),
                        std::back_inserter(to_send_notes_),
                        [this](const RouteNote& note) {
@@ -204,9 +216,9 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
           notes_iterator_ = to_send_notes_.begin();
           NextWrite();
         } else {
-          std::cout << "RouteGuide::RouteChat[" << std::this_thread::get_id() << "] EXIT     | Pre-Finish()" << std::endl;
+          logger_.info("EXIT     | Pre-Finish()");
           Finish(Status::OK);
-          std::cout << "RouteGuide::RouteChat[" << std::this_thread::get_id() << "] EXIT     | Post-Finish()" << std::endl;
+          logger_.info("EXIT     | Post-Finish()");
         }
       }
       void OnWriteDone(bool /*ok*/) override { NextWrite(); }
@@ -214,18 +226,19 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
      private:
       void NextWrite() {
         if (notes_iterator_ != to_send_notes_.end()) {
-          std::cout << "RouteGuide::RouteChat[" << std::this_thread::get_id() << "] RESPONSE | RouteNote: " << notes_iterator_->ShortDebugString()  << std::endl;
+          logger_.info("RESPONSE | RouteNote: {}", notes_iterator_->ShortDebugString());
           StartWrite(&*notes_iterator_);
           ++notes_iterator_;
         } else {
           mu_.lock();
           received_notes_.push_back(note_);
           mu_.unlock();
-          std::cout << "RouteGuide::RouteChat[" << std::this_thread::get_id() << "]          | no more response, waiting for next read"  << std::endl;
+          logger_.info("         | no more response, waiting for next read");
           StartRead(&note_);
         }
       }
       RouteNote note_;
+      spdlog::logger& logger_ = *logger_RouteChat;
       std::mutex& mu_;
       std::vector<RouteNote>& received_notes_;
       std::vector<RouteNote> to_send_notes_;
@@ -240,24 +253,25 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
 };
 
 void RunServer() {
-  std::cout << "RouteGuide::RunServer[" << std::this_thread::get_id() << "] Server creation" << std::endl;
-  std::string server_address("0.0.0.0:50051");
-  RouteGuideImpl service;
+  spdlog::info("-------------- Server creation --------------");
+  static constexpr std::string server_address("0.0.0.0:50051");
 
+  RouteGuideImpl service;
   ServerBuilder builder;
   builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
   builder.RegisterService(&service);
-  std::cout << "RouteGuide::RunServer[" << std::this_thread::get_id() << "] Server BuildAndStart" << std::endl;
-  std::unique_ptr<Server> server(builder.BuildAndStart());
-  std::cout << "RouteGuide::RunServer[" << std::this_thread::get_id() << "] Server listening on " << server_address << std::endl;
+  spdlog::info("Server BuildAndStart");
+  auto server = builder.BuildAndStart();
+  spdlog::info("Server listening on {}", server_address);
   server->Wait();
 }
 
 int main(int argc, char** argv) {
   assert(main_thread == std::this_thread::get_id());
+  spdlog::set_pattern("[%H:%M:%S.%f][%n][%t][%^%L%$] %v");
+
   // Expect only arg: --db_path=path/to/route_guide_db.json.
   db_utils::ParseDb(db_utils::GetDbFileContent(argc, argv), feature_list_);
   RunServer();
-
   return 0;
 }

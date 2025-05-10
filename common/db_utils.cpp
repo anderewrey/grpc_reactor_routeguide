@@ -1,11 +1,10 @@
 #include "common/db_utils.h"
 
 #include <glaze/glaze.hpp>
+#include <spdlog/spdlog.h>
 
 #include <cctype>
 #include <fstream>
-#include <iostream>
-#include <random>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -30,7 +29,7 @@ std::string db_utils::GetDbFileContent(int argc, char** argv) {
   }
   std::ifstream db_file(db_path);
   if (!db_file.is_open()) {
-    std::cout << "Failed to open " << db_path << std::endl;
+    spdlog::critical("Failed to open {}", db_path);
     abort();
   }
   std::stringstream db;
@@ -121,10 +120,10 @@ void db_utils::ParseDb(const std::string& db, FeatureList& feature_list) {
   RouteGuideDBParser parser(db);
   while (!parser.Finished()) {
     if (!parser.TryParseOne(feature_list.emplace_back())) {
-      std::cout << "Error parsing the db file";
+      spdlog::error("Error parsing the db file");
       feature_list.clear();
       break;
     }
   }
-  std::cout << "DB parsed, loaded " << feature_list.size() << " features." << std::endl;
+  spdlog::info("DB parsed, loaded {} features.", feature_list.size());
 }

@@ -19,6 +19,9 @@
 #include <grpcpp/create_channel.h>
 #include <grpcpp/security/credentials.h>
 
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+
 #include <chrono>
 #include <iostream>
 #include <memory>
@@ -46,6 +49,12 @@ using routeguide::RouteSummary;
 namespace {
 std::thread::id main_thread = std::this_thread::get_id();
 FeatureList feature_list_;
+
+// Create and return a shared_ptr to a multithreaded console logger.
+auto logger_GetFeature = spdlog::stdout_color_mt("GetFeature");
+auto logger_ListFeatures = spdlog::stdout_color_mt("ListFeatures");
+auto logger_RecordRoute = spdlog::stdout_color_mt("RecordRoute");
+auto logger_RouteChat = spdlog::stdout_color_mt("RouteChat");
 }  // anonymous namespace
 
 class RouteGuideClient {
@@ -54,19 +63,20 @@ class RouteGuideClient {
       : stub_(RouteGuide::NewStub(channel)) {}
 
   void GetFeature() {
-    auto get_feature = [stub_ = stub_.get()](const Point& point, Feature& feature) {
-      std::cout << "RouteGuide::GetFeature[" << std::this_thread::get_id() << "] ENTER    |" << std::endl;
+    auto get_feature = [stub_ = stub_.get(), logger = spdlog::get("GetFeature")](const Point& point, Feature& feature) {
+      logger->info("ENTER    |");
+
       ClientContext context;
-      std::cout << "RouteGuide::GetFeature[" << std::this_thread::get_id() << "] REQUEST  | Point: " << point.ShortDebugString()  << std::endl;
+      logger->info("REQUEST  | Point: {}", point.ShortDebugString());
       Status status = stub_->GetFeature(&context, point, &feature);
       if (!status.ok()) {
-        std::cout << "RouteGuide::GetFeature[" << std::this_thread::get_id() << "] EXIT     | OK:" << status.ok() << " msg:" << status.error_message() << std::endl;
+        logger->info("EXIT     | OK: {}  msg: {}", status.ok(), status.error_message());
         return false;
       }
-      std::cout << "RouteGuide::GetFeature[" << std::this_thread::get_id() << "] RESPONSE | Feature: " << feature.ShortDebugString()  << std::endl;
+      logger->info("RESPONSE | Feature: {}", feature.ShortDebugString());
 
       const bool result = feature.has_location();
-      std::cout << "RouteGuide::GetFeature[" << std::this_thread::get_id() << "] EXIT     | return " << result << std::endl;
+      logger->info("EXIT     | return {}", result);
       return result;
     };
     Feature feature;
@@ -77,18 +87,19 @@ class RouteGuideClient {
   }
 
   void ListFeatures() {
+    auto logger = spdlog::get("ListFeatures");
     Feature feature;
     ClientContext context;
-    std::cout << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "] ENTER    |" << std::endl;
+    logger->info("ENTER    |");
     const auto rectangle = proto_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000);
-    std::cout << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "] REQUEST  | Rectangle: " << rectangle.ShortDebugString()  << std::endl;
+    logger->info("REQUEST  | Rectangle: {}", rectangle.ShortDebugString());
     auto reader = stub_->ListFeatures(&context, rectangle);
     while (reader->Read(&feature)) {
-      std::cout << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "] RESPONSE | Feature: " << feature.ShortDebugString()  << std::endl;
+      logger->info("RESPONSE | Feature: {}", feature.ShortDebugString());
     }
-    std::cout << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "] EXIT     | Pre-Finish()" << std::endl;
+    logger->info("EXIT     | Pre-Finish()");
     Status status = reader->Finish();
-    std::cout << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "] EXIT     | Post-Finish() OK:" << status.ok() << " msg:" << status.error_message() << std::endl;
+    logger->info("EXIT     | Post-Finish() OK: {}  msg: {}", status.ok(), status.error_message());
   }
 
   void RecordRoute() {
@@ -150,19 +161,21 @@ class RouteGuideClient {
 
 int main(int argc, char** argv) {
   assert(main_thread == std::this_thread::get_id());
+  spdlog::set_pattern("[%H:%M:%S.%f][%n][%t][%^%L%$] %v");
+
   // Expect only arg: --db_path=path/to/route_guide_db.json.
   db_utils::ParseDb(db_utils::GetDbFileContent(argc, argv), feature_list_);
 
   RouteGuideClient guide(
       grpc::CreateChannel("localhost:50051", grpc::InsecureChannelCredentials()));
 
-  std::cout << "-------------- GetFeature --------------" << std::endl;
+  spdlog::info("-------------- GetFeature --------------");
   guide.GetFeature();
-  std::cout << "-------------- ListFeatures --------------" << std::endl;
+  spdlog::info("-------------- ListFeatures --------------");
   guide.ListFeatures();
-  std::cout << "-------------- RecordRoute --------------" << std::endl;
+  spdlog::info("-------------- RecordRoute --------------");
   guide.RecordRoute();
-  std::cout << "-------------- RouteChat --------------" << std::endl;
+  spdlog::info("-------------- RouteChat --------------");
   guide.RouteChat();
 
   return 0;
