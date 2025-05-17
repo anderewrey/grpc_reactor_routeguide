@@ -88,4 +88,3 @@ class ClientReactor final : public RpcReactor::Client::ProxyReadReactor<Response
   }
 };
 }  // namespace routeguide::ListFeatures
-

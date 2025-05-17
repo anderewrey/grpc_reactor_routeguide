@@ -225,7 +225,7 @@ Once the proceeding of the response is done, the RPC must be signaled to start a
 be useful when the responses are put on a queue or when it is discarded.
 
 ### Class functions
-Three public functions can be called by the application side: 
+Three public functions can be called by the application side:
 - `bool GetResponse(ResponseT& response)`
 - `const grpc::Status& Status()`
 - `void TryCancel()`
