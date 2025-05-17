@@ -24,7 +24,6 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 
 #include <chrono>
-#include <iostream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -65,20 +64,19 @@ class RouteGuideClient {
       : stub_(RouteGuide::NewStub(channel)) {}
 
   void GetFeature() {
-    auto get_feature = [stub_ = stub_.get(), logger = spdlog::get("GetFeature")](const Point& point, Feature& feature) {
-      logger->info("ENTER    |");
-
+    auto get_feature = [stub_ = stub_.get(), &logger = *logger_GetFeature](const Point& point, Feature& feature) {
+      logger.info("ENTER    |");
       ClientContext context;
-      logger->info("REQUEST  | Point: {}", point.ShortDebugString());
+      logger.info("REQUEST  | Point: {}", point.ShortDebugString());
       Status status = stub_->GetFeature(&context, point, &feature);
       if (!status.ok()) {
-        logger->info("EXIT     | OK: {}  msg: {}", status.ok(), status.error_message());
+        logger.info("EXIT     | OK: {}  msg: {}", status.ok(), status.error_message());
         return false;
       }
-      logger->info("RESPONSE | Feature: {}", feature.ShortDebugString());
+      logger.info("RESPONSE | Feature: {}", feature.ShortDebugString());
 
       const bool result = feature.has_location();
-      logger->info("EXIT     | return {}", result);
+      logger.info("EXIT     | return {}", result);
       return result;
     };
     Feature feature;
@@ -89,23 +87,24 @@ class RouteGuideClient {
   }
 
   void ListFeatures() {
-    auto logger = spdlog::get("ListFeatures");
+    auto& logger = *logger_ListFeatures;
     Feature feature;
     ClientContext context;
-    logger->info("ENTER    |");
+    logger.info("ENTER    |");
     const auto rectangle = proto_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000);
-    logger->info("REQUEST  | Rectangle: {}", rectangle.ShortDebugString());
+    logger.info("REQUEST  | Rectangle: {}", rectangle.ShortDebugString());
     auto reader = stub_->ListFeatures(&context, rectangle);
     while (reader->Read(&feature)) {
-      logger->info("RESPONSE | Feature: {}", feature.ShortDebugString());
+      logger.info("RESPONSE | Feature: {}", feature.ShortDebugString());
     }
-    logger->info("EXIT     | Pre-Finish()");
+    logger.info("EXIT     | Pre-Finish()");
     Status status = reader->Finish();
-    logger->info("EXIT     | Post-Finish() OK: {}  msg: {}", status.ok(), status.error_message());
+    logger.info("EXIT     | Post-Finish() OK: {}  msg: {}", status.ok(), status.error_message());
   }
 
   void RecordRoute() {
-    std::cout << "RouteGuide::RecordRoute[" << std::this_thread::get_id() << "] ENTER    |" << std::endl;
+    auto& logger = *logger_RecordRoute;
+    logger.info("ENTER    |");
     RouteSummary summary;
     ClientContext context;
     const int kPoints = 10;
@@ -113,48 +112,50 @@ class RouteGuideClient {
     auto writer = stub_->RecordRoute(&context, &summary);
     for (int i = 0; i < kPoints; i++) {
       const Point& point = proto_utils::GetRandomPoint(feature_list_);
-      std::cout << "RouteGuide::RecordRoute[" << std::this_thread::get_id() << "] REQUEST  | Point: " << point.ShortDebugString()  << std::endl;
+      logger.info("REQUEST  | Point: {}", point.ShortDebugString());
       if (!writer->Write(point)) {
         // Broken stream.
         break;
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(proto_utils::GetRandomTimeDelay()));
     }
-    std::cout << "RouteGuide::RecordRoute[" << std::this_thread::get_id() << "] EXIT     | WritesDone" << std::endl;
+    logger.info("EXIT     | WritesDone");
     writer->WritesDone();
-    std::cout << "RouteGuide::RecordRoute[" << std::this_thread::get_id() << "] EXIT     | Finish" << std::endl;
+    logger.info("EXIT     | Finish");
     Status status = writer->Finish();
-    std::cout << "RouteGuide::RecordRoute[" << std::this_thread::get_id() << "] RESPONSE | Status: OK:" << status.ok() << " msg:" << status.error_message() << " RouteSummary: " << summary.ShortDebugString()  << std::endl;
-    std::cout << "RouteGuide::RecordRoute[" << std::this_thread::get_id() << "] EXIT     |" << std::endl;
+    logger.info("RESPONSE | Status: OK: {} msg: {} RouteSummary: {}", status.ok(), status.error_message(), summary.ShortDebugString());
+    logger.info("EXIT     |");
   }
 
   void RouteChat() {
-    std::cout << "RouteGuide::RouteChat[" << std::this_thread::get_id() << "] ENTER    |" << std::endl;
+    auto& logger = *logger_RouteChat;
+    logger.info("ENTER    |");
     ClientContext context;
     auto stream = stub_->RouteChat(&context);
-    std::thread writer([stream = stream.get()]() {
+    std::thread writer([stream = stream.get(), &logger]() {
       std::vector<RouteNote> notes{proto_utils::MakeRouteNote("First message", 1, 1),
                                    proto_utils::MakeRouteNote("Second message", 2, 2),
                                    proto_utils::MakeRouteNote("Third message", 3, 3),
                                    proto_utils::MakeRouteNote("First message again", 1, 1)};
       for (const RouteNote& note : notes) {
-        std::cout << "RouteGuide::RouteChat[" << std::this_thread::get_id() << "] REQUEST  | RouteNote: " << note.ShortDebugString()  << std::endl;
+      logger.info("REQUEST  | RouteNote: {}", note.ShortDebugString());
         stream->Write(note);
       }
-      std::cout << "RouteGuide::RouteChat[" << std::this_thread::get_id() << "] EXIT     | pre-WritesDone" << std::endl;
+      logger.info("EXIT     | pre-WritesDone");
+      logger.info("EXIT     | pre-WritesDone");
       stream->WritesDone();
-      std::cout << "RouteGuide::RouteChat[" << std::this_thread::get_id() << "] EXIT     | post-WritesDone" << std::endl;
+      logger.info("EXIT     | post-WritesDone");
     });
 
     RouteNote server_note;
     while (stream->Read(&server_note)) {
-      std::cout << "RouteGuide::RouteChat[" << std::this_thread::get_id() << "] RESPONSE | RouteNote: " << server_note.ShortDebugString()  << std::endl;
+          logger.info("RESPONSE | RouteNote: {}", server_note.ShortDebugString());
     }
-    std::cout << "RouteGuide::RouteChat[" << std::this_thread::get_id() << "] EXIT     | waiting for writer.join()" << std::endl;
+    logger.info("EXIT     | waiting for writer.join()");
     writer.join();
-    std::cout << "RouteGuide::RouteChat[" << std::this_thread::get_id() << "] EXIT     | Pre-Finish()" << std::endl;
+    logger.info("EXIT     | Pre-Finish()");
     Status status = stream->Finish();
-    std::cout << "RouteGuide::RouteChat[" << std::this_thread::get_id() << "] EXIT     | Post-Finish() OK:" << status.ok() << " msg:" << status.error_message() << std::endl;
+    logger.info("EXIT     | Post-Finish() OK: {}  msg: {}", status.ok(), status.error_message());
   }
 
  private:

@@ -1,7 +1,26 @@
+///
+/// Copyright 2024-2025 anderewrey.
+///
+/// Licensed under the Apache License, Version 2.0 (the "License");
+/// you may not use this file except in compliance with the License.
+/// You may obtain a copy of the License at
+///
+///     http://www.apache.org/licenses/LICENSE-2.0
+///
+/// Unless required by applicable law or agreed to in writing, software
+/// distributed under the License is distributed on an "AS IS" BASIS,
+/// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+/// See the License for the specific language governing permissions and
+/// limitations under the License.
+///
+
 #include <grpc/grpc.h>
 #include <grpcpp/channel.h>
 #include <grpcpp/client_context.h>
 #include <grpcpp/create_channel.h>
+
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 #include <Event.h>
 #include <EventLoop.h>
@@ -30,6 +49,12 @@ std::unique_ptr<grpc::ClientContext> CreateClientContext() {
   // context->set_wait_for_ready(true);
   return context;
 }
+
+// Create and return a shared_ptr to a multithreaded console logger.
+auto logger_GetFeature = spdlog::stdout_color_mt("GetFeature");
+auto logger_ListFeatures = spdlog::stdout_color_mt("ListFeatures");
+// auto logger_RecordRoute = spdlog::stdout_color_mt("RecordRoute");
+// auto logger_RouteChat = spdlog::stdout_color_mt("RouteChat");
 }  // anonymous namespace
 
 /************************
@@ -47,7 +72,9 @@ class RouteGuideClient {
  public:
   explicit RouteGuideClient(const std::shared_ptr<grpc::Channel>& channel)
       : stub_(routeguide::RouteGuide::NewStub(channel)) {
-    EventLoop::RegisterEvent(kGetFeatureOnDone, [&reactor_ = reactor_map_[routeguide::GetFeature::RpcKey]](const EventLoop::Event* event) {
+    EventLoop::RegisterEvent(kGetFeatureOnDone,
+                             [&reactor_ = reactor_map_[routeguide::GetFeature::RpcKey],
+                              &logger = *logger_GetFeature](const EventLoop::Event* event) {
       // (Point 3.5) ProceedEvent: OnDone
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::GetFeature::ClientReactor*>(event->getData());
@@ -58,13 +85,13 @@ class RouteGuideClient {
         routeguide::Feature response;
         reactor->GetResponse(response);
         // (Point 3.7) update application with response
-        std::cout << "RouteGuide::GetFeature[" << std::this_thread::get_id() << "] RESPONSE | " << response.GetTypeName() << ": " << response.ShortDebugString() << std::endl;
+        logger.info("RESPONSE | {}: {}", response.GetTypeName(), response.ShortDebugString());
       } else {
-        std::cerr << "RouteGuide::GetFeature[" << std::this_thread::get_id() << "]          | " << event->getName() << " reactor: " << reactor << " Status: OK: " << status.ok() << " msg: " << status.error_message() << std::endl;
+        logger.info("         | {} reactor: {} Status: OK: {} msg: {}", event->getName(), fmt::ptr(reactor), status.ok(), status.error_message());
       }
       // (Point 3.8) Destroy reactor
       reactor_.reset();
-      std::cout << "RouteGuide::GetFeature[" << std::this_thread::get_id() << "]          | reactor[" << reactor << "] ended" << std::endl;
+      logger.info("         | reactor[{}] ended", fmt::ptr(reactor));
     });
     EventLoop::RegisterEvent(kListFeaturesOnReadDoneOk, [this, &reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey]](const EventLoop::Event* event) {
       // (Point 2.7) ProceedEvent: OnReadDoneOk
@@ -108,8 +135,9 @@ class RouteGuideClient {
   void GetFeature(routeguide::Point point) {
     using routeguide::GetFeature::ClientReactor;
     using routeguide::GetFeature::RpcKey;
+    auto& logger = *logger_GetFeature;
     if (reactor_map_[RpcKey]) {
-      std::cerr << "RouteGuide::GetFeature[" << std::this_thread::get_id() << "]          | reactor[" << reactor_map_[RpcKey] << "] already in execution, ignoring: " << point.ShortDebugString() << std::endl;
+      logger.info("         | reactor[{}] already in execution, ignoring: {}", fmt::ptr(reactor_map_[RpcKey].get()), point.ShortDebugString());
       return;
     }
     ClientReactor::callbacks cbs;
@@ -121,7 +149,7 @@ class RouteGuideClient {
                                                            std::move(CreateClientContext()),
                                                            std::move(point),
                                                            std::move(cbs));
-    std::cout << "RouteGuide::GetFeature[" << std::this_thread::get_id() << "]          | reactor[" << reactor_map_[RpcKey] << "] created" << std::endl;
+    logger.info("         | reactor[{}] created", fmt::ptr(reactor_map_[RpcKey].get()));
   }
 
   void ListFeatures(routeguide::Rectangle rect) {
@@ -164,15 +192,16 @@ class RouteGuideClient {
 
 int main(int argc, char** argv) {
   assert(main_thread == std::this_thread::get_id());
+  spdlog::set_pattern("[%H:%M:%S.%f][%n][%t][%^%L%$] %v");
   // Expect only arg: --db_path=path/to/route_guide_db.json.
   db_utils::ParseDb(db_utils::GetDbFileContent(argc, argv), feature_list_);
   RouteGuideClient guide(grpc::CreateChannel("localhost:50051", grpc::InsecureChannelCredentials()));
 
-  std::cout << "-------------- ListFeatures --------------" << std::endl;
+  spdlog::info("-------------- ListFeatures --------------");
   guide.ListFeatures(proto_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000));
-  std::cout << "-------------- GetFeature --------------" << std::endl;
+  spdlog::info("-------------- GetFeature --------------");
   guide.GetFeature(proto_utils::GetRandomPoint(feature_list_));
   EventLoop::Run();
-  std::cout << "-------------- LEAVING APPLICATION --------------" << std::endl;
+  spdlog::info("-------------- LEAVING APPLICATION --------------");
   return 0;
 }

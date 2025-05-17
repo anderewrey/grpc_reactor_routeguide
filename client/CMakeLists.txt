@@ -1,8 +1,8 @@
 include(FetchContent)
 # Minimalist EventLoop support
 FetchContent_Declare(EventLoop
-        GIT_REPOSITORY https://github.com/anderewrey/EventLoop.git
-        GIT_TAG anderewrey/bugfix-lib-directory
+        GIT_REPOSITORY https://github.com/amoldhamale1105/EventLoop.git
+        GIT_TAG e16fa52aae1d58a994fd93808c62fde14adb62f1 # Includes my patch, no tag yet available
         GIT_SHALLOW TRUE
         UPDATE_DISCONNECTED 1
 )
