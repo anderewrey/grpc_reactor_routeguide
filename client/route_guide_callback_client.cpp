@@ -27,6 +27,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "generated/route_guide.grpc.pb.h"
 

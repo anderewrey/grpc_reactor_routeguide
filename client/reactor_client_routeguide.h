@@ -2,12 +2,11 @@
 
 #include <grpcpp/client_context.h>
 
-#include <cstddef>
 #include <memory>
 #include <utility>
 
-#include "route_guide.pb.h"
-#include "route_guide.grpc.pb.h"
+#include "generated/route_guide.pb.h"
+#include "generated/route_guide.grpc.pb.h"
 
 #include "client/reactor_client.h"
 

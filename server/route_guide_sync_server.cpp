@@ -16,21 +16,19 @@
  *
  */
 #include <grpc/grpc.h>
-#include <grpcpp/security/server_credentials.h>
 #include <grpcpp/server.h>
 #include <grpcpp/server_builder.h>
-#include <grpcpp/server_context.h>
+#include <grpcpp/security/server_credentials.h>
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
-#include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <iostream>
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "generated/route_guide.grpc.pb.h"
 

@@ -1,3 +1,19 @@
+///
+/// Copyright 2024-2025 anderewrey.
+///
+/// Licensed under the Apache License, Version 2.0 (the "License");
+/// you may not use this file except in compliance with the License.
+/// You may obtain a copy of the License at
+///
+///     http://www.apache.org/licenses/LICENSE-2.0
+///
+/// Unless required by applicable law or agreed to in writing, software
+/// distributed under the License is distributed on an "AS IS" BASIS,
+/// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+/// See the License for the specific language governing permissions and
+/// limitations under the License.
+///
+
 #include "proto/proto_utils.h"
 
 #include <algorithm>
@@ -22,7 +38,8 @@ Point proto_utils::MakePoint(const int32_t latitude, const int32_t longitude) {
   return p;
 }
 
-Rectangle proto_utils::MakeRectangle(const int32_t latitude_lo, const int32_t longitude_lo, const int32_t latitude_hi, const int32_t longitude_hi) {
+Rectangle proto_utils::MakeRectangle(const int32_t latitude_lo, const int32_t longitude_lo,
+                                     const int32_t latitude_hi, const int32_t longitude_hi) {
   Rectangle rect;
   *rect.mutable_lo() = MakePoint(latitude_lo, longitude_lo);
   *rect.mutable_hi() = MakePoint(latitude_hi, longitude_hi);

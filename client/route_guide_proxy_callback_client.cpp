@@ -9,6 +9,7 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <map>
 #include <string>
 #include <thread>
 #include <utility>
@@ -42,6 +43,7 @@ class RouteGuideClient {
   static constexpr auto kListFeaturesOnReadDoneOk{"ListFeaturesOnReadDoneOk"};
   static constexpr auto kListFeaturesOnReadDoneNOk{"ListFeaturesOnReadDoneNOk"};
   static constexpr auto kListFeaturesOnDone{"ListFeaturesOnDone"};
+
  public:
   explicit RouteGuideClient(const std::shared_ptr<grpc::Channel>& channel)
       : stub_(routeguide::RouteGuide::NewStub(channel)) {

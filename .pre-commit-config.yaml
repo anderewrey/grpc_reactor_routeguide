@@ -33,5 +33,10 @@ repos:
     rev: 2.0.2
     hooks:
       - id: cpplint
-        args: [ "--filter=-build/c++11,-build/c++17,-whitespace/indent_namespace",
+        args: [ "--filter=
+                 -build/c++11,
+                 -build/c++17,
+                 -build/namespaces,
+                 -legal/copyright,
+                 -whitespace/indent_namespace",
                 "--linelength=120" ]

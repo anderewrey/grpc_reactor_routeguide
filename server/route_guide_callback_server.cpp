@@ -31,6 +31,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "generated/route_guide.grpc.pb.h"
 
@@ -155,7 +156,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
         } else {
           summary_.set_point_count(point_count_);
           summary_.set_feature_count(feature_count_);
-          summary_.set_distance(static_cast<long>(distance_));
+          summary_.set_distance(static_cast<int32_t>(distance_));
           using namespace std::chrono;
           auto secs = duration_cast<seconds>(system_clock::now() - start_time_).count();
           summary_.set_elapsed_time(secs);
