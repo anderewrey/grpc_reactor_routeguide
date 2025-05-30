@@ -86,14 +86,16 @@ class RouteGuideClient {
         // (Point 3.7) update application with response
         logger.info("RESPONSE | {}: {}", response.GetTypeName(), response.ShortDebugString());
       } else {
-        logger.info("         | {} reactor: {} Status: OK: {} msg: {}", event->getName(), fmt::ptr(reactor), status.ok(), status.error_message());
+        logger.info("         | {} reactor: {} Status: OK: {} msg: {}",
+                    event->getName(), fmt::ptr(reactor), status.ok(), status.error_message());
       }
       // (Point 3.8) Destroy reactor
       reactor_.reset();
       logger.info("         | reactor[{}] ended", fmt::ptr(reactor));
     });
-    EventLoop::RegisterEvent(kListFeaturesOnReadDoneOk, [this, &reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
-                                                         &logger = *logger_ListFeatures](const EventLoop::Event* event) {
+    EventLoop::RegisterEvent(kListFeaturesOnReadDoneOk,
+                             [this, &reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
+                              &logger = *logger_ListFeatures](const EventLoop::Event* event) {
       // (Point 2.7) ProceedEvent: OnReadDoneOk
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
@@ -110,8 +112,9 @@ class RouteGuideClient {
       GetFeature(response.location());
 #endif
     });
-    EventLoop::RegisterEvent(kListFeaturesOnReadDoneNOk, [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
-                                                          &logger = *logger_ListFeatures](const EventLoop::Event* event) {
+    EventLoop::RegisterEvent(kListFeaturesOnReadDoneNOk,
+                             [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
+                              &logger = *logger_ListFeatures](const EventLoop::Event* event) {
       // (Point 4.7) ProceedEvent: OnReadDoneNOk
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
@@ -119,8 +122,9 @@ class RouteGuideClient {
       // (Point 4.8) update application
       logger.info("         | {} reactor: {}", event->getName(), fmt::ptr(reactor));
     });
-    EventLoop::RegisterEvent(kListFeaturesOnDone, [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
-                                                   &logger = *logger_ListFeatures](const EventLoop::Event* event) {
+    EventLoop::RegisterEvent(kListFeaturesOnDone,
+                             [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
+                              &logger = *logger_ListFeatures](const EventLoop::Event* event) {
       // (Point 4.9) ProceedEvent: OnDone
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
@@ -139,7 +143,8 @@ class RouteGuideClient {
     using routeguide::GetFeature::RpcKey;
     auto& logger = *logger_GetFeature;
     if (reactor_map_[RpcKey]) {
-      logger.info("         | reactor[{}] already in execution, ignoring: {}", fmt::ptr(reactor_map_[RpcKey].get()), point.ShortDebugString());
+      logger.info("         | reactor[{}] already in execution, ignoring: {}",
+                  fmt::ptr(reactor_map_[RpcKey].get()), point.ShortDebugString());
       return;
     }
     ClientReactor::callbacks cbs;
@@ -160,7 +165,8 @@ class RouteGuideClient {
     auto& logger = *logger_ListFeatures;
 
     if (reactor_map_[RpcKey]) {
-      logger.info("         | reactor[{}] already in execution, ignoring: {}", fmt::ptr(reactor_map_[RpcKey].get()), rect.ShortDebugString());
+      logger.info("         | reactor[{}] already in execution, ignoring: {}",
+                  fmt::ptr(reactor_map_[RpcKey].get()), rect.ShortDebugString());
       return;
     }
 

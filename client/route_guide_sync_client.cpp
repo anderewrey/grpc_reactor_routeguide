@@ -124,7 +124,8 @@ class RouteGuideClient {
     writer->WritesDone();
     logger.info("EXIT     | Finish");
     Status status = writer->Finish();
-    logger.info("RESPONSE | Status: OK: {} msg: {} RouteSummary: {}", status.ok(), status.error_message(), summary.ShortDebugString());
+    logger.info("RESPONSE | Status: OK: {} msg: {} RouteSummary: {}",
+                status.ok(), status.error_message(), summary.ShortDebugString());
     logger.info("EXIT     |");
   }
 

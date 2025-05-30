@@ -73,8 +73,10 @@ class RouteGuideClient {
       std::condition_variable cv;
       bool done = false;
       logger.info("REQUEST  | Point: {}", point.ShortDebugString());
-      stub_->async()->GetFeature(&context, &point, &feature, [&result, &mu, &cv, &done, &feature, &logger](Status status) {
-        logger.info("RESPONSE | Status: OK: {} msg:{} Feature: {}", status.ok(), status.error_message(), feature.ShortDebugString());
+      stub_->async()->GetFeature(&context, &point, &feature,
+                                 [&result, &mu, &cv, &done, &feature, &logger](Status status) {
+        logger.info("RESPONSE | Status: OK: {} msg:{} Feature: {}",
+                    status.ok(), status.error_message(), feature.ShortDebugString());
         std::lock_guard<std::mutex> lock(mu);
         result = (status.ok() && feature.has_location());
         done = true;
@@ -206,7 +208,7 @@ class RouteGuideClient {
       spdlog::logger& logger_ = *logger_RecordRoute;
       RouteSummary summary_;
       const FeatureList& feature_list_;
-      grpc::Alarm alarm_;  // To postpone an action to do later in the eventloop (handled by gRPC in its own thread pool)
+      grpc::Alarm alarm_;  // To postpone an action in the eventloop (handled by gRPC in its own thread pool)
       std::mutex mu_;
       std::condition_variable cv_;
       Status status_;
@@ -216,7 +218,8 @@ class RouteGuideClient {
     RouteSummary summary;
     Recorder recorder(stub_.get(), feature_list_);
     Status status = recorder.Await(summary);
-    logger_RecordRoute->info("EXIT     | post-Await() OK: {} msg: {} RouteSummary: {}", status.ok(), status.error_message(), summary.ShortDebugString());
+    logger_RecordRoute->info("EXIT     | post-Await() OK: {} msg: {} RouteSummary: {}",
+                             status.ok(), status.error_message(), summary.ShortDebugString());
   }
 
   void RouteChat() {
@@ -294,7 +297,7 @@ class RouteGuideClient {
       const std::vector<RouteNote> notes_;
       std::vector<RouteNote>::const_iterator notes_iterator_;
       RouteNote server_note_;
-      grpc::Alarm alarm_;  // To postpone an action to do later in the eventloop (handled by gRPC in its own thread pool)
+      grpc::Alarm alarm_;  // To postpone an action in the eventloop (handled by gRPC in its own thread pool)
       std::mutex mu_;
       std::condition_variable cv_;
       Status status_;

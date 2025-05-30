@@ -35,7 +35,7 @@ The following third-parties are fetched by CMake and compiled for the need of th
 - Protobuf, which is usually included through gRPC
 
 Because downloading and compiling gRPC on project build is a long and annoying process, it is better instead to have
-them already available through the OS system: 
+them already available through the OS system:
 - with Ubuntu 24.04: installing it through the package manager is good enough.
 - Homemade compilation and installation: it works 100% of time when cmake is used to build it, otherwise
   there's missing hints for cmake to include it into this project.
