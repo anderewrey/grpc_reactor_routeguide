@@ -250,7 +250,7 @@ On purpose, the following examples are coming from a sandbox code using a 3rdpar
  - https://github.com/amoldhamale1105/EventLoop
 
 For the sanity of the reader, some passages are removed and the code logic reduced to its maximum. It is recommended
-to read the original code from the route_guide_proxy_callback_client.cc file.
+to read the original code from the route_guide_proxy_callback_client.cpp file.
 
 ### Instantiation of the ProxyReadReactor class
 The following snippet instances a `ProxyReadReactor` dedicated to the `ListFeatures` RPC of the `routeguide` API. It fills

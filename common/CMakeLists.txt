@@ -2,8 +2,9 @@ include(FetchContent)
 # For a better JSON parser and string minifier (the original code was to madly strip all spaces, no matter where)
 FetchContent_Declare(glaze
         GIT_REPOSITORY https://github.com/stephenberry/glaze.git
-        # with recent versions, moved to C++23 and requires CMake >= 3.25
-        # and <expected> which is not generally available on compilers
+        # with recent versions, it moved to C++23 and requires CMake >= 3.25, GCC12+/Clang17+,
+        # and <expected> which is not generally available on compilers. Because glaze is strictly
+        # used for a quick'n'dirty task to minify the .json into a string, it will stay to that version.
         GIT_TAG v2.9.5
         GIT_SHALLOW TRUE
 )
