@@ -26,7 +26,6 @@
 #include <EventLoop.h>
 
 #include <functional>
-#include <iostream>
 #include <memory>
 #include <map>
 #include <string>
@@ -93,7 +92,8 @@ class RouteGuideClient {
       reactor_.reset();
       logger.info("         | reactor[{}] ended", fmt::ptr(reactor));
     });
-    EventLoop::RegisterEvent(kListFeaturesOnReadDoneOk, [this, &reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey]](const EventLoop::Event* event) {
+    EventLoop::RegisterEvent(kListFeaturesOnReadDoneOk, [this, &reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
+                                                         &logger = *logger_ListFeatures](const EventLoop::Event* event) {
       // (Point 2.7) ProceedEvent: OnReadDoneOk
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
@@ -102,7 +102,7 @@ class RouteGuideClient {
       routeguide::Feature response;
       reactor->GetResponse(response);
       // (Point 2.12) update application with response
-      std::cout << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "] RESPONSE | " << response.GetTypeName() << ": " << response.ShortDebugString() << std::endl;
+      logger.info("RESPONSE | {}: {}", response.GetTypeName(), response.ShortDebugString());
 #if 0
       // Triggering extra concurrency: Un-comment that #IF block to probe the refusal of concurrent RPC calls.
       // Each received result from stream is reused to trigger a concurrent unary RPC request. If the RPC already has
@@ -110,25 +110,27 @@ class RouteGuideClient {
       GetFeature(response.location());
 #endif
     });
-    EventLoop::RegisterEvent(kListFeaturesOnReadDoneNOk, [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey]](const EventLoop::Event* event) {
+    EventLoop::RegisterEvent(kListFeaturesOnReadDoneNOk, [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
+                                                          &logger = *logger_ListFeatures](const EventLoop::Event* event) {
       // (Point 4.7) ProceedEvent: OnReadDoneNOk
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
       assert(reactor == reactor_.get());
       // (Point 4.8) update application
-      std::cout << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "]          | " << event->getName() << " reactor: " << reactor << std::endl;
+      logger.info("         | {} reactor: {}", event->getName(), fmt::ptr(reactor));
     });
-    EventLoop::RegisterEvent(kListFeaturesOnDone, [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey]](const EventLoop::Event* event) {
+    EventLoop::RegisterEvent(kListFeaturesOnDone, [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
+                                                   &logger = *logger_ListFeatures](const EventLoop::Event* event) {
       // (Point 4.9) ProceedEvent: OnDone
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
       assert(reactor == reactor_.get());
       const auto status = reactor->Status();
       // (Point 4.8) update application with status
-      std::cout << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "]          | " << event->getName() << " reactor: " << reactor /*<< " ok: " << ok*/ << std::endl;
+      logger.info("         | {} reactor: {}", event->getName(), fmt::ptr(reactor));
       // (Point 4.11) Destroy reactor
       reactor_.reset();
-      std::cout << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "]          | reactor[" << reactor << "] ended" << std::endl;
+      logger.info("         | reactor[{}] ended", fmt::ptr(reactor));
     });
   }
 
@@ -155,8 +157,10 @@ class RouteGuideClient {
   void ListFeatures(routeguide::Rectangle rect) {
     using routeguide::ListFeatures::ClientReactor;
     using routeguide::ListFeatures::RpcKey;
+    auto& logger = *logger_ListFeatures;
+
     if (reactor_map_[RpcKey]) {
-      std::cerr << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "]          | reactor[" << reactor_map_[RpcKey] << "] already in execution, ignoring: " << rect.ShortDebugString() << std::endl;
+      logger.info("         | reactor[{}] already in execution, ignoring: {}", fmt::ptr(reactor_map_[RpcKey].get()), rect.ShortDebugString());
       return;
     }
 
@@ -179,7 +183,7 @@ class RouteGuideClient {
                                                            std::move(CreateClientContext()),
                                                            std::move(rect),
                                                            std::move(cbs));
-    std::cout << "RouteGuide::ListFeatures[" << std::this_thread::get_id() << "]          | reactor[" << reactor_map_[RpcKey] << "] created" << std::endl;
+    logger.info("         | reactor[{}] created", fmt::ptr(reactor_map_[RpcKey].get()));
   }
 
  private:
