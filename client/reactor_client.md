@@ -1,10 +1,13 @@
 # Unary RPC clients
+
 gRPC API keywords: ClientUnaryReactor, ClientCallbackUnary
 Both synchronous (blocking) and asynchronous methods are possible; the reactor is an asynchronous variant.
 
 ## ProxyUnaryReactor class
+
 Inherit from `grpc::ClientUnaryReactor`, this class follows some points of both [proxy](https://refactoring.guru/design-patterns/proxy)
 and [reactor](https://www.modernescpp.com/index.php/reactor/) design patterns:
+
 - This class is meant to run on concurrent threads.
 - Its constructor is executed by the caller and once the task is done, the caller must destroy it. The
   `ClientUnaryReactor::OnDone` event is about that situation.
@@ -32,7 +35,9 @@ For the sake of the gRPC processing, it is strongly discouraged to process the r
 are provided to ease some early-reaction logics or to select situations where the response handling is worthy or not.
 
 ### Class functions
+
 Three public functions can be called by the application side:
+
 - `bool GetResponse(ResponseT& response)`
 - `const grpc::Status& Status()`
 - `void TryCancel()`
@@ -50,7 +55,9 @@ is meaningless.
 sent anytime from any thread. The goal of that signal is to provoke (immediately or later) the `ClientUnaryReactor::OnDone` event.
 
 ## Code snippet
+
 On purpose, the following examples are coming from a sandbox code using a 3rdparty eventloop library.
+
  - https://github.com/anderewrey/grpc_reactor_routeguide/blob/master/client/route_guide_proxy_callback_client.cpp
  - https://github.com/amoldhamale1105/EventLoop
 
@@ -58,6 +65,7 @@ For the sanity of the reader, some passages are removed and the code logic reduc
 to read the original code from the route_guide_proxy_callback_client.cc file.
 
 ### Instantiation of the ProxyUnaryReactor class
+
 The following snippet instances a `ProxyUnaryReactor` dedicated to the `GetFeature` RPC of the `routeguide` API. It fills
 a callback structure with the related `OnDoneCallback`. In this example, the callback is binded to the eventloop notification
 function as an `kGetFeatureOnDone` event.
@@ -80,6 +88,7 @@ From the PlantUML sequence diagram, the corresponding points are:
 ````
 
 ###  OnDoneCallback
+
 IMPORTANT: The last action to do when handling that event is to delete the reactor instance: that instance can't be
 reused by gRPC and a new instance must be allocated for a new usage. In typical gRPC examples, the reactors are
 selfdestroying (explicit `delete this` or on class d-tor execution) once that event is done: https://grpc.io/docs/languages/cpp/callback/.
@@ -102,6 +111,7 @@ From the PlantUML sequence diagram, the corresponding points are from 3.6 to 3.8
 
 
 ## PlantUML sequence flow
+
 ```plantuml
 @startuml
 !pragma teoz true
@@ -169,12 +179,15 @@ end
 ```
 
 # Server-stream RPC clients
+
 gRPC API keywords: ClientReadReactor, ClientCallbackReader
 Only the asynchronous methods are provided.
 
 ## ProxyReadReactor class
+
 Inherit from `grpc::ClientReadReactor`, this class follows some points of both [proxy](https://refactoring.guru/design-patterns/proxy)
 and [reactor](https://www.modernescpp.com/index.php/reactor/) design patterns:
+
 - This class is meant to run on concurrent threads.
 - Its constructor is executed by the caller and once the task is done, the caller must destroy it. The
   `ClientReadReactor::OnDone` event is about that situation.
@@ -195,6 +208,7 @@ The three callbacks are: `OnReadDoneOkCallback`, `OnReadDoneNOkCallback`, and `O
 ````
 When `ClientReadReactor::OnDone` event is handled in the proxy reactor, the `OnDoneCallback` callback function is called
 with the following arguments:
+
  - the pointer to the proxy reactor instance (i.e. `this`)
  - a reference to the `grpc::Status` content
 
@@ -203,6 +217,7 @@ with the following arguments:
 ````
 When `ClientReadReactor::OnReadDone` event with a negative OK is handled in the proxy reactor, the `OnReadDoneNOkCallback`
 callback function is called with the following argument:
+
  - the pointer to the proxy reactor instance (i.e. `this`)
 
 ````
@@ -210,6 +225,7 @@ callback function is called with the following argument:
 ````
 When `ClientReadReactor::OnReadDone` event with a positive OK is handled in the proxy reactor, the `OnReadDoneOkCallback`
 callback function is called with the following argument:
+
  - the pointer to the proxy reactor instance (i.e. `this`)
  - a reference to the `Response` content
 
@@ -218,6 +234,7 @@ is provided to ease some early-reaction logics or to select situations where the
 One difference is that callback requires a return value: a boolean flag.
 
 When it returns:
+
 - true, the proxy reactor will hold the RPC and no more concurrent gRPC events are possible. That way, it
 is thread-safe to access the reactor from a different processing thread without concurrent events (e.g. RPC termination).
 Once the proceeding of the response is done, the RPC must be signaled to start a new read and then the hold can be removed.
@@ -225,7 +242,9 @@ Once the proceeding of the response is done, the RPC must be signaled to start a
 be useful when the responses are put on a queue or when it is discarded.
 
 ### Class functions
+
 Three public functions can be called by the application side:
+
 - `bool GetResponse(ResponseT& response)`
 - `const grpc::Status& Status()`
 - `void TryCancel()`
@@ -245,7 +264,9 @@ is meaningless.
 sent anytime from any thread. The goal of that signal is to provoke (immediately or later) the `ClientReadReactor::OnDone` event.
 
 ## Code snippet
+
 On purpose, the following examples are coming from a sandbox code using a 3rdparty eventloop library.
+
  - https://github.com/anderewrey/grpc_reactor_routeguide/blob/master/client/route_guide_proxy_callback_client.cpp
  - https://github.com/amoldhamale1105/EventLoop
 
@@ -253,6 +274,7 @@ For the sanity of the reader, some passages are removed and the code logic reduc
 to read the original code from the route_guide_proxy_callback_client.cpp file.
 
 ### Instantiation of the ProxyReadReactor class
+
 The following snippet instances a `ProxyReadReactor` dedicated to the `ListFeatures` RPC of the `routeguide` API. It fills
 a callback structure with the related binded functions. In this example, the callbacks are binded to the eventloop notification
 function as an `kListFeaturesOnReadDoneOk`, `kListFeaturesOnReadDoneNOk`, or `kListFeaturesOnDone` event.
@@ -284,6 +306,7 @@ From the PlantUML sequence diagram, the corresponding points are:
 ````
 
 ###  OnDoneCallback
+
 IMPORTANT: The last action to do when handling that event is to delete the reactor instance: that instance can't be
 reused by gRPC and a new instance must be allocated for a new usage. In typical gRPC examples, the reactors are
 selfdestroying (explicit `delete this` or on class d-tor execution) once that event is done: https://grpc.io/docs/languages/cpp/callback/.
@@ -303,6 +326,7 @@ From the PlantUML sequence diagram, the corresponding points are 4.10 and 4.11.
 ````
 
 ###  OnReadDoneNOkCallback
+
 The following snippet is an example code of the application-side callback. That code is meant to be executed on the main
 application thread, scheduled by the eventloop of the application. In this example, that lambda is used as the callback
 and given to the eventloop when the `kListFeaturesOnReadDoneNOk` is notified. The interest of that callback is to take
@@ -316,6 +340,7 @@ From the PlantUML sequence diagram, the corresponding point is 4.8
 ````
 
 ###  OnReadDoneOkCallback
+
 The following snippet is an example code of the application-side callback. That code is meant to be executed on the main
 application thread, scheduled by the eventloop of the application. In this example, that lambda is used as the callback
 and given to the eventloop when the `kListFeaturesOnReadDoneOk` is notified. The main goal of that callback is to read
@@ -331,6 +356,7 @@ From the PlantUML sequence diagram, the corresponding points are from 2.8 to 2.1
 ````
 
 ## PlantUML sequence flow
+
 ```plantuml
 @startuml
 !pragma teoz true

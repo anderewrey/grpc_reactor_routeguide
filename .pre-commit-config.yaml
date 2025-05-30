@@ -14,12 +14,12 @@ repos:
       - id: trailing-whitespace
       - id: forbid-submodules
 
-  # - repo: https://github.com/igorshubovych/markdownlint-cli
-  #   rev: v0.44.0
-  #   hooks:
-  #     - id: markdownlint
-  #       # Disable rule MD013: maximum line length 80 columns
-  #       args: [ --disable=MD013 ]
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.44.0
+    hooks:
+      - id: markdownlint
+        # Disable rule MD013: maximum line length 80 columns
+        args: [ --disable=MD013 ]
 
   # - repo: https://github.com/cheshirekow/cmake-format-precommit
   #   rev: v0.6.13
