@@ -23,6 +23,7 @@
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+#include <gflags/gflags.h>
 
 #include <chrono>
 #include <memory>
@@ -168,8 +169,9 @@ int main(int argc, char** argv) {
   assert(main_thread == std::this_thread::get_id());
   spdlog::set_pattern("[%H:%M:%S.%f][%n][%t][%^%L%$] %v");
 
-  // Expect only arg: --db_path=path/to/route_guide_db.json.
-  db_utils::ParseDb(db_utils::GetDbFileContent(argc, argv), feature_list_);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
+
+  db_utils::ParseDb(db_utils::GetDbFileContent(), feature_list_);
 
   RouteGuideClient guide(
       grpc::CreateChannel("localhost:50051", grpc::InsecureChannelCredentials()));

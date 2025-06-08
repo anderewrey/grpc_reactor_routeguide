@@ -33,6 +33,7 @@ The following third-parties are fetched by CMake and compiled for the need of th
 
 - [EventLoop](https://github.com/amoldhamale1105/EventLoop) library which follows the state-of-the-art of eventloop
   mechanisms and its replacement with similar library or implementation should be easy.
+- [gflags](https://github.com/gflags/gflags) library for command-line arguments processing.
 - [glaze](https://github.com/stephenberry/glaze) library to handle the JSON database in a better way than the
   original code from the gRPC example.
 - [spdlog](https://github.com/gabime/spdlog) library for logging using the {fmt} style.

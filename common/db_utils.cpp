@@ -25,24 +25,19 @@
 
 #include <spdlog/spdlog.h>  // NOLINT(build/include_order)
 #include <glaze/glaze.hpp>
+#include <gflags/gflags.h>
 
 #include "generated/route_guide.grpc.pb.h"
 #include "proto/proto_utils.h"
 
+// Expect only arg: --db_path=path/to/route_guide_db.json.
+DEFINE_string(db_path, "route_guide_db.json", "path to .json database file");
+
 using routeguide::Feature;
 
-std::string db_utils::GetDbFileContent(int argc, char** argv) {
-  std::string db_path = "route_guide_db.json";
-  static constexpr std::string_view arg_str{"--db_path"};
-  if (argc > 1) {
-    const std::string_view argv_1{argv[1]};
-    if (auto start_position = argv_1.find(arg_str); start_position != std::string::npos) {
-      start_position += arg_str.size();
-      if (argv_1[start_position] == ' ' || argv_1[start_position] == '=') {
-        db_path = argv_1.substr(start_position + 1);
-      }
-    }
-  }
+std::string db_utils::GetDbFileContent() {
+  static const std::string db_path = FLAGS_db_path.empty() ? "route_guide_db.json" : FLAGS_db_path;
+
   std::ifstream db_file(db_path);
   if (!db_file.is_open()) {
     spdlog::critical("Failed to open {}", db_path);

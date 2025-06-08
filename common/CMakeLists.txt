@@ -14,8 +14,14 @@ FetchContent_Declare(spdlog
         GIT_TAG v1.15.2
         GIT_SHALLOW TRUE
 )
+# Command-line parser
+FetchContent_Declare(gflags
+        GIT_REPOSITORY https://github.com/gflags/gflags.git
+        GIT_TAG v2.2.2
+        GIT_SHALLOW TRUE
+)
 
-FetchContent_MakeAvailable(glaze spdlog)
+FetchContent_MakeAvailable(glaze spdlog gflags)
 
 #
 # rg_common
@@ -30,6 +36,7 @@ target_include_directories(rg_common
 target_link_libraries(rg_common
     PUBLIC
         spdlog::spdlog
+        gflags::gflags
     PRIVATE
         glaze::glaze
         rg_proto_utils
