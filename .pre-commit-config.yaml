@@ -19,7 +19,8 @@ repos:
     hooks:
       - id: markdownlint
         # Disable rule MD013: maximum line length 80 columns
-        args: [ --disable=MD013 ]
+        #args: [ "--disable MD013 MD024 -- " ]
+        args: [ --config=markdownlint.yaml ]
 
   # - repo: https://github.com/cheshirekow/cmake-format-precommit
   #   rev: v0.6.13
