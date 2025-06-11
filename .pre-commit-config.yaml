@@ -37,6 +37,5 @@ repos:
                  -build/c++11,
                  -build/c++17,
                  -build/namespaces,
-                 -legal/copyright,
                  -whitespace/indent_namespace",
                 "--linelength=120" ]
