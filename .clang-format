@@ -1,0 +1,12 @@
+---
+# Google style for C++ files
+BasedOnStyle: Google
+Language: Cpp
+ColumnLimit: 120
+
+---
+# Don't format .proto files.
+Language: Proto
+DisableFormat: true
+
+---

@@ -1,3 +1,8 @@
+///
+/// SPDX-License-Identifier: Apache-2.0
+/// Copyright 2024-2025 anderewrey
+///
+
 #pragma once
 
 #include <string>
@@ -8,6 +13,6 @@
 using FeatureList = std::vector<routeguide::Feature>;
 
 namespace db_utils {
-std::string GetDbFileContent(int argc, char** argv);
+std::string GetDbFileContent();
 void ParseDb(const std::string& db, FeatureList& feature_list);
 }  // namespace db_utils

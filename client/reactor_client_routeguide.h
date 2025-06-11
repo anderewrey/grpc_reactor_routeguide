@@ -1,13 +1,17 @@
+///
+/// SPDX-License-Identifier: Apache-2.0
+/// Copyright 2024-2025 anderewrey
+///
+
 #pragma once
 
 #include <grpcpp/client_context.h>
 
-#include <cstddef>
 #include <memory>
 #include <utility>
 
-#include "route_guide.pb.h"
-#include "route_guide.grpc.pb.h"
+#include "generated/route_guide.pb.h"
+#include "generated/route_guide.grpc.pb.h"
 
 #include "client/reactor_client.h"
 
@@ -88,4 +92,3 @@ class ClientReactor final : public RpcReactor::Client::ProxyReadReactor<Response
   }
 };
 }  // namespace routeguide::ListFeatures
-

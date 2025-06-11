@@ -1,36 +1,35 @@
-#include "common/db_utils.h"
+///
+/// SPDX-License-Identifier: Apache-2.0
+/// Copyright 2024-2025 anderewrey
+///
 
-#include <glaze/glaze.hpp>
+#include "common/db_utils.h"
 
 #include <cctype>
 #include <fstream>
-#include <iostream>
-#include <random>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include <glaze/glaze.hpp>
+#include <gflags/gflags.h>  // NOLINT(build/include_order)
+#include <spdlog/spdlog.h>  // NOLINT(build/include_order)
+
 #include "generated/route_guide.grpc.pb.h"
 #include "proto/proto_utils.h"
 
+// Expect only arg: --db_path=path/to/route_guide_db.json.
+DEFINE_string(db_path, "route_guide_db.json", "path to .json database file");
+
 using routeguide::Feature;
 
-std::string db_utils::GetDbFileContent(int argc, char** argv) {
-  std::string db_path = "route_guide_db.json";
-  static constexpr std::string_view arg_str{"--db_path"};
-  if (argc > 1) {
-    const std::string_view argv_1{argv[1]};
-    if (auto start_position = argv_1.find(arg_str); start_position != std::string::npos) {
-      start_position += arg_str.size();
-      if (argv_1[start_position] == ' ' || argv_1[start_position] == '=') {
-        db_path = argv_1.substr(start_position + 1);
-      }
-    }
-  }
+std::string db_utils::GetDbFileContent() {
+  static const std::string db_path = FLAGS_db_path.empty() ? "route_guide_db.json" : FLAGS_db_path;
+
   std::ifstream db_file(db_path);
   if (!db_file.is_open()) {
-    std::cout << "Failed to open " << db_path << std::endl;
+    spdlog::critical("Failed to open {}", db_path);
     abort();
   }
   std::stringstream db;
@@ -96,7 +95,7 @@ class RouteGuideDBParser {
     return eq;
   }
 
-  [[nodiscard]] long ReadNextAsNumerical() {
+  [[nodiscard]] long ReadNextAsNumerical() {  // NOLINT(runtime/int)
     const auto start = current_;
     while (current_ != db_.size() &&
            db_[current_] != ',' &&
@@ -121,10 +120,10 @@ void db_utils::ParseDb(const std::string& db, FeatureList& feature_list) {
   RouteGuideDBParser parser(db);
   while (!parser.Finished()) {
     if (!parser.TryParseOne(feature_list.emplace_back())) {
-      std::cout << "Error parsing the db file";
+      spdlog::error("Error parsing the db file");
       feature_list.clear();
       break;
     }
   }
-  std::cout << "DB parsed, loaded " << feature_list.size() << " features." << std::endl;
+  spdlog::info("DB parsed, loaded {} features.", feature_list.size());
 }

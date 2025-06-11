@@ -1,3 +1,8 @@
+///
+/// SPDX-License-Identifier: Apache-2.0
+/// Copyright 2024-2025 anderewrey
+///
+
 #include "proto/proto_utils.h"
 
 #include <algorithm>
@@ -22,7 +27,8 @@ Point proto_utils::MakePoint(const int32_t latitude, const int32_t longitude) {
   return p;
 }
 
-Rectangle proto_utils::MakeRectangle(const int32_t latitude_lo, const int32_t longitude_lo, const int32_t latitude_hi, const int32_t longitude_hi) {
+Rectangle proto_utils::MakeRectangle(const int32_t latitude_lo, const int32_t longitude_lo,
+                                     const int32_t latitude_hi, const int32_t longitude_hi) {
   Rectangle rect;
   *rect.mutable_lo() = MakePoint(latitude_lo, longitude_lo);
   *rect.mutable_hi() = MakePoint(latitude_hi, longitude_hi);

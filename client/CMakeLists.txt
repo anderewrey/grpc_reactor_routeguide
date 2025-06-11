@@ -2,8 +2,9 @@ include(FetchContent)
 # Minimalist EventLoop support
 FetchContent_Declare(EventLoop
         GIT_REPOSITORY https://github.com/amoldhamale1105/EventLoop.git
-        GIT_TAG v1.2.0
+        GIT_TAG e16fa52aae1d58a994fd93808c62fde14adb62f1 # Includes my patch, no tag yet available
         GIT_SHALLOW TRUE
+        UPDATE_DISCONNECTED 1
 )
 FetchContent_MakeAvailable(EventLoop)
 
