@@ -26,39 +26,33 @@ DEFINE_string(db_path, "route_guide_db.json", "path to .json database file");
 using routeguide::Feature;
 
 // The data representation for the route_guide database file and requires to have exactly the following JSON structure:
-// [{"location": { "latitude": 123, "longitude": 456}, "name": "the name can be empty" }, { ... } ... ]
-struct FeatureData {
+// [{"location": { "latitude": 123, "longitude": 456}, "name": "the name can be empty" }, { ... }, ... ]
+struct FeatureJson {
   struct Location {
     int latitude{};
     int longitude{};
   } location;
   std::string name;
 };
-using FeatureDataList = std::vector<FeatureData>;
+using FeatureJsonList = std::vector<FeatureJson>;
 
-std::string db_utils::GetDbFileContent() {
-  static const std::string db_path = FLAGS_db_path.empty() ? "route_guide_db.json" : FLAGS_db_path;
-
-  std::ifstream db_file(db_path);
-  if (!db_file.is_open()) {
-    spdlog::critical("Failed to open {}", db_path);
-    abort();
+FeatureList db_utils::GetDbFileContent() {
+  if (FLAGS_db_path.empty()) {
+    spdlog::error("arg --db_path is empty");
+    return {};
   }
-  std::stringstream db;
-  db << db_file.rdbuf();
 
-  return db.str();
-}
-
-void db_utils::ParseDb(const std::string& db, FeatureList& feature_list) {
-  feature_list.clear();
-  FeatureDataList features;
-  if (auto error = glz::read_json(features, db)) {
+  FeatureJsonList json_data;
+  if (const auto error = glz::read_file_json(json_data, FLAGS_db_path, std::string())) {
     spdlog::error("Error parsing the db file: code {} {}", fmt::underlying(error.ec), glz::nameof(error.ec));
-    return;
+    return {};
   }
-  for (const auto& [location, name] : features) {
+
+  FeatureList feature_list;
+  for (const auto& [location, name] : json_data) {
     feature_list.emplace_back(proto_utils::MakeFeature(name, location.latitude, location.longitude));
   }
+
   spdlog::info("DB parsed, loaded {} features.", feature_list.size());
+  return feature_list;
 }

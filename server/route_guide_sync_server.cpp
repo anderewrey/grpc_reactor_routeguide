@@ -158,7 +158,7 @@ int main(int argc, char** argv) {
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-  db_utils::ParseDb(db_utils::GetDbFileContent(), feature_list_);
+  feature_list_ = db_utils::GetDbFileContent();
   RunServer();
 
   gflags::ShutDownCommandLineFlags();
