@@ -13,6 +13,5 @@
 using FeatureList = std::vector<routeguide::Feature>;
 
 namespace db_utils {
-std::string GetDbFileContent();
-void ParseDb(const std::string& db, FeatureList& feature_list);
+FeatureList GetDbFileContent();
 }  // namespace db_utils
