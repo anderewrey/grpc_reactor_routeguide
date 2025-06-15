@@ -17,7 +17,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <iostream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -131,7 +130,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
         logger_.info("EXIT     |");
         delete this;
       }
-      void OnReadDone(bool ok) override {
+      void OnReadDone(const bool ok) override {
         if (ok) {
           logger_.info("REQUEST  | Point: {}", point_.ShortDebugString());
           point_count_++;
@@ -181,7 +180,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
         logger_.info("EXIT     | OnDone()");
         delete this;
       }
-      void OnReadDone(bool ok) override {
+      void OnReadDone(const bool ok) override {
         if (ok) {
           if (note_.message().empty()) {
             logger_.info("RESPONSE | RouteNote: {}", note_.ShortDebugString());
@@ -198,11 +197,10 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
           // again to append the received note to the existing vector.
           mu_.lock();
           logger_.info("REQUEST  | RouteNote: {}", note_.ShortDebugString());
-          std::copy_if(received_notes_.begin(), received_notes_.end(),
-                       std::back_inserter(to_send_notes_),
-                       [this](const RouteNote& note) {
-                         return proto_utils::AreEqual(note.location(), note_.location());
-                       });
+          std::ranges::copy_if(received_notes_, std::back_inserter(to_send_notes_),
+                               [this](const RouteNote& note) {
+                                 return (note.location() == note_.location());
+                               });
           mu_.unlock();
           notes_iterator_ = to_send_notes_.begin();
           NextWrite();

@@ -90,11 +90,6 @@ bool proto_utils::IsPointWithinRectangle(const Rectangle& rectangle, const Point
           point.latitude() >= bottom && point.latitude() <= top);
 }
 
-bool proto_utils::AreEqual(const Point& point1, const Point& point2) {
-  return point1.latitude() == point2.latitude() &&
-         point1.longitude() == point2.longitude();
-}
-
 Feature proto_utils::GetFeatureFromPoint(const FeatureList& feature_list, const Point& point) {
   Feature feature;
   if (const auto name = GetFeatureName(point, feature_list)) {
@@ -109,13 +104,18 @@ Feature proto_utils::GetFeatureFromPoint(const FeatureList& feature_list, const 
 const Point& proto_utils::GetRandomPoint(const FeatureList& feature_list) {
   static unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
   static std::default_random_engine generator(seed);
-  std::uniform_int_distribution<int> feature_distribution(0, feature_list.size() - 1);
+  std::uniform_int_distribution<unsigned> feature_distribution(0, feature_list.size() - 1);
   return feature_list[feature_distribution(generator)].location();
 }
 
-int proto_utils::GetRandomTimeDelay() {
+unsigned proto_utils::GetRandomTimeDelay() {
   static unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
   static std::default_random_engine generator(seed);
-  static std::uniform_int_distribution<int> delay_distribution(500, 1500);
+  static std::uniform_int_distribution<unsigned> delay_distribution(500, 1500);
   return delay_distribution(generator);
+}
+
+bool routeguide::operator==(const Point& point1, const Point& point2) {
+  return point1.latitude() == point2.latitude() &&
+         point1.longitude() == point2.longitude();
 }

@@ -5,7 +5,6 @@
 
 #pragma once
 
-#include <string>
 #include <vector>
 
 #include "generated/route_guide.grpc.pb.h"

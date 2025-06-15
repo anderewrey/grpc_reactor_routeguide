@@ -21,8 +21,11 @@ routeguide::RouteNote MakeRouteNote(const std::string& message, int32_t latitude
 double GetDistance(const routeguide::Point& start, const routeguide::Point& end);
 const char* GetFeatureName(const routeguide::Point& point, const FeatureList& feature_list);
 bool IsPointWithinRectangle(const routeguide::Rectangle& rectangle, const routeguide::Point& point);
-bool AreEqual(const routeguide::Point& point1, const routeguide::Point& point2);
 routeguide::Feature GetFeatureFromPoint(const FeatureList& feature_list, const routeguide::Point& point);
 const routeguide::Point& GetRandomPoint(const FeatureList& feature_list);
-int GetRandomTimeDelay();
+unsigned GetRandomTimeDelay();
 }  // namespace proto_utils
+
+namespace routeguide {
+bool operator==(const Point& point1, const Point& point2);
+}  // namespace routeguide

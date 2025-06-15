@@ -59,8 +59,7 @@ class RouteGuideClient {
       logger.info("ENTER    |");
       ClientContext context;
       logger.info("REQUEST  | Point: {}", point.ShortDebugString());
-      Status status = stub_->GetFeature(&context, point, &feature);
-      if (!status.ok()) {
+      if (const auto status = stub_->GetFeature(&context, point, &feature); !status.ok()) {
         logger.info("EXIT     | OK: {}  msg: {}", status.ok(), status.error_message());
         return false;
       }
@@ -89,7 +88,7 @@ class RouteGuideClient {
       logger.info("RESPONSE | Feature: {}", feature.ShortDebugString());
     }
     logger.info("EXIT     | Pre-Finish()");
-    Status status = reader->Finish();
+    const auto status = reader->Finish();
     logger.info("EXIT     | Post-Finish() OK: {}  msg: {}", status.ok(), status.error_message());
   }
 
@@ -98,7 +97,7 @@ class RouteGuideClient {
     logger.info("ENTER    |");
     RouteSummary summary;
     ClientContext context;
-    const int kPoints = 10;
+    constexpr int kPoints = 10;
 
     auto writer = stub_->RecordRoute(&context, &summary);
     for (int i = 0; i < kPoints; i++) {
@@ -113,7 +112,7 @@ class RouteGuideClient {
     logger.info("EXIT     | WritesDone");
     writer->WritesDone();
     logger.info("EXIT     | Finish");
-    Status status = writer->Finish();
+    const auto status = writer->Finish();
     logger.info("RESPONSE | Status: OK: {} msg: {} RouteSummary: {}",
                 status.ok(), status.error_message(), summary.ShortDebugString());
     logger.info("EXIT     |");
@@ -125,10 +124,10 @@ class RouteGuideClient {
     ClientContext context;
     auto stream = stub_->RouteChat(&context);
     std::thread writer([stream = stream.get(), &logger]() {
-      std::vector<RouteNote> notes{proto_utils::MakeRouteNote("First message", 1, 1),
-                                   proto_utils::MakeRouteNote("Second message", 2, 2),
-                                   proto_utils::MakeRouteNote("Third message", 3, 3),
-                                   proto_utils::MakeRouteNote("First message again", 1, 1)};
+      std::vector notes{proto_utils::MakeRouteNote("First message", 1, 1),
+                        proto_utils::MakeRouteNote("Second message", 2, 2),
+                        proto_utils::MakeRouteNote("Third message", 3, 3),
+                        proto_utils::MakeRouteNote("First message again", 1, 1)};
       for (const RouteNote& note : notes) {
       logger.info("REQUEST  | RouteNote: {}", note.ShortDebugString());
         stream->Write(note);
@@ -146,7 +145,7 @@ class RouteGuideClient {
     logger.info("EXIT     | waiting for writer.join()");
     writer.join();
     logger.info("EXIT     | Pre-Finish()");
-    Status status = stream->Finish();
+    const auto status = stream->Finish();
     logger.info("EXIT     | Post-Finish() OK: {}  msg: {}", status.ok(), status.error_message());
   }
 

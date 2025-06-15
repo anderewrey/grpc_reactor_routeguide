@@ -120,9 +120,9 @@ class RouteGuideImpl final : public RouteGuide::Service {
     RouteNote note;
     while (stream->Read(&note)) {
       logger.info("REQUEST  | RouteNote: {}", note.ShortDebugString());
-      std::unique_lock<std::mutex> lock(mu_);
+      std::unique_lock lock(mu_);
       for (const RouteNote& n : received_notes_) {
-        if (proto_utils::AreEqual(n.location(), note.location())) {
+        if (n.location() == note.location()) {
           logger.info("RESPONSE | RouteNote: {}", n.ShortDebugString());
           stream->Write(n);
         }

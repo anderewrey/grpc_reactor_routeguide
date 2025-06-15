@@ -68,8 +68,7 @@ class RouteGuideClient {
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::GetFeature::ClientReactor*>(event->getData());
       assert(reactor == reactor_.get());
-      const auto status = reactor->Status();
-      if (status.ok()) {
+      if (const auto status = reactor->Status(); status.ok()) {
         // (Point 3.6) extracts response
         routeguide::Feature response;
         reactor->GetResponse(response);

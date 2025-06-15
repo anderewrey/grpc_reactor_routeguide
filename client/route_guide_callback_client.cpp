@@ -65,7 +65,7 @@ class RouteGuideClient {
       bool done = false;
       logger.info("REQUEST  | Point: {}", point.ShortDebugString());
       stub_->async()->GetFeature(&context, &point, &feature,
-                                 [&result, &mu, &cv, &done, &feature, &logger](Status status) {
+                                 [&result, &mu, &cv, &done, &feature, &logger](const Status& status) {
         logger.info("RESPONSE | Status: OK: {} msg:{} Feature: {}",
                     status.ok(), status.error_message(), feature.ShortDebugString());
         std::lock_guard<std::mutex> lock(mu);
@@ -134,7 +134,7 @@ class RouteGuideClient {
     };
 
     Reader reader(stub_.get(), proto_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000));
-    Status status = reader.Await();
+    const auto status = reader.Await();
     logger_ListFeatures->info("EXIT     | post-Await() OK: {} msg: {}", status.ok(), status.error_message());
   }
 
@@ -208,7 +208,7 @@ class RouteGuideClient {
     };
     RouteSummary summary;
     Recorder recorder(stub_.get(), feature_list_);
-    Status status = recorder.Await(summary);
+    const auto status = recorder.Await(summary);
     logger_RecordRoute->info("EXIT     | post-Await() OK: {} msg: {} RouteSummary: {}",
                              status.ok(), status.error_message(), summary.ShortDebugString());
   }
@@ -296,7 +296,7 @@ class RouteGuideClient {
     };
 
     Chatter chatter(stub_.get());
-    Status status = chatter.Await();
+    const auto status = chatter.Await();
     logger_RouteChat->info("EXIT     | post-Await() OK: {} msg: {}", status.ok(), status.error_message());
   }
 
