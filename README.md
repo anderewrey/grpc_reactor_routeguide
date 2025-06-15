@@ -7,7 +7,7 @@ To learn more about:
 - [Asynchronous callback API](https://grpc.io/docs/languages/cpp/callback/) and the
   [best practices](https://grpc.io/docs/languages/cpp/best_practices/) about gRPC services.
 - [Proto3 syntax](https://protobuf.dev/programming-guides/proto3/) and the
-  [best practices](https://protobuf.dev/programming-guides/best-practices/) about RPC messages.
+  [best practices](https://protobuf.dev/best-practices/) about RPC messages.
 
 This project shows the design and usages of the client-side implementation for applications using gRPC.
 This project is based on gRPC library and provides an implementation to:
