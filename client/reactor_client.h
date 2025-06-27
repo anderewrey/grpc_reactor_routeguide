@@ -15,9 +15,25 @@
 
 /************************
  * gRPC Reactor: Following code belongs to the API implementation
- * It is as much as generic possible
+ * It is generic as much as possible
  ************************/
 namespace RpcReactor::Client {
+
+/// Template callbacks for unary RPC client reactor. It contains all available callbacks slots
+/// needed by specialized RPC client reactors.
+/// @tparam ResponseT type of protobuf message the RPC handles
+template <class ResponseT>
+requires std::derived_from<ResponseT, google::protobuf::Message>
+struct ProxyUnaryCallbacks {
+  /// Function signature for ClientUnaryReactor::OnDone event. This event function is called by gRPC when the RPC is
+  /// done and no more operation is possible with that reactor instance.
+  /// @param reactor instance pointer on which the event is received
+  /// @param status reference to the reason of the event
+  /// @param response reference to the response message the reactor received
+  using OnDoneCallback = std::function<void(grpc::ClientUnaryReactor*, const grpc::Status&, const ResponseT&)>;
+  OnDoneCallback done;  ///< Slot for ClientUnaryReactor::OnDone event
+};
+
 /// template class for unary RPC client reactor. This class is derived again by
 /// specialized RPC client reactors.
 /// @tparam ResponseT type of protobuf message the RPC handles
@@ -25,23 +41,10 @@ template <class ResponseT>
 requires std::derived_from<ResponseT, google::protobuf::Message>
 class ProxyUnaryReactor : public grpc::ClientUnaryReactor {
  public:
-  /// Function signature for ClientUnaryReactor::OnDone event. This event function is called by gRPC when the RPC is
-  /// done and no more operation is possible with that reactor instance.
-  /// @param reactor instance pointer on which the event is received
-  /// @param status reference to the reason of the event
-  /// @param response reference to the response message the reactor received
-  using OnDoneCallback = std::function<void(ProxyUnaryReactor*, const grpc::Status&, const ResponseT&)>;
-  /// all the available callbacks slots for this reactor class
-  /// TODO(ajcote) Would be nicer to have these callback signatures outside of the template class. But to achieve
-  ///  this, it means the callback must also be generic about the protobuf response message.
-  struct callbacks {
-    OnDoneCallback done;  ///< Slot for ClientUnaryReactor::OnDone event
-  };
-
   /// Constructor of the reactor class. It moves the received objects as members.
   /// @param context given to this reactor about the ongoing RPC method
   /// @param cbs given to this reactor to use as callable functions
-  ProxyUnaryReactor(std::unique_ptr<grpc::ClientContext> context, callbacks&& cbs)
+  ProxyUnaryReactor(std::unique_ptr<grpc::ClientContext> context, ProxyUnaryCallbacks<ResponseT>&& cbs)
       : context_(std::move(context)),
         cbs_(std::move(cbs)) {}
 
@@ -110,7 +113,7 @@ class ProxyUnaryReactor : public grpc::ClientUnaryReactor {
 
  private:
   grpc::Status status_;
-  callbacks cbs_;
+  ProxyUnaryCallbacks<ResponseT> cbs_;
 
   // The application MAY call (but should not) GetResponse() while a gRPC thread is on OnDone().
   // That concurrent situation should not happen by design, unless the application
@@ -120,13 +123,12 @@ class ProxyUnaryReactor : public grpc::ClientUnaryReactor {
   std::atomic_bool response_ready_{false};
 };
 
-/// template class for stream-reader RPC client reactor. This class is derived again by
-/// specialized RPC client reactors.
+/// Template callbacks for stream-reader RPC client reactor. It contains all available callbacks slots
+/// needed by specialized RPC client reactors.
 /// @tparam ResponseT type of protobuf message the RPC handles
 template <class ResponseT>
 requires std::derived_from<ResponseT, google::protobuf::Message>
-class ProxyReadReactor : public grpc::ClientReadReactor<ResponseT> {
- public:
+struct ProxyReadCallbacks {
   /// Function signature for ClientReadReactor::OnReadDone event with positive OK flag
   /// @param reactor instance pointer on which the event is received
   /// @param response reference to the response message the reactor received
@@ -134,29 +136,34 @@ class ProxyReadReactor : public grpc::ClientReadReactor<ResponseT> {
   ///         The reactor is put on hold in the meantime.
   /// @retval false the response is unwanted and the reactor can immediately execute a new read operation to obtain
   ///         a new response.
-  using OnReadDoneOkCallback = std::function<bool(ProxyReadReactor*, const ResponseT&)>;
+  using OnReadDoneOkCallback = std::function<bool(grpc::ClientReadReactor<ResponseT>*, const ResponseT&)>;
+  OnReadDoneOkCallback ok;    ///< Slot for ClientReadReactor::OnReadDone event with positive OK flag
+
   /// Function signature for ClientReadReactor::OnReadDone event with negative OK flag
   /// @param reactor instance pointer on which the event is received
-  using OnReadDoneNOkCallback = std::function<void(ProxyReadReactor*)>;
+  using OnReadDoneNOkCallback = std::function<void(grpc::ClientReadReactor<ResponseT>*)>;
+  OnReadDoneNOkCallback nok;  ///< Slot for ClientReadReactor::OnReadDone event with negative OK flag
+
   /// Function signature for ClientReadReactor::OnDone event. This event function is called by gRPC when the RPC is
   /// done and no more operation is possible with that reactor instance.
   /// @param reactor instance pointer on which the event is received
   /// @param status reference to the reason of the event
-  using OnDoneCallback = std::function<void(ProxyReadReactor*, const grpc::Status&)>;
-  /// all the available callbacks slots for this reactor class
-  /// TODO(ajcote) Would be nicer to have these callback signatures outside of the template class. But to achieve
-  ///  this, it means the callback must also be generic about the protobuf response message.
-  struct callbacks {
-    OnReadDoneOkCallback ok;    ///< Slot for ClientReadReactor::OnReadDone event with positive OK flag
-    OnReadDoneNOkCallback nok;  ///< Slot for ClientReadReactor::OnReadDone event with negative OK flag
-    OnDoneCallback done;        ///< Slot for ClientReadReactor::OnDone event
-  };
+  using OnDoneCallback = std::function<void(grpc::ClientReadReactor<ResponseT>*, const grpc::Status&)>;
+  OnDoneCallback done;        ///< Slot for ClientReadReactor::OnDone event
+};
 
+/// Template class for stream-reader RPC client reactor. This class is derived again by
+/// specialized RPC client reactors.
+/// @tparam ResponseT type of protobuf message the RPC handles
+template <class ResponseT>
+requires std::derived_from<ResponseT, google::protobuf::Message>
+class ProxyReadReactor : public grpc::ClientReadReactor<ResponseT> {
+ public:
   /// Constructor of the reactor class. It moves the received objects as members.
   /// @param context given to this reactor about the ongoing RPC method
   /// @param cbs given to this reactor to use as callable functions
   ProxyReadReactor(std::unique_ptr<grpc::ClientContext> context,
-                   callbacks&& cbs)
+                   ProxyReadCallbacks<ResponseT>&& cbs)
       : context_(std::move(context)),
         cbs_(std::move(cbs)) { }
 
@@ -269,7 +276,7 @@ class ProxyReadReactor : public grpc::ClientReadReactor<ResponseT> {
 
  private:
   grpc::Status status_;
-  callbacks cbs_;
+  ProxyReadCallbacks<ResponseT> cbs_;
 
   // The application MAY call GetResponse() while a gRPC thread is on OnReadDone().
   // That concurrent situation should not happen by design, unless the application

@@ -129,6 +129,7 @@ class RouteGuideClient {
 
   void GetFeature(routeguide::Point point) {
     using routeguide::GetFeature::ClientReactor;
+    using routeguide::GetFeature::Callbacks;
     using routeguide::GetFeature::RpcKey;
     auto& logger = *logger_GetFeature;
     if (reactor_map_[RpcKey]) {
@@ -136,7 +137,7 @@ class RouteGuideClient {
                   fmt::ptr(reactor_map_[RpcKey].get()), point.ShortDebugString());
       return;
     }
-    ClientReactor::callbacks cbs;
+    Callbacks cbs;
     // (Point 3.4) TriggerEvent: OnDone
     cbs.done = std::bind(static_cast<void(*)(const std::string&, void*)>(&EventLoop::TriggerEvent),
                          kGetFeatureOnDone, std::placeholders::_1);
@@ -150,6 +151,7 @@ class RouteGuideClient {
 
   void ListFeatures(routeguide::Rectangle rect) {
     using routeguide::ListFeatures::ClientReactor;
+    using routeguide::ListFeatures::Callbacks;
     using routeguide::ListFeatures::RpcKey;
     auto& logger = *logger_ListFeatures;
 
@@ -159,7 +161,7 @@ class RouteGuideClient {
       return;
     }
 
-    ClientReactor::callbacks cbs;
+    Callbacks cbs;
     // (Point 2.4) TriggerEvent: OnReadDoneOk
     cbs.ok = [](auto* reactor, const routeguide::Feature&) {
       assert(main_thread != std::this_thread::get_id());  // gRPC thread
