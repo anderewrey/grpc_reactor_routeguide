@@ -29,7 +29,7 @@ When `ClientUnaryReactor::OnDone` event is handled in the proxy reactor, the arg
 function are:
 
 ````cpp
-using OnDoneCallback = std::function<void(ProxyUnaryReactor* reactor, const grpc::Status&, const ResponseT&)>;
+using OnDoneCallback = std::function<void(grpc::ClientUnaryReactor* reactor, const grpc::Status&, const ResponseT&)>;
 ````
 
 - the pointer to the proxy reactor instance (i.e. `this`)
@@ -79,15 +79,19 @@ function as an `kGetFeatureOnDone` event.
 From the PlantUML sequence diagram, the corresponding points are:
 
 - 1.x : the `std::make_unique<ClientReactor>(...)` line
-- 3.4 : the `cbs.cb_done = std::bind(...)` line
+- 3.4 : the `cbs.done = [](auto* reactor, const grpc::Status&, const ResponseT&) {...}` lines
 
 ````cpp
 #include "api_routeguide.h"
 void GetFeature(routeguide::Point point) {
   using routeguide::GetFeature::ClientReactor;
+  using routeguide::GetFeature::Callbacks;
+  using routeguide::GetFeature::ResponseT;
   using routeguide::GetFeature::RpcKey;
-  ClientReactor::callbacks cbs;
-  cbs.cb_done = std::bind(&EventLoop::TriggerEvent, kGetFeatureOnDone, std::placeholders::_1);  // OnDoneCallback slot
+  Callbacks cbs;
+  cbs.done = [](auto* reactor, const grpc::Status&, const ResponseT&) {
+    EventLoop::TriggerEvent(kGetFeatureOnDone, reactor);  // Signal OnDoneCallback event from gRPC thread
+  };
   reactor_map_[RpcKey] = std::make_unique<ClientReactor>(*stub_,
                                                          std::move(routeguide::CreateClientContext()),
                                                          std::move(point),
@@ -212,7 +216,7 @@ and [reactor](https://www.modernescpp.com/index.php/reactor/) design patterns:
 The three callbacks are: `OnReadDoneOkCallback`, `OnReadDoneNOkCallback`, and `OnDoneCallback`.
 
 ````cpp
-using OnDoneCallback = std::function<void(ProxyReadReactor* reactor, const grpc::Status&)>;
+using OnDoneCallback = std::function<void(grpc::ClientReadReactor<ResponseT>* reactor, const grpc::Status&)>;
 ````
 
 When `ClientReadReactor::OnDone` event is handled in the proxy reactor, the `OnDoneCallback` callback function is called
@@ -222,7 +226,7 @@ with the following arguments:
 - a reference to the `grpc::Status` content
 
 ````cpp
-using OnReadDoneNOkCallback = std::function<void(ProxyReadReactor* reactor)>;
+using OnReadDoneNOkCallback = std::function<void(grpc::ClientReadReactor<ResponseT>* reactor)>;
 ````
 
 When `ClientReadReactor::OnReadDone` event with a negative OK is handled in the proxy reactor, the `OnReadDoneNOkCallback`
@@ -231,7 +235,7 @@ callback function is called with the following argument:
 - the pointer to the proxy reactor instance (i.e. `this`)
 
 ````cpp
-using OnReadDoneOkCallback = std::function<bool(ProxyReadReactor* reactor, const ResponseT&)>;
+using OnReadDoneOkCallback = std::function<bool(grpc::ClientReadReactor<ResponseT>* reactor, const ResponseT&)>;
 ````
 
 When `ClientReadReactor::OnReadDone` event with a positive OK is handled in the proxy reactor, the `OnReadDoneOkCallback`
@@ -296,22 +300,27 @@ The implementation of the `OnReadDoneOkCallback` is different, because it requir
 From the PlantUML sequence diagram, the corresponding points are:
 
 - 1.x : the `std::make_unique<ClientReactor>(...)` line
-- 2.4 : the `cbs.cb_ok = [](auto* reactor, const routeguide::Feature&) -> bool` line
-- 4.3 : the `cbs.cb_nok = std::bind(...)` line
-- 4.6 : the `cbs.cb_done = std::bind(...)` line
+- 2.4 : the `cbs.ok = [](auto* reactor, const ResponseT&) -> bool {...}` lines
+- 4.3 : the `cbs.nok = [](auto* reactor) {...}` lines
+- 4.6 : the `cbs.done = [](auto* reactor, const grpc::Status&) {...}` lines
 
 ````cpp
 #include "api_routeguide.h"
 void ListFeatures(routeguide::Rectangle rect) {
   using routeguide::ListFeatures::ClientReactor;
+  using routeguide::ListFeatures::Callbacks;
   using routeguide::ListFeatures::RpcKey;
-  ClientReactor::callbacks cbs;
-  cbs.cb_ok = [](auto* reactor, const routeguide::Feature&) -> bool {  // OnReadDoneOkCallback
-    EventLoop::TriggerEvent(kListFeaturesOnReadDoneOk, reactor);
+  Callbacks cbs;
+  cbs.ok = [](auto* reactor, const routeguide::Feature&) -> bool {
+    EventLoop::TriggerEvent(kListFeaturesOnReadDoneOk, reactor);  // Signal OnReadDoneOkCallback event from gRPC thread
     return true;  // true: hold the RPC until the application proceeded the response
   };
-  cbs.cb_nok = std::bind((&EventLoop::TriggerEvent, kListFeaturesOnReadDoneNOk, std::placeholders::_1);  // OnReadDoneNOkCallback
-  cbs.cb_done = std::bind(&EventLoop::TriggerEvent, kListFeaturesOnDone, std::placeholders::_1);  // OnDoneCallback
+  cbs.nok = [](auto* reactor) {
+    EventLoop::TriggerEvent(kListFeaturesOnReadDoneNOk, reactor);  // Signal OnReadDoneNOkCallback event from gRPC thread
+  };
+  cbs.done = [](auto* reactor, const grpc::Status&) {
+    EventLoop::TriggerEvent(kListFeaturesOnDone, reactor);  // Signal OnDoneCallback event from gRPC thread
+  };
   reactor_map_[RpcKey] = std::make_unique<ClientReactor>(*stub_,
                                                          std::move(routeguide::CreateClientContext()),
                                                          std::move(rect),

@@ -70,7 +70,7 @@ class RouteGuideClient {
       assert(reactor == reactor_.get());
       if (const auto status = reactor->Status(); status.ok()) {
         // (Point 3.6) extracts response
-        routeguide::Feature response;
+        routeguide::GetFeature::ResponseT response;
         reactor->GetResponse(response);
         // (Point 3.7) update application with response
         logger.info("RESPONSE | {}: {}", response.GetTypeName(), response.ShortDebugString());
@@ -90,7 +90,7 @@ class RouteGuideClient {
       auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
       assert(reactor == reactor_.get());
       // (Point 2.8, 2.9, 2.10, 2.11) extracts response and restart RPC
-      routeguide::Feature response;
+      routeguide::ListFeatures::ResponseT response;
       reactor->GetResponse(response);
       // (Point 2.12) update application with response
       logger.info("RESPONSE | {}: {}", response.GetTypeName(), response.ShortDebugString());
@@ -129,6 +129,8 @@ class RouteGuideClient {
 
   void GetFeature(routeguide::Point point) {
     using routeguide::GetFeature::ClientReactor;
+    using routeguide::GetFeature::Callbacks;
+    using routeguide::GetFeature::ResponseT;
     using routeguide::GetFeature::RpcKey;
     auto& logger = *logger_GetFeature;
     if (reactor_map_[RpcKey]) {
@@ -136,10 +138,13 @@ class RouteGuideClient {
                   fmt::ptr(reactor_map_[RpcKey].get()), point.ShortDebugString());
       return;
     }
-    ClientReactor::callbacks cbs;
+    Callbacks cbs;
     // (Point 3.4) TriggerEvent: OnDone
-    cbs.done = std::bind(static_cast<void(*)(const std::string&, void*)>(&EventLoop::TriggerEvent),
-                         kGetFeatureOnDone, std::placeholders::_1);
+    cbs.done = [](auto* reactor, const grpc::Status&, const ResponseT&) {
+      assert(main_thread != std::this_thread::get_id());  // gRPC thread
+      EventLoop::TriggerEvent(kGetFeatureOnDone, reactor);
+    };
+
     // (Point 1.1) Create reactor
     reactor_map_[RpcKey] = std::make_unique<ClientReactor>(*stub_,
                                                            std::move(CreateClientContext()),
@@ -150,6 +155,8 @@ class RouteGuideClient {
 
   void ListFeatures(routeguide::Rectangle rect) {
     using routeguide::ListFeatures::ClientReactor;
+    using routeguide::ListFeatures::Callbacks;
+    using routeguide::ListFeatures::ResponseT;
     using routeguide::ListFeatures::RpcKey;
     auto& logger = *logger_ListFeatures;
 
@@ -159,19 +166,23 @@ class RouteGuideClient {
       return;
     }
 
-    ClientReactor::callbacks cbs;
+    Callbacks cbs;
     // (Point 2.4) TriggerEvent: OnReadDoneOk
-    cbs.ok = [](auto* reactor, const routeguide::Feature&) {
+    cbs.ok = [](auto* reactor, const ResponseT&) -> bool {
       assert(main_thread != std::this_thread::get_id());  // gRPC thread
       EventLoop::TriggerEvent(kListFeaturesOnReadDoneOk, reactor);
       return true;  // true: hold the RPC until the application proceeded the response
     };
     // (Point 4.3) TriggerEvent: OnReadDoneNOk
-    cbs.nok = std::bind(static_cast<void(*)(const std::string&, void*)>(&EventLoop::TriggerEvent),
-                        kListFeaturesOnReadDoneNOk, std::placeholders::_1);
+    cbs.nok = [](auto* reactor) {
+      assert(main_thread != std::this_thread::get_id());  // gRPC thread
+      EventLoop::TriggerEvent(kListFeaturesOnReadDoneNOk, reactor);
+    };
     // (Point 4.6) TriggerEvent: OnDone
-    cbs.done = std::bind(static_cast<void(*)(const std::string&, void*)>(&EventLoop::TriggerEvent),
-                         kListFeaturesOnDone, std::placeholders::_1);
+    cbs.done = [](auto* reactor, const grpc::Status&) {
+      assert(main_thread != std::this_thread::get_id());  // gRPC thread
+      EventLoop::TriggerEvent(kListFeaturesOnDone, reactor);
+    };
 
     // (Point 1.1) Create reactor
     reactor_map_[RpcKey] = std::make_unique<ClientReactor>(*stub_,
