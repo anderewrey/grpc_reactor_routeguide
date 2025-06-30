@@ -243,7 +243,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
 
 void RunServer() {
   spdlog::info("-------------- Server creation --------------");
-  static constexpr std::string server_address("0.0.0.0:50051");
+  static const std::string server_address("0.0.0.0:50051");
 
   RouteGuideImpl service;
   ServerBuilder builder;
