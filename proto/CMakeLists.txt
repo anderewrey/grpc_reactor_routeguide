@@ -1,5 +1,4 @@
-find_package(protobuf CONFIG REQUIRED)
-find_package(gRPC CONFIG REQUIRED)
+find_package(gRPC)
 
 set(PROTO_IMPORT_DIRS ${CMAKE_CURRENT_LIST_DIR})
 set(PROTO_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -13,9 +12,7 @@ add_library(rg_proto
 
 target_link_libraries(rg_proto
     PUBLIC
-        protobuf::libprotobuf
-        gRPC::grpc
-        gRPC::grpc++
+        grpc::grpc
 )
 
 target_include_directories(rg_proto

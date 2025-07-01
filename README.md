@@ -44,13 +44,16 @@ The following third-parties are fetched by CMake and compiled for the need of th
 - Protobuf, which is usually included through gRPC
 
 Because downloading and compiling gRPC on project build is a long and annoying process, it is better instead to have
-them already available through the OS system:
+them already available through the OS system. The question to solve is this: static libraries or shared/dynamic
+libraries? Currently, this project is written for static linkage.
 
-- with Ubuntu 24.04: installing it through the package manager is good enough.
-- Homemade compilation and installation: it works 100% of time when cmake is used to build it, otherwise
-  there's missing hints for cmake to include it into this project.
-- TODO: another way would be through [conan package](https://conan.io/center/recipes/grpc), but not achieved yet: got
-        many compilation errors while executing/building the package from conan.
+- With a homemade compilation and installation, it works 100% of time when:
+  - cmake is used (otherwise there's missing hints for cmake to include it into this project) to build it,
+  - the resulting binaries are static libraries, and
+  - the same toolchain (gcc or clang) to compile gRPC is also used for the application.
+- Another way would be through [conan package](https://conan.io/center/recipes/grpc). See the [conanfile.txt](conanfile.txt) file.
+  - Again, the same toolchain to compile all is required, but conan will take care to compile it and store it in its
+    cache to avoid unwanted recompilation.
 
 ## Implementation details about the client-side reactors
 
