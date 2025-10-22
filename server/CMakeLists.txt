@@ -13,7 +13,6 @@ foreach(_target sync callback)
     target_link_libraries(route_guide_${_target}_server
         PRIVATE
             rg_proto_utils
-            rg_proto
             rg_common)
 endforeach()
 

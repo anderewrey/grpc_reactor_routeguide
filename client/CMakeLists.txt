@@ -22,7 +22,6 @@ foreach(_target sync callback proxy_callback)
     target_link_libraries(route_guide_${_target}_client
         PRIVATE
             rg_proto_utils
-            rg_proto
             rg_common
             EventLoop)
 endforeach()

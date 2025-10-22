@@ -1,4 +1,7 @@
+# Always use FetchContent for spdlog, gflags, and glaze
+# These dependencies work fine with FetchContent and are small and quick enough to recompile on cleanup.
 include(FetchContent)
+
 # For a better JSON parser and string minifier (the original code was to madly strip all spaces, no matter where)
 FetchContent_Declare(glaze
         GIT_REPOSITORY https://github.com/stephenberry/glaze.git
@@ -23,6 +26,19 @@ FetchContent_Declare(gflags
 
 FetchContent_MakeAvailable(glaze spdlog gflags)
 
+#######################################################################################
+# Optimize third-party FetchContent-built dependencies (spdlog, gflags, glaze) in all
+# build types (Debug, Release, etc.). This keeps the application code debuggable while
+# making dependencies fast and small.
+#######################################################################################
+target_compile_options(spdlog PRIVATE -O3 -DNDEBUG -march=native -mtune=native -g0)
+message(STATUS "spdlog speed-optimized: -O3 -march=native -mtune=native")
+
+# Note: gflags_nothreads_static is the actual target, while gflags and gflags::gflags are alias targets. CMake does
+# not allow target_compile_options on aliases.
+target_compile_options(gflags_nothreads_static PRIVATE -O3 -DNDEBUG -march=native -mtune=native -g0)
+message(STATUS "gflags speed-optimized: -O3 -march=native -mtune=native")
+
 #
 # rg_common
 #
@@ -39,6 +55,5 @@ target_link_libraries(rg_common
         gflags::gflags
     PRIVATE
         glaze::glaze
-        rg_proto_utils
-        rg_proto
+        rg_proto_utils  # Transitively provides rg_proto and its dependencies
 )
