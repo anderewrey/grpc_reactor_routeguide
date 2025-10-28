@@ -24,6 +24,7 @@ bool IsPointWithinRectangle(const routeguide::Rectangle& rectangle, const routeg
 routeguide::Feature GetFeatureFromPoint(const FeatureList& feature_list, const routeguide::Point& point);
 const routeguide::Point& GetRandomPoint(const FeatureList& feature_list);
 unsigned GetRandomTimeDelay();
+std::string ToString(const google::protobuf::Message& message);
 }  // namespace proto_utils
 
 namespace routeguide {

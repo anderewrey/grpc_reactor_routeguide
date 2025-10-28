@@ -57,9 +57,9 @@ class RouteGuideImpl final : public RouteGuide::Service {
                     Feature* feature) override {
     auto& logger = *logger_GetFeature;
     logger.info("ENTER    |");
-    logger.info("REQUEST  | Point: {}", point->ShortDebugString());
+    logger.info("REQUEST  | Point: {}", proto_utils::ToString(*point));
     *feature = proto_utils::GetFeatureFromPoint(feature_list_, *point);
-    logger.info("RESPONSE | Feature: {}", feature->ShortDebugString());
+    logger.info("RESPONSE | Feature: {}", proto_utils::ToString(*feature));
     logger.info("EXIT     |");
     return Status::OK;
   }
@@ -69,10 +69,10 @@ class RouteGuideImpl final : public RouteGuide::Service {
                       ServerWriter<Feature>* writer) override {
     auto& logger = *logger_ListFeatures;
     logger.info("ENTER    |");
-    logger.info("REQUEST  | Rectangle: {}", rectangle->ShortDebugString());
+    logger.info("REQUEST  | Rectangle: {}", proto_utils::ToString(*rectangle));
     for (const Feature& f : feature_list_) {
       if (proto_utils::IsPointWithinRectangle(*rectangle, f.location())) {
-        logger.info("RESPONSE | Feature: {}", f.ShortDebugString());
+        logger.info("RESPONSE | Feature: {}", proto_utils::ToString(f));
         writer->Write(f);
       }
     }
@@ -92,7 +92,7 @@ class RouteGuideImpl final : public RouteGuide::Service {
 
     const auto start_time = system_clock::now();
     while (reader->Read(&point)) {
-      logger.info("REQUEST  | Point: {}", point.ShortDebugString());
+      logger.info("REQUEST  | Point: {}", proto_utils::ToString(point));
       point_count++;
       if (const auto name = proto_utils::GetFeatureName(point, feature_list_); name && strlen(name) > 0) {
         feature_count++;
@@ -108,7 +108,7 @@ class RouteGuideImpl final : public RouteGuide::Service {
     summary->set_distance(distance);
     const auto secs = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count();
     summary->set_elapsed_time(secs);
-    logger.info("RESPONSE | RouteSummary: {}", summary->ShortDebugString());
+    logger.info("RESPONSE | RouteSummary: {}", proto_utils::ToString(*summary));
     logger.info("EXIT     |");
     return Status::OK;
   }
@@ -119,11 +119,11 @@ class RouteGuideImpl final : public RouteGuide::Service {
     logger.info("ENTER    |");
     RouteNote note;
     while (stream->Read(&note)) {
-      logger.info("REQUEST  | RouteNote: {}", note.ShortDebugString());
+      logger.info("REQUEST  | RouteNote: {}", proto_utils::ToString(note));
       std::unique_lock lock(mu_);
       for (const RouteNote& n : received_notes_) {
         if (n.location() == note.location()) {
-          logger.info("RESPONSE | RouteNote: {}", n.ShortDebugString());
+          logger.info("RESPONSE | RouteNote: {}", proto_utils::ToString(n));
           stream->Write(n);
         }
       }
