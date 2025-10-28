@@ -38,3 +38,4 @@
 # build directories
 cmake-*/
 build*/
+vcpkg_*/

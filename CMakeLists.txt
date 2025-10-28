@@ -4,12 +4,19 @@ project(grpc-reactor-routeguide LANGUAGES CXX)
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 set(CMAKE_CXX_STANDARD 20)
 
-message(STATUS "Using system-installed libraries")
+# Detect if using vcpkg (vcpkg sets VCPKG_TOOLCHAIN or CMAKE_TOOLCHAIN_FILE contains "vcpkg")
+if(DEFINED VCPKG_TOOLCHAIN OR (DEFINED CMAKE_TOOLCHAIN_FILE AND CMAKE_TOOLCHAIN_FILE MATCHES "vcpkg"))
+    message(STATUS "Using vcpkg-provided libraries (skipping system library checks)")
+    set(USING_VCPKG TRUE)
+else()
+    message(STATUS "Using system-installed libraries")
+    set(USING_VCPKG FALSE)
+endif()
 
 # CRITICAL: When using system libraries, verify that gRPC/Protobuf/Abseil were built
 # with the same compiler to avoid template instantiation incompatibilities.
 
-if(NOT SKIP_COMPILER_CHECK)
+if(NOT USING_VCPKG AND NOT SKIP_COMPILER_CHECK)
         # gRPC/Protobuf/Abseil libraries are installed in /usr/local
         set(GRPC_PREFIX "/usr/local" CACHE PATH "gRPC installation prefix")
 
@@ -101,7 +108,7 @@ if(NOT SKIP_COMPILER_CHECK)
         endif()
 
         message(STATUS "Compiler compatibility check passed: ${CURRENT_COMPILER_TYPE} ${CURRENT_COMPILER_VERSION}")
-else()
+elseif(NOT USING_VCPKG)
     message(WARNING "Compiler check bypassed via SKIP_COMPILER_CHECK=ON. Ensure system libraries match your compiler!")
     # gRPC/Protobuf/Abseil libraries are installed in /usr/local
     set(GRPC_PREFIX "/usr/local" CACHE PATH "gRPC installation prefix")
@@ -109,16 +116,19 @@ endif()
 
 message(STATUS "Using compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 
-# Help find_package locate libraries
-list(PREPEND CMAKE_PREFIX_PATH "${GRPC_PREFIX}")
+# Configure library search paths (only for system-installed libraries, not vcpkg)
+if(NOT USING_VCPKG)
+    # Help find_package locate libraries
+    list(PREPEND CMAKE_PREFIX_PATH "${GRPC_PREFIX}")
 
-# Configure RPATH for runtime shared library loading
-set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
-# For system libraries, set explicit RPATH
-set(CMAKE_BUILD_RPATH "${GRPC_PREFIX}/lib64;${GRPC_PREFIX}/lib")
-set(CMAKE_INSTALL_RPATH "${GRPC_PREFIX}/lib64;${GRPC_PREFIX}/lib")
-# Silence warnings about library conflicts between /usr/local and system directories
-list(APPEND CMAKE_PLATFORM_IMPLICIT_LINK_DIRECTORIES "${GRPC_PREFIX}/lib" "${GRPC_PREFIX}/lib64")
+    # Configure RPATH for runtime shared library loading
+    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+    # For system libraries, set explicit RPATH
+    set(CMAKE_BUILD_RPATH "${GRPC_PREFIX}/lib64;${GRPC_PREFIX}/lib")
+    set(CMAKE_INSTALL_RPATH "${GRPC_PREFIX}/lib64;${GRPC_PREFIX}/lib")
+    # Silence warnings about library conflicts between /usr/local and system directories
+    list(APPEND CMAKE_PLATFORM_IMPLICIT_LINK_DIRECTORIES "${GRPC_PREFIX}/lib" "${GRPC_PREFIX}/lib64")
+endif()
 
 if(POLICY CMP0042)
     cmake_policy(SET CMP0042 NEW)  # Enable RPATH by default on macOS
