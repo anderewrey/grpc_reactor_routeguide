@@ -1,43 +1,15 @@
-# Always use FetchContent for spdlog, gflags, and glaze
-# These dependencies work fine with FetchContent and are small and quick enough to recompile on cleanup.
-include(FetchContent)
+# Use vcpkg-provided packages for third-party dependencies
+# vcpkg builds them in optimized Release mode even when the application is built in Debug mode,
+# as configured in custom triplets (x64-linux-clang19-release, x64-linux-gcc13-release).
 
-# For a better JSON parser and string minifier (the original code was to madly strip all spaces, no matter where)
-FetchContent_Declare(glaze
-        GIT_REPOSITORY https://github.com/stephenberry/glaze.git
-        # with recent versions, it moved to C++23 and requires CMake >= 3.25, GCC12+/Clang17+,
-        # and <expected> which is not generally available on compilers. For now, an older version of glaze
-        # is good enough for our simple usages
-        GIT_TAG v2.9.5
-        GIT_SHALLOW TRUE
-)
-# Underlying logging system, instead of stdout and stderr.
-FetchContent_Declare(spdlog
-        GIT_REPOSITORY https://github.com/gabime/spdlog.git
-        GIT_TAG v1.15.2
-        GIT_SHALLOW TRUE
-)
-# Command-line parser
-FetchContent_Declare(gflags
-        GIT_REPOSITORY https://github.com/gflags/gflags.git
-        GIT_TAG v2.2.2
-        GIT_SHALLOW TRUE
-)
+# JSON parser - using v2.9.5 for C++20 compatibility (v3+ requires C++23)
+find_package(glaze CONFIG REQUIRED)
 
-FetchContent_MakeAvailable(glaze spdlog gflags)
+# Logging library
+find_package(spdlog CONFIG REQUIRED)
 
-#######################################################################################
-# Optimize third-party FetchContent-built dependencies (spdlog, gflags, glaze) in all
-# build types (Debug, Release, etc.). This keeps the application code debuggable while
-# making dependencies fast and small.
-#######################################################################################
-target_compile_options(spdlog PRIVATE -O3 -DNDEBUG -march=native -mtune=native -g0)
-message(STATUS "spdlog speed-optimized: -O3 -march=native -mtune=native")
-
-# Note: gflags_nothreads_static is the actual target, while gflags and gflags::gflags are alias targets. CMake does
-# not allow target_compile_options on aliases.
-target_compile_options(gflags_nothreads_static PRIVATE -O3 -DNDEBUG -march=native -mtune=native -g0)
-message(STATUS "gflags speed-optimized: -O3 -march=native -mtune=native")
+# Command-line argument parser
+find_package(gflags CONFIG REQUIRED)
 
 #
 # rg_common

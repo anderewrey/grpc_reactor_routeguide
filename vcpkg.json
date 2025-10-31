@@ -2,7 +2,11 @@
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "grpc-reactor-routeguide",
   "version": "0.1.0",
+  "description": "gRPC RouteGuide example demonstrating Reactor Callbacks API with modern C++20",
   "dependencies": [
-    "grpc"
+    "grpc",
+    "spdlog",
+    "gflags",
+    "glaze"
   ]
 }
