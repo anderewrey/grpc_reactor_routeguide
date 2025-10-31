@@ -1,0 +1,17 @@
+{
+  "name": "eventloop",
+  "version": "0.1.0",
+  "description": "Minimalist event loop library - pinned to specific commit with required patches",
+  "homepage": "https://github.com/amoldhamale1105/EventLoop",
+  "license": "MIT",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ]
+}
