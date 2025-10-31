@@ -1,0 +1,29 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1111111..2222222 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -31,3 +31,24 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
+ )
+ target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_11)
+ target_link_libraries(${PROJECT_NAME} ${CMAKE_THREAD_LIBS_INIT})
++
++# Install library
++install(TARGETS ${PROJECT_NAME}
++    EXPORT EventLoopTargets
++    LIBRARY DESTINATION lib
++    ARCHIVE DESTINATION lib
++    RUNTIME DESTINATION bin
++    INCLUDES DESTINATION include
++)
++
++# Install headers
++install(FILES ${INCLUDES}
++    DESTINATION include
++)
++
++# Install CMake config files
++install(EXPORT EventLoopTargets
++    FILE EventLoopConfig.cmake
++    NAMESPACE EventLoop::
++    DESTINATION lib/cmake/EventLoop
++)

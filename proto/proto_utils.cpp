@@ -11,6 +11,8 @@
 #include <random>
 #include <string>
 
+#include <google/protobuf/text_format.h>
+
 #include "generated/route_guide.grpc.pb.h"
 
 using routeguide::Feature;
@@ -113,6 +115,14 @@ unsigned proto_utils::GetRandomTimeDelay() {
   static std::default_random_engine generator(seed);
   static std::uniform_int_distribution<unsigned> delay_distribution(500, 1500);
   return delay_distribution(generator);
+}
+
+std::string proto_utils::ToString(const google::protobuf::Message& message) {
+  static google::protobuf::TextFormat::Printer printer;
+  printer.SetSingleLineMode(true);
+  std::string output;
+  printer.PrintToString(message, &output);
+  return output;
 }
 
 bool routeguide::operator==(const Point& point1, const Point& point2) {

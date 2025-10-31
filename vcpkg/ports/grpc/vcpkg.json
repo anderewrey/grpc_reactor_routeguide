@@ -1,0 +1,13 @@
+{
+  "name": "grpc",
+  "version": "1.73.1",
+  "description": "gRPC C++ with custom optimizations for grpc_reactor_routeguide project",
+  "homepage": "https://github.com/grpc/grpc",
+  "license": "Apache-2.0",
+  "dependencies": [
+    "openssl",
+    { "name": "vcpkg-cmake", "host": true },
+    { "name": "vcpkg-cmake-config", "host": true },
+    "zlib"
+  ]
+}

@@ -73,7 +73,7 @@ class RouteGuideClient {
         routeguide::GetFeature::ResponseT response;
         reactor->GetResponse(response);
         // (Point 3.7) update application with response
-        logger.info("RESPONSE | {}: {}", response.GetTypeName(), response.ShortDebugString());
+        logger.info("RESPONSE | {}: {}", response.GetTypeName(), proto_utils::ToString(response));
       } else {
         logger.info("         | {} reactor: {} Status: OK: {} msg: {}",
                     event->getName(), fmt::ptr(reactor), status.ok(), status.error_message());
@@ -135,7 +135,7 @@ class RouteGuideClient {
     auto& logger = *logger_GetFeature;
     if (reactor_map_[RpcKey]) {
       logger.info("         | reactor[{}] already in execution, ignoring: {}",
-                  fmt::ptr(reactor_map_[RpcKey].get()), point.ShortDebugString());
+                  fmt::ptr(reactor_map_[RpcKey].get()), proto_utils::ToString(point));
       return;
     }
     Callbacks cbs;
@@ -162,7 +162,7 @@ class RouteGuideClient {
 
     if (reactor_map_[RpcKey]) {
       logger.info("         | reactor[{}] already in execution, ignoring: {}",
-                  fmt::ptr(reactor_map_[RpcKey].get()), rect.ShortDebugString());
+                  fmt::ptr(reactor_map_[RpcKey].get()), proto_utils::ToString(rect));
       return;
     }
 

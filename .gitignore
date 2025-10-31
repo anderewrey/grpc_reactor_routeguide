@@ -35,5 +35,7 @@
 # IDE config files
 .idea/
 
-# CMake build directory
+# build directories
 cmake-*/
+build*/
+vcpkg_*/

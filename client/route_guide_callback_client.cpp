@@ -63,11 +63,11 @@ class RouteGuideClient {
       std::mutex mu;
       std::condition_variable cv;
       bool done = false;
-      logger.info("REQUEST  | Point: {}", point.ShortDebugString());
+      logger.info("REQUEST  | Point: {}", proto_utils::ToString(point));
       stub_->async()->GetFeature(&context, &point, &feature,
                                  [&result, &mu, &cv, &done, &feature, &logger](const Status& status) {
         logger.info("RESPONSE | Status: OK: {} msg:{} Feature: {}",
-                    status.ok(), status.error_message(), feature.ShortDebugString());
+                    status.ok(), status.error_message(), proto_utils::ToString(feature));
         std::lock_guard<std::mutex> lock(mu);
         result = (status.ok() && feature.has_location());
         done = true;
@@ -93,7 +93,7 @@ class RouteGuideClient {
      public:
       Reader(RouteGuide::Stub* stub, const Rectangle& rectangle) {
         logger_.info("ENTER    |");
-        logger_.info("REQUEST  | Rectangle: {}", rectangle.ShortDebugString());
+        logger_.info("REQUEST  | Rectangle: {}", proto_utils::ToString(rectangle));
         stub->async()->ListFeatures(&context_, &rectangle, this);
         logger_.info("ENTER    | StartRead");
         StartRead(&feature_);
@@ -102,7 +102,7 @@ class RouteGuideClient {
       }
       void OnReadDone(bool ok) override {
         if (ok) {
-          logger_.info("RESPONSE | OK: {} Feature: {}", ok, feature_.ShortDebugString());
+          logger_.info("RESPONSE | OK: {} Feature: {}", ok, proto_utils::ToString(feature_));
           StartRead(&feature_);
         } else {
           logger_.info("EXIT     | OnReadDone() OK: {}", ok);
@@ -187,7 +187,7 @@ class RouteGuideClient {
         }
         if (points_remaining_ != 0) {
           const Point& point = proto_utils::GetRandomPoint(feature_list_);
-          logger_.info("REQUEST  | Point: {}", point.ShortDebugString());
+          logger_.info("REQUEST  | Point: {}", proto_utils::ToString(point));
           StartWrite(&point);
           points_remaining_--;
         } else {
@@ -210,7 +210,7 @@ class RouteGuideClient {
     Recorder recorder(stub_.get(), feature_list_);
     const auto status = recorder.Await(summary);
     logger_RecordRoute->info("EXIT     | post-Await() OK: {} msg: {} RouteSummary: {}",
-                             status.ok(), status.error_message(), summary.ShortDebugString());
+                             status.ok(), status.error_message(), proto_utils::ToString(summary));
   }
 
   void RouteChat() {
@@ -246,7 +246,7 @@ class RouteGuideClient {
       void OnReadDone(bool ok) override {
         logger_.info("         | OnReadDone() OK: {}", ok);
         if (ok) {
-          logger_.info("RESPONSE | RouteNote: {}", server_note_.ShortDebugString());
+          logger_.info("RESPONSE | RouteNote: {}", proto_utils::ToString(server_note_));
           logger_.info("         | StartRead");
           StartRead(&server_note_);
         }
@@ -275,7 +275,7 @@ class RouteGuideClient {
         }
         if (notes_iterator_ != notes_.end()) {
           const auto& note = *notes_iterator_;
-          logger_.info("REQUEST  | RouteNote: {}", note.ShortDebugString());
+          logger_.info("REQUEST  | RouteNote: {}", proto_utils::ToString(note));
           StartWrite(&note);
           ++notes_iterator_;
         } else {

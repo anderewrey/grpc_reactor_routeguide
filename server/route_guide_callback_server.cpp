@@ -57,10 +57,10 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
                                        Feature* feature) override {
     auto& logger = *logger_GetFeature;
     logger.info("ENTER    |");
-    logger.info("REQUEST  | Point: {}", point->ShortDebugString());
+    logger.info("REQUEST  | Point: {}", proto_utils::ToString(*point));
     *feature = proto_utils::GetFeatureFromPoint(feature_list_, *point);
     auto* reactor = context->DefaultReactor();
-    logger.info("RESPONSE | Feature: {}", feature->ShortDebugString());
+    logger.info("RESPONSE | Feature: {}", proto_utils::ToString(*feature));
     reactor->Finish(Status::OK);
     logger.info("EXIT     |");
     return reactor;
@@ -75,7 +75,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
             feature_list_(feature_list),
             next_feature_(feature_list_.begin()) {
         logger_.info("ENTER    |");
-        logger_.info("REQUEST  | Rectangle: {}", rectangle_.ShortDebugString());
+        logger_.info("REQUEST  | Rectangle: {}", proto_utils::ToString(rectangle_));
         NextWrite();
       }
       void OnDone() override {
@@ -98,7 +98,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
         while (next_feature_ != feature_list_.end()) {
           const Feature& f = *next_feature_++;
           if (proto_utils::IsPointWithinRectangle(rectangle_, f.location())) {
-            logger_.info("RESPONSE | Feature: {}", f.ShortDebugString());
+            logger_.info("RESPONSE | Feature: {}", proto_utils::ToString(f));
             StartWrite(&f);
             return;
           }
@@ -132,7 +132,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
       }
       void OnReadDone(const bool ok) override {
         if (ok) {
-          logger_.info("REQUEST  | Point: {}", point_.ShortDebugString());
+          logger_.info("REQUEST  | Point: {}", proto_utils::ToString(point_));
           point_count_++;
           if (const auto name = proto_utils::GetFeatureName(point_, feature_list_); name && strlen(name) > 0) {
             feature_count_++;
@@ -149,7 +149,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
           using namespace std::chrono;
           auto secs = duration_cast<seconds>(system_clock::now() - start_time_).count();
           summary_.set_elapsed_time(secs);
-          logger_.info("RESPONSE | RouteSummary: {}", summary_.ShortDebugString());
+          logger_.info("RESPONSE | RouteSummary: {}", proto_utils::ToString(summary_));
           Finish(Status::OK);
         }
       }
@@ -183,7 +183,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
       void OnReadDone(const bool ok) override {
         if (ok) {
           if (note_.message().empty()) {
-            logger_.info("RESPONSE | RouteNote: {}", note_.ShortDebugString());
+            logger_.info("RESPONSE | RouteNote: {}", proto_utils::ToString(note_));
             StartWriteAndFinish(&note_, grpc::WriteOptions(), Status::OK);
             logger_.info("EXIT     | StartWriteAndFinish()");
             return;
@@ -196,7 +196,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
           // list of nodes we're going to send, then we'll grab the lock
           // again to append the received note to the existing vector.
           mu_.lock();
-          logger_.info("REQUEST  | RouteNote: {}", note_.ShortDebugString());
+          logger_.info("REQUEST  | RouteNote: {}", proto_utils::ToString(note_));
           std::ranges::copy_if(received_notes_, std::back_inserter(to_send_notes_),
                                [this](const RouteNote& note) {
                                  return (note.location() == note_.location());
@@ -215,7 +215,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
      private:
       void NextWrite() {
         if (notes_iterator_ != to_send_notes_.end()) {
-          logger_.info("RESPONSE | RouteNote: {}", notes_iterator_->ShortDebugString());
+          logger_.info("RESPONSE | RouteNote: {}", proto_utils::ToString(*notes_iterator_));
           StartWrite(&*notes_iterator_);
           ++notes_iterator_;
         } else {
