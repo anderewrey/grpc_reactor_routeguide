@@ -1,0 +1,107 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "vcpkg-clang19-debug",
+      "displayName": "vcpkg Clang 19 Debug",
+      "description": "Debug build using Clang 19 with vcpkg libraries (Release libs + Debug app for Linux ABI compatibility)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cmake-build-vcpkg-debug-clang",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_CXX_STANDARD": "20",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-clang19-release",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg/triplets",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg/ports"
+      }
+    },
+    {
+      "name": "vcpkg-clang19-release",
+      "displayName": "vcpkg Clang 19 Release",
+      "description": "Release build using Clang 19 with vcpkg libraries",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cmake-build-vcpkg-release-clang",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_CXX_STANDARD": "20",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-clang19-release",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg/triplets",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg/ports"
+      }
+    },
+    {
+      "name": "vcpkg-gcc-debug",
+      "displayName": "vcpkg GCC 11 Debug",
+      "description": "Debug build using GCC 11 with vcpkg libraries (Release libs + Debug app for Linux ABI compatibility)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cmake-build-vcpkg-debug-gcc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_CXX_STANDARD": "20",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-gcc-release",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg/triplets",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg/ports"
+      }
+    },
+    {
+      "name": "vcpkg-gcc-release",
+      "displayName": "vcpkg GCC 11 Release",
+      "description": "Release build using GCC 11 with vcpkg libraries",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cmake-build-vcpkg-release-gcc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_CXX_STANDARD": "20",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-gcc-release",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg/triplets",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg/ports"
+      }
+    },
+    {
+      "name": "vcpkg-gcc13-debug",
+      "displayName": "vcpkg GCC 13 Debug",
+      "description": "Debug build using GCC 13 (toolset) with vcpkg libraries",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cmake-build-vcpkg-debug-gcc13",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER": "/opt/rh/gcc-toolset-13/root/usr/bin/g++",
+        "CMAKE_CXX_STANDARD": "20",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-gcc13-release",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg/triplets",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg/ports"
+      }
+    },
+    {
+      "name": "vcpkg-gcc13-release",
+      "displayName": "vcpkg GCC 13 Release",
+      "description": "Release build using GCC 13 (toolset) with vcpkg libraries",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cmake-build-vcpkg-release-gcc13",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER": "/opt/rh/gcc-toolset-13/root/usr/bin/g++",
+        "CMAKE_CXX_STANDARD": "20",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-gcc13-release",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg/triplets",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg/ports"
+      }
+    }
+  ]
+}

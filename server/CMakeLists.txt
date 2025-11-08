@@ -1,6 +1,6 @@
 find_package(Threads)
 
-# Targets route_guide_[sync|callback|proxy_callback]_server
+# Targets route_guide_[sync|callback]_server
 foreach(_target sync callback)
     add_executable(route_guide_${_target}_server
             "route_guide_${_target}_server.cpp")
