@@ -20,7 +20,7 @@
 #include <thread>
 #include <vector>
 
-#include "generated/route_guide.grpc.pb.h"
+#include "proto/route_guide_service.h"
 
 #include "common/db_utils.h"
 #include "proto/proto_utils.h"
@@ -43,19 +43,13 @@ using std::chrono::system_clock;
 namespace {
 std::thread::id main_thread = std::this_thread::get_id();
 FeatureList feature_list_;
-
-// Create and return a shared_ptr to a multithreaded console logger.
-auto logger_GetFeature = spdlog::stdout_color_mt("GetFeature");
-auto logger_ListFeatures = spdlog::stdout_color_mt("ListFeatures");
-auto logger_RecordRoute = spdlog::stdout_color_mt("RecordRoute");
-auto logger_RouteChat = spdlog::stdout_color_mt("RouteChat");
 }  // anonymous namespace
 
 class RouteGuideImpl final : public RouteGuide::Service {
  public:
   Status GetFeature(ServerContext* context, const Point* point,
                     Feature* feature) override {
-    auto& logger = *logger_GetFeature;
+    auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature);
     logger.info("ENTER    |");
     logger.info("REQUEST  | Point: {}", proto_utils::ToString(*point));
     *feature = proto_utils::GetFeatureFromPoint(feature_list_, *point);
@@ -67,7 +61,7 @@ class RouteGuideImpl final : public RouteGuide::Service {
   Status ListFeatures(ServerContext* context,
                       const Rectangle* rectangle,
                       ServerWriter<Feature>* writer) override {
-    auto& logger = *logger_ListFeatures;
+    auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures);
     logger.info("ENTER    |");
     logger.info("REQUEST  | Rectangle: {}", proto_utils::ToString(*rectangle));
     for (const Feature& f : feature_list_) {
@@ -82,7 +76,7 @@ class RouteGuideImpl final : public RouteGuide::Service {
 
   Status RecordRoute(ServerContext* context, ServerReader<Point>* reader,
                      RouteSummary* summary) override {
-    auto& logger = *logger_RecordRoute;
+    auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kRecordRoute);
     logger.info("ENTER    |");
     Point point;
     int point_count = 0;
@@ -115,7 +109,7 @@ class RouteGuideImpl final : public RouteGuide::Service {
 
   Status RouteChat(ServerContext* context,
                    ServerReaderWriter<RouteNote, RouteNote>* stream) override {
-    auto& logger = *logger_RouteChat;
+    auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kRouteChat);
     logger.info("ENTER    |");
     RouteNote note;
     while (stream->Read(&note)) {
@@ -155,6 +149,8 @@ void RunServer() {
 int main(int argc, char** argv) {
   assert(main_thread == std::this_thread::get_id());
   spdlog::set_pattern("[%H:%M:%S.%f][%n][%t][%^%L%$] %v");
+  auto logger_Main = spdlog::stdout_color_mt("Main");
+  spdlog::set_default_logger(logger_Main);
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 

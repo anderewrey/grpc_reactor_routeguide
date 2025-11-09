@@ -20,7 +20,7 @@
 #include <thread>
 #include <vector>
 
-#include "generated/route_guide.grpc.pb.h"
+#include "proto/route_guide_service.h"
 
 #include "common/db_utils.h"
 #include "proto/proto_utils.h"
@@ -41,12 +41,6 @@ using routeguide::RouteSummary;
 namespace {
 std::thread::id main_thread = std::this_thread::get_id();
 FeatureList feature_list_;
-
-// Create and return a shared_ptr to a multithreaded console logger.
-auto logger_GetFeature = spdlog::stdout_color_mt("GetFeature");
-auto logger_ListFeatures = spdlog::stdout_color_mt("ListFeatures");
-auto logger_RecordRoute = spdlog::stdout_color_mt("RecordRoute");
-auto logger_RouteChat = spdlog::stdout_color_mt("RouteChat");
 }  // anonymous namespace
 
 class RouteGuideClient {
@@ -55,7 +49,7 @@ class RouteGuideClient {
       : stub_(RouteGuide::NewStub(channel)) {}
 
   void GetFeature() {
-    auto get_feature = [stub_ = stub_.get(), &logger = *logger_GetFeature](const Point& point, Feature& feature) {
+    auto get_feature = [stub_ = stub_.get(), &logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature)](const Point& point, Feature& feature) {
       logger.info("ENTER    |");
       ClientContext context;
       logger.info("REQUEST  | Point: {}", proto_utils::ToString(point));
@@ -77,7 +71,7 @@ class RouteGuideClient {
   }
 
   void ListFeatures() {
-    auto& logger = *logger_ListFeatures;
+    auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures);
     Feature feature;
     ClientContext context;
     logger.info("ENTER    |");
@@ -93,7 +87,7 @@ class RouteGuideClient {
   }
 
   void RecordRoute() {
-    auto& logger = *logger_RecordRoute;
+    auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kRecordRoute);
     logger.info("ENTER    |");
     RouteSummary summary;
     ClientContext context;
@@ -119,7 +113,7 @@ class RouteGuideClient {
   }
 
   void RouteChat() {
-    auto& logger = *logger_RouteChat;
+    auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kRouteChat);
     logger.info("ENTER    |");
     ClientContext context;
     auto stream = stub_->RouteChat(&context);
@@ -156,6 +150,8 @@ class RouteGuideClient {
 int main(int argc, char** argv) {
   assert(main_thread == std::this_thread::get_id());
   spdlog::set_pattern("[%H:%M:%S.%f][%n][%t][%^%L%$] %v");
+  auto logger_Main = spdlog::stdout_color_mt("Main");
+  spdlog::set_default_logger(logger_Main);
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 

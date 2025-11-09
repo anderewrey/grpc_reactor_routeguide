@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-#include "generated/route_guide.grpc.pb.h"
+#include "proto/route_guide_service.h"
 
 using FeatureList = std::vector<routeguide::Feature>;
 

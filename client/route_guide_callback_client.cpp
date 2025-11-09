@@ -24,7 +24,7 @@
 #include <utility>
 #include <vector>
 
-#include "generated/route_guide.grpc.pb.h"
+#include "proto/route_guide_service.h"
 
 #include "common/db_utils.h"
 #include "proto/proto_utils.h"
@@ -42,12 +42,6 @@ using routeguide::RouteSummary;
 namespace {
 std::thread::id main_thread = std::this_thread::get_id();
 FeatureList feature_list_;
-
-// Create and return a shared_ptr to a multithreaded console logger.
-auto logger_GetFeature = spdlog::stdout_color_mt("GetFeature");
-auto logger_ListFeatures = spdlog::stdout_color_mt("ListFeatures");
-auto logger_RecordRoute = spdlog::stdout_color_mt("RecordRoute");
-auto logger_RouteChat = spdlog::stdout_color_mt("RouteChat");
 }  // anonymous namespace
 
 class RouteGuideClient {
@@ -56,7 +50,7 @@ class RouteGuideClient {
       : stub_(RouteGuide::NewStub(channel)) {}
 
   void GetFeature() {
-    auto get_feature = [stub_ = stub_.get(), &logger = *logger_GetFeature](const Point& point, Feature& feature) {
+    auto get_feature = [stub_ = stub_.get(), &logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature)](const Point& point, Feature& feature) {
       logger.info("ENTER    |");
       ClientContext context;
       bool result;
@@ -126,7 +120,7 @@ class RouteGuideClient {
      private:
       ClientContext context_;
       Feature feature_;
-      std::mutex mu_;      spdlog::logger& logger_ = *logger_ListFeatures;
+      std::mutex mu_;      spdlog::logger& logger_ = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures);
 
       std::condition_variable cv_;
       Status status_;
@@ -135,7 +129,7 @@ class RouteGuideClient {
 
     Reader reader(stub_.get(), proto_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000));
     const auto status = reader.Await();
-    logger_ListFeatures->info("EXIT     | post-Await() OK: {} msg: {}", status.ok(), status.error_message());
+    routeguide::logger::Get(routeguide::RpcMethods::kListFeatures).info("EXIT     | post-Await() OK: {} msg: {}", status.ok(), status.error_message());
   }
 
   void RecordRoute() {
@@ -196,7 +190,7 @@ class RouteGuideClient {
         }
       }
       ClientContext context_;
-      spdlog::logger& logger_ = *logger_RecordRoute;
+      spdlog::logger& logger_ = routeguide::logger::Get(routeguide::RpcMethods::kRecordRoute);
       RouteSummary summary_;
       const FeatureList& feature_list_;
       grpc::Alarm alarm_;  // To postpone an action in the eventloop (handled by gRPC in its own thread pool)
@@ -209,8 +203,8 @@ class RouteGuideClient {
     RouteSummary summary;
     Recorder recorder(stub_.get(), feature_list_);
     const auto status = recorder.Await(summary);
-    logger_RecordRoute->info("EXIT     | post-Await() OK: {} msg: {} RouteSummary: {}",
-                             status.ok(), status.error_message(), proto_utils::ToString(summary));
+    routeguide::logger::Get(routeguide::RpcMethods::kRecordRoute).info("EXIT     | post-Await() OK: {} msg: {} RouteSummary: {}",
+                                                                         status.ok(), status.error_message(), proto_utils::ToString(summary));
   }
 
   void RouteChat() {
@@ -284,7 +278,7 @@ class RouteGuideClient {
         }
       }
       ClientContext context_;
-      spdlog::logger& logger_ = *logger_RouteChat;
+      spdlog::logger& logger_ = routeguide::logger::Get(routeguide::RpcMethods::kRouteChat);
       const std::vector<RouteNote> notes_;
       std::vector<RouteNote>::const_iterator notes_iterator_;
       RouteNote server_note_;
@@ -297,7 +291,7 @@ class RouteGuideClient {
 
     Chatter chatter(stub_.get());
     const auto status = chatter.Await();
-    logger_RouteChat->info("EXIT     | post-Await() OK: {} msg: {}", status.ok(), status.error_message());
+    routeguide::logger::Get(routeguide::RpcMethods::kRouteChat).info("EXIT     | post-Await() OK: {} msg: {}", status.ok(), status.error_message());
   }
 
  private:
@@ -307,6 +301,8 @@ class RouteGuideClient {
 int main(int argc, char** argv) {
   assert(main_thread == std::this_thread::get_id());
   spdlog::set_pattern("[%H:%M:%S.%f][%n][%t][%^%L%$] %v");
+  auto logger_Main = spdlog::stdout_color_mt("Main");
+  spdlog::set_default_logger(logger_Main);
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 

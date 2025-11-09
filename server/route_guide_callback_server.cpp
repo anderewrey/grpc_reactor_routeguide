@@ -22,7 +22,7 @@
 #include <thread>
 #include <vector>
 
-#include "generated/route_guide.grpc.pb.h"
+#include "proto/route_guide_service.h"
 
 #include "common/db_utils.h"
 #include "proto/proto_utils.h"
@@ -42,12 +42,6 @@ using std::chrono::system_clock;
 namespace {
 std::thread::id main_thread = std::this_thread::get_id();
 FeatureList feature_list_;
-
-// Create and return a shared_ptr to a multithreaded console logger.
-auto logger_GetFeature = spdlog::stdout_color_mt("GetFeature");
-auto logger_ListFeatures = spdlog::stdout_color_mt("ListFeatures");
-auto logger_RecordRoute = spdlog::stdout_color_mt("RecordRoute");
-auto logger_RouteChat = spdlog::stdout_color_mt("RouteChat");
 }  // anonymous namespace
 
 class RouteGuideImpl final : public RouteGuide::CallbackService {
@@ -55,7 +49,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
   grpc::ServerUnaryReactor* GetFeature(CallbackServerContext* context,
                                        const Point* point,
                                        Feature* feature) override {
-    auto& logger = *logger_GetFeature;
+    auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature);
     logger.info("ENTER    |");
     logger.info("REQUEST  | Point: {}", proto_utils::ToString(*point));
     *feature = proto_utils::GetFeatureFromPoint(feature_list_, *point);
@@ -108,7 +102,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
         Finish(Status::OK);
         logger_.info("EXIT     | Post-Finish()");
       }
-      spdlog::logger& logger_ = *logger_ListFeatures;
+      spdlog::logger& logger_ = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures);
       const Rectangle& rectangle_;
       const FeatureList& feature_list_;
       FeatureList::const_iterator next_feature_;
@@ -158,7 +152,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
       system_clock::time_point start_time_ = system_clock::now();
       RouteSummary& summary_;
       const FeatureList& feature_list_;
-      spdlog::logger& logger_ = *logger_RecordRoute;
+      spdlog::logger& logger_ = routeguide::logger::Get(routeguide::RpcMethods::kRecordRoute);
       Point point_;
       int point_count_ = 0;
       int feature_count_ = 0;
@@ -227,7 +221,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
         }
       }
       RouteNote note_;
-      spdlog::logger& logger_ = *logger_RouteChat;
+      spdlog::logger& logger_ = routeguide::logger::Get(routeguide::RpcMethods::kRouteChat);
       std::mutex& mu_;
       std::vector<RouteNote>& received_notes_;
       std::vector<RouteNote> to_send_notes_;
@@ -258,6 +252,8 @@ void RunServer() {
 int main(int argc, char** argv) {
   assert(main_thread == std::this_thread::get_id());
   spdlog::set_pattern("[%H:%M:%S.%f][%n][%t][%^%L%$] %v");
+  auto logger_Main = spdlog::stdout_color_mt("Main");
+  spdlog::set_default_logger(logger_Main);
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
