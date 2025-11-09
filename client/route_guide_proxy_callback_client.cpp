@@ -22,7 +22,7 @@
 #include <thread>
 #include <utility>
 
-#include "generated/route_guide.grpc.pb.h"
+#include "proto/route_guide_service.h"
 
 #include "common/db_utils.h"
 #include "proto/proto_utils.h"
@@ -38,12 +38,6 @@ std::unique_ptr<grpc::ClientContext> CreateClientContext() {
   // context->set_wait_for_ready(true);
   return context;
 }
-
-// Create and return a shared_ptr to a multithreaded console logger.
-auto logger_GetFeature = spdlog::stdout_color_mt("GetFeature");
-auto logger_ListFeatures = spdlog::stdout_color_mt("ListFeatures");
-// auto logger_RecordRoute = spdlog::stdout_color_mt("RecordRoute");
-// auto logger_RouteChat = spdlog::stdout_color_mt("RouteChat");
 }  // anonymous namespace
 
 /************************
@@ -63,7 +57,7 @@ class RouteGuideClient {
       : stub_(routeguide::RouteGuide::NewStub(channel)) {
     EventLoop::RegisterEvent(kGetFeatureOnDone,
                              [&reactor_ = reactor_map_[routeguide::GetFeature::RpcKey],
-                              &logger = *logger_GetFeature](const EventLoop::Event* event) {
+                              &logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature)](const EventLoop::Event* event) {
       // (Point 3.5) ProceedEvent: OnDone
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::GetFeature::ClientReactor*>(event->getData());
@@ -84,7 +78,7 @@ class RouteGuideClient {
     });
     EventLoop::RegisterEvent(kListFeaturesOnReadDoneOk,
                              [this, &reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
-                              &logger = *logger_ListFeatures](const EventLoop::Event* event) {
+                              &logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures)](const EventLoop::Event* event) {
       // (Point 2.7) ProceedEvent: OnReadDoneOk
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
@@ -93,7 +87,7 @@ class RouteGuideClient {
       routeguide::ListFeatures::ResponseT response;
       reactor->GetResponse(response);
       // (Point 2.12) update application with response
-      logger.info("RESPONSE | {}: {}", response.GetTypeName(), response.ShortDebugString());
+      logger.info("RESPONSE | {}: {}", response.GetTypeName(), proto_utils::ToString(response));
 #if 0
       // Triggering extra concurrency: Un-comment that #IF block to probe the refusal of concurrent RPC calls.
       // Each received result from stream is reused to trigger a concurrent unary RPC request. If the RPC already has
@@ -103,7 +97,7 @@ class RouteGuideClient {
     });
     EventLoop::RegisterEvent(kListFeaturesOnReadDoneNOk,
                              [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
-                              &logger = *logger_ListFeatures](const EventLoop::Event* event) {
+                              &logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures)](const EventLoop::Event* event) {
       // (Point 4.7) ProceedEvent: OnReadDoneNOk
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
@@ -113,7 +107,7 @@ class RouteGuideClient {
     });
     EventLoop::RegisterEvent(kListFeaturesOnDone,
                              [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
-                              &logger = *logger_ListFeatures](const EventLoop::Event* event) {
+                              &logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures)](const EventLoop::Event* event) {
       // (Point 4.9) ProceedEvent: OnDone
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
@@ -132,7 +126,7 @@ class RouteGuideClient {
     using routeguide::GetFeature::Callbacks;
     using routeguide::GetFeature::ResponseT;
     using routeguide::GetFeature::RpcKey;
-    auto& logger = *logger_GetFeature;
+    auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature);
     if (reactor_map_[RpcKey]) {
       logger.info("         | reactor[{}] already in execution, ignoring: {}",
                   fmt::ptr(reactor_map_[RpcKey].get()), proto_utils::ToString(point));
@@ -158,7 +152,7 @@ class RouteGuideClient {
     using routeguide::ListFeatures::Callbacks;
     using routeguide::ListFeatures::ResponseT;
     using routeguide::ListFeatures::RpcKey;
-    auto& logger = *logger_ListFeatures;
+    auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures);
 
     if (reactor_map_[RpcKey]) {
       logger.info("         | reactor[{}] already in execution, ignoring: {}",
@@ -203,6 +197,8 @@ class RouteGuideClient {
 int main(int argc, char** argv) {
   assert(main_thread == std::this_thread::get_id());
   spdlog::set_pattern("[%H:%M:%S.%f][%n][%t][%^%L%$] %v");
+  auto logger_Main = spdlog::stdout_color_mt("Main");
+  spdlog::set_default_logger(logger_Main);
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
