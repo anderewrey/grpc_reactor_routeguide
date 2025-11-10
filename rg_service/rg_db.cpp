@@ -3,7 +3,7 @@
 /// Copyright 2024-2025 anderewrey
 ///
 
-#include "common/db_utils.h"
+#include "rg_service/rg_db.h"
 
 #include <gflags/gflags.h>
 #include <spdlog/spdlog.h>
@@ -14,7 +14,7 @@
 #include <glaze/glaze.hpp>
 
 #include "generated/route_guide.grpc.pb.h"
-#include "proto/proto_utils.h"
+#include "rg_service/rg_utils.h"
 
 // Expect only arg: --db_path=path/to/route_guide_db.json.
 DEFINE_string(db_path, "route_guide_db.json", "path to .json database file");
@@ -32,7 +32,7 @@ struct FeatureJson {
 };
 using FeatureJsonList = std::vector<FeatureJson>;
 
-FeatureList db_utils::GetDbFileContent() {
+FeatureList rg_db::GetDbFileContent() {
   if (FLAGS_db_path.empty()) {
     spdlog::error("arg --db_path is empty");
     return {};
@@ -46,7 +46,7 @@ FeatureList db_utils::GetDbFileContent() {
 
   FeatureList feature_list;
   for (const auto& [location, name] : json_data) {
-    feature_list.emplace_back(proto_utils::MakeFeature(name, location.latitude, location.longitude));
+    feature_list.emplace_back(rg_utils::MakeFeature(name, location.latitude, location.longitude));
   }
 
   spdlog::info("DB parsed, loaded {} features.", feature_list.size());

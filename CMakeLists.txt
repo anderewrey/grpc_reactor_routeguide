@@ -18,7 +18,13 @@ include(ConfigureRPath)
 # Apply binary size optimizations for Release builds
 include(BuildOptimizations)
 
-add_subdirectory(proto)
+# Find EventLoop for async applications
+find_package(EventLoop CONFIG REQUIRED)
+
+# Add subdirectories in dependency order
 add_subdirectory(common)
-add_subdirectory(client)
-add_subdirectory(server)
+add_subdirectory(protobuf_utils)
+add_subdirectory(rg_service)
+add_subdirectory(applications/blocking)
+add_subdirectory(applications/callback)
+add_subdirectory(applications/reactor)

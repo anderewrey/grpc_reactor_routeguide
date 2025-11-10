@@ -22,10 +22,11 @@
 #include <thread>
 #include <vector>
 
-#include "proto/route_guide_service.h"
+#include "rg_service/route_guide_service.h"
 
-#include "common/db_utils.h"
-#include "proto/proto_utils.h"
+#include "rg_service/rg_db.h"
+#include "rg_service/rg_utils.h"
+#include "protobuf_utils/protobuf_utils.h"
 
 using grpc::CallbackServerContext;
 using grpc::Server;
@@ -51,10 +52,10 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
                                        Feature* feature) override {
     auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature);
     logger.info("ENTER    |");
-    logger.info("REQUEST  | Point: {}", proto_utils::ToString(*point));
-    *feature = proto_utils::GetFeatureFromPoint(feature_list_, *point);
+    logger.info("REQUEST  | Point: {}", protobuf_utils::ToString(*point));
+    *feature = rg_utils::GetFeatureFromPoint(feature_list_, *point);
     auto* reactor = context->DefaultReactor();
-    logger.info("RESPONSE | Feature: {}", proto_utils::ToString(*feature));
+    logger.info("RESPONSE | Feature: {}", protobuf_utils::ToString(*feature));
     reactor->Finish(Status::OK);
     logger.info("EXIT     |");
     return reactor;
@@ -69,7 +70,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
             feature_list_(feature_list),
             next_feature_(feature_list_.begin()) {
         logger_.info("ENTER    |");
-        logger_.info("REQUEST  | Rectangle: {}", proto_utils::ToString(rectangle_));
+        logger_.info("REQUEST  | Rectangle: {}", protobuf_utils::ToString(rectangle_));
         NextWrite();
       }
       void OnDone() override {
@@ -91,8 +92,8 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
       }*/
         while (next_feature_ != feature_list_.end()) {
           const Feature& f = *next_feature_++;
-          if (proto_utils::IsPointWithinRectangle(rectangle_, f.location())) {
-            logger_.info("RESPONSE | Feature: {}", proto_utils::ToString(f));
+          if (rg_utils::IsPointWithinRectangle(rectangle_, f.location())) {
+            logger_.info("RESPONSE | Feature: {}", protobuf_utils::ToString(f));
             StartWrite(&f);
             return;
           }
@@ -126,13 +127,13 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
       }
       void OnReadDone(const bool ok) override {
         if (ok) {
-          logger_.info("REQUEST  | Point: {}", proto_utils::ToString(point_));
+          logger_.info("REQUEST  | Point: {}", protobuf_utils::ToString(point_));
           point_count_++;
-          if (const auto name = proto_utils::GetFeatureName(point_, feature_list_); name && strlen(name) > 0) {
+          if (const auto name = rg_utils::GetFeatureName(point_, feature_list_); name && strlen(name) > 0) {
             feature_count_++;
           }
           if (point_count_ != 1) {
-            distance_ += proto_utils::GetDistance(previous_, point_);
+            distance_ += rg_utils::GetDistance(previous_, point_);
           }
           previous_ = point_;
           StartRead(&point_);
@@ -143,7 +144,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
           using namespace std::chrono;
           auto secs = duration_cast<seconds>(system_clock::now() - start_time_).count();
           summary_.set_elapsed_time(secs);
-          logger_.info("RESPONSE | RouteSummary: {}", proto_utils::ToString(summary_));
+          logger_.info("RESPONSE | RouteSummary: {}", protobuf_utils::ToString(summary_));
           Finish(Status::OK);
         }
       }
@@ -177,7 +178,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
       void OnReadDone(const bool ok) override {
         if (ok) {
           if (note_.message().empty()) {
-            logger_.info("RESPONSE | RouteNote: {}", proto_utils::ToString(note_));
+            logger_.info("RESPONSE | RouteNote: {}", protobuf_utils::ToString(note_));
             StartWriteAndFinish(&note_, grpc::WriteOptions(), Status::OK);
             logger_.info("EXIT     | StartWriteAndFinish()");
             return;
@@ -190,7 +191,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
           // list of nodes we're going to send, then we'll grab the lock
           // again to append the received note to the existing vector.
           mu_.lock();
-          logger_.info("REQUEST  | RouteNote: {}", proto_utils::ToString(note_));
+          logger_.info("REQUEST  | RouteNote: {}", protobuf_utils::ToString(note_));
           std::ranges::copy_if(received_notes_, std::back_inserter(to_send_notes_),
                                [this](const RouteNote& note) {
                                  return (note.location() == note_.location());
@@ -209,7 +210,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
      private:
       void NextWrite() {
         if (notes_iterator_ != to_send_notes_.end()) {
-          logger_.info("RESPONSE | RouteNote: {}", proto_utils::ToString(*notes_iterator_));
+          logger_.info("RESPONSE | RouteNote: {}", protobuf_utils::ToString(*notes_iterator_));
           StartWrite(&*notes_iterator_);
           ++notes_iterator_;
         } else {
@@ -257,7 +258,7 @@ int main(int argc, char** argv) {
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-  feature_list_ = db_utils::GetDbFileContent();
+  feature_list_ = rg_db::GetDbFileContent();
   RunServer();
   return 0;
 }

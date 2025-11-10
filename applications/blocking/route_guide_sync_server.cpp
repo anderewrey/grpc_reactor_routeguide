@@ -20,10 +20,11 @@
 #include <thread>
 #include <vector>
 
-#include "proto/route_guide_service.h"
+#include "rg_service/route_guide_service.h"
 
-#include "common/db_utils.h"
-#include "proto/proto_utils.h"
+#include "rg_service/rg_db.h"
+#include "rg_service/rg_utils.h"
+#include "protobuf_utils/protobuf_utils.h"
 
 using grpc::Server;
 using grpc::ServerBuilder;
@@ -51,9 +52,9 @@ class RouteGuideImpl final : public RouteGuide::Service {
                     Feature* feature) override {
     auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature);
     logger.info("ENTER    |");
-    logger.info("REQUEST  | Point: {}", proto_utils::ToString(*point));
-    *feature = proto_utils::GetFeatureFromPoint(feature_list_, *point);
-    logger.info("RESPONSE | Feature: {}", proto_utils::ToString(*feature));
+    logger.info("REQUEST  | Point: {}", protobuf_utils::ToString(*point));
+    *feature = rg_utils::GetFeatureFromPoint(feature_list_, *point);
+    logger.info("RESPONSE | Feature: {}", protobuf_utils::ToString(*feature));
     logger.info("EXIT     |");
     return Status::OK;
   }
@@ -63,10 +64,10 @@ class RouteGuideImpl final : public RouteGuide::Service {
                       ServerWriter<Feature>* writer) override {
     auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures);
     logger.info("ENTER    |");
-    logger.info("REQUEST  | Rectangle: {}", proto_utils::ToString(*rectangle));
+    logger.info("REQUEST  | Rectangle: {}", protobuf_utils::ToString(*rectangle));
     for (const Feature& f : feature_list_) {
-      if (proto_utils::IsPointWithinRectangle(*rectangle, f.location())) {
-        logger.info("RESPONSE | Feature: {}", proto_utils::ToString(f));
+      if (rg_utils::IsPointWithinRectangle(*rectangle, f.location())) {
+        logger.info("RESPONSE | Feature: {}", protobuf_utils::ToString(f));
         writer->Write(f);
       }
     }
@@ -86,13 +87,13 @@ class RouteGuideImpl final : public RouteGuide::Service {
 
     const auto start_time = system_clock::now();
     while (reader->Read(&point)) {
-      logger.info("REQUEST  | Point: {}", proto_utils::ToString(point));
+      logger.info("REQUEST  | Point: {}", protobuf_utils::ToString(point));
       point_count++;
-      if (const auto name = proto_utils::GetFeatureName(point, feature_list_); name && strlen(name) > 0) {
+      if (const auto name = rg_utils::GetFeatureName(point, feature_list_); name && strlen(name) > 0) {
         feature_count++;
       }
       if (point_count != 1) {
-        distance += proto_utils::GetDistance(previous, point);
+        distance += rg_utils::GetDistance(previous, point);
       }
       previous = point;
     }
@@ -102,7 +103,7 @@ class RouteGuideImpl final : public RouteGuide::Service {
     summary->set_distance(distance);
     const auto secs = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count();
     summary->set_elapsed_time(secs);
-    logger.info("RESPONSE | RouteSummary: {}", proto_utils::ToString(*summary));
+    logger.info("RESPONSE | RouteSummary: {}", protobuf_utils::ToString(*summary));
     logger.info("EXIT     |");
     return Status::OK;
   }
@@ -113,11 +114,11 @@ class RouteGuideImpl final : public RouteGuide::Service {
     logger.info("ENTER    |");
     RouteNote note;
     while (stream->Read(&note)) {
-      logger.info("REQUEST  | RouteNote: {}", proto_utils::ToString(note));
+      logger.info("REQUEST  | RouteNote: {}", protobuf_utils::ToString(note));
       std::unique_lock lock(mu_);
       for (const RouteNote& n : received_notes_) {
         if (n.location() == note.location()) {
-          logger.info("RESPONSE | RouteNote: {}", proto_utils::ToString(n));
+          logger.info("RESPONSE | RouteNote: {}", protobuf_utils::ToString(n));
           stream->Write(n);
         }
       }
@@ -154,7 +155,7 @@ int main(int argc, char** argv) {
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-  feature_list_ = db_utils::GetDbFileContent();
+  feature_list_ = rg_db::GetDbFileContent();
   RunServer();
 
   gflags::ShutDownCommandLineFlags();

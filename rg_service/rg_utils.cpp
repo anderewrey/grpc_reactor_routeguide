@@ -3,15 +3,13 @@
 /// Copyright 2024-2025 anderewrey
 ///
 
-#include "proto/proto_utils.h"
+#include "rg_service/rg_utils.h"
 
 #include <algorithm>
 #include <cctype>
 #include <numbers>
 #include <random>
 #include <string>
-
-#include <google/protobuf/text_format.h>
 
 #include "generated/route_guide.grpc.pb.h"
 
@@ -22,29 +20,29 @@ using routeguide::RouteGuide;
 using routeguide::RouteNote;
 using routeguide::RouteSummary;
 
-Point proto_utils::MakePoint(const int32_t latitude, const int32_t longitude) {
+Point rg_utils::MakePoint(const int32_t latitude, const int32_t longitude) {
   Point p;
   p.set_latitude(latitude);
   p.set_longitude(longitude);
   return p;
 }
 
-Rectangle proto_utils::MakeRectangle(const int32_t latitude_lo, const int32_t longitude_lo,
-                                     const int32_t latitude_hi, const int32_t longitude_hi) {
+Rectangle rg_utils::MakeRectangle(const int32_t latitude_lo, const int32_t longitude_lo,
+                                          const int32_t latitude_hi, const int32_t longitude_hi) {
   Rectangle rect;
   *rect.mutable_lo() = MakePoint(latitude_lo, longitude_lo);
   *rect.mutable_hi() = MakePoint(latitude_hi, longitude_hi);
   return rect;
 }
 
-Feature proto_utils::MakeFeature(const std::string& name, const int32_t latitude, const int32_t longitude) {
+Feature rg_utils::MakeFeature(const std::string& name, const int32_t latitude, const int32_t longitude) {
   Feature f;
   f.set_name(name);
   *f.mutable_location() = MakePoint(latitude, longitude);
   return f;
 }
 
-RouteNote proto_utils::MakeRouteNote(const std::string& message, const int32_t latitude, const int32_t longitude) {
+RouteNote rg_utils::MakeRouteNote(const std::string& message, const int32_t latitude, const int32_t longitude) {
   RouteNote n;
   n.set_message(message);
   *n.mutable_location() = MakePoint(latitude, longitude);
@@ -52,7 +50,7 @@ RouteNote proto_utils::MakeRouteNote(const std::string& message, const int32_t l
 }
 
 // The formula is based on http://mathforum.org/library/drmath/view/51879.html
-double proto_utils::GetDistance(const Point& start, const Point& end) {
+double rg_utils::GetDistance(const Point& start, const Point& end) {
   static constexpr auto kCoordFactor{10000000.0};
   static constexpr auto kR{6371000};  // the mean radius of the Earth, meters
   auto to_radian = [](auto num) {
@@ -73,7 +71,7 @@ double proto_utils::GetDistance(const Point& start, const Point& end) {
   return kR * c;
 }
 
-const char* proto_utils::GetFeatureName(const Point& point, const FeatureList& feature_list) {
+const char* rg_utils::GetFeatureName(const Point& point, const FeatureList& feature_list) {
   for (const Feature& f : feature_list) {
     if (f.location().latitude() == point.latitude() &&
         f.location().longitude() == point.longitude()) {
@@ -83,7 +81,7 @@ const char* proto_utils::GetFeatureName(const Point& point, const FeatureList& f
   return nullptr;
 }
 
-bool proto_utils::IsPointWithinRectangle(const Rectangle& rectangle, const Point& point) {
+bool rg_utils::IsPointWithinRectangle(const Rectangle& rectangle, const Point& point) {
   const auto left = std::min(rectangle.lo().longitude(), rectangle.hi().longitude());
   const auto right = std::max(rectangle.lo().longitude(), rectangle.hi().longitude());
   const auto top = std::max(rectangle.lo().latitude(), rectangle.hi().latitude());
@@ -92,7 +90,7 @@ bool proto_utils::IsPointWithinRectangle(const Rectangle& rectangle, const Point
           point.latitude() >= bottom && point.latitude() <= top);
 }
 
-Feature proto_utils::GetFeatureFromPoint(const FeatureList& feature_list, const Point& point) {
+Feature rg_utils::GetFeatureFromPoint(const FeatureList& feature_list, const Point& point) {
   Feature feature;
   if (const auto name = GetFeatureName(point, feature_list)) {
     if (strlen(name) > 0) {
@@ -103,26 +101,18 @@ Feature proto_utils::GetFeatureFromPoint(const FeatureList& feature_list, const 
   return feature;
 }
 
-const Point& proto_utils::GetRandomPoint(const FeatureList& feature_list) {
+const Point& rg_utils::GetRandomPoint(const FeatureList& feature_list) {
   static unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
   static std::default_random_engine generator(seed);
   std::uniform_int_distribution<unsigned> feature_distribution(0, feature_list.size() - 1);
   return feature_list[feature_distribution(generator)].location();
 }
 
-unsigned proto_utils::GetRandomTimeDelay() {
+unsigned rg_utils::GetRandomTimeDelay() {
   static unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
   static std::default_random_engine generator(seed);
   static std::uniform_int_distribution<unsigned> delay_distribution(500, 1500);
   return delay_distribution(generator);
-}
-
-std::string proto_utils::ToString(const google::protobuf::Message& message) {
-  static google::protobuf::TextFormat::Printer printer;
-  printer.SetSingleLineMode(true);
-  std::string output;
-  printer.PrintToString(message, &output);
-  return output;
 }
 
 bool routeguide::operator==(const Point& point1, const Point& point2) {

@@ -7,10 +7,10 @@
 
 #include <vector>
 
-#include "proto/route_guide_service.h"
+#include "rg_service/route_guide_service.h"
 
 using FeatureList = std::vector<routeguide::Feature>;
 
-namespace db_utils {
+namespace rg_db {
 FeatureList GetDbFileContent();
-}  // namespace db_utils
+}  // namespace rg_db

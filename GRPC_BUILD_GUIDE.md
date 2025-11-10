@@ -316,15 +316,14 @@ cmake -B cmake-build-release-wsl-almalinux9-clang \
 cmake --build cmake-build-release-wsl-almalinux9-clang
 
 # Check results
-ls -lh cmake-build-release-wsl-almalinux9-clang/client/route_guide_*_client
-ls -lh cmake-build-release-wsl-almalinux9-clang/server/route_guide_*_server
+ls -lh cmake-build-release-wsl-almalinux9-clang/applications/*/route_guide_*
 ```
 
 ### Verify Shared Library Dependencies
 
 ```bash
 cd cmake-build-release-wsl-almalinux9-clang
-ldd client/route_guide_proxy_callback_client | grep -E "libprotobuf|libgrpc"
+ldd applications/reactor/route_guide_proxy_callback_client | grep -E "libprotobuf|libgrpc"
 ```
 
 Should show:
@@ -456,26 +455,31 @@ target_compile_options(gflags_nothreads_static PRIVATE -O3 -DNDEBUG -march=nativ
 
 ### 3. Project Libraries (Static, OBJECT)
 
-**Libraries**: rg_proto, rg_proto_utils, rg_common
+**Libraries**: rg_proto, rg_service, protobuf_utils, common
 
 **Strategy**: Static libraries, with rg_proto as OBJECT library
 
-**Structure** (proto/CMakeLists.txt):
+**Structure** (rg_service/CMakeLists.txt):
 ```cmake
 add_library(rg_proto OBJECT
     ${PROTO_IMPORT_DIRS}/route_guide.proto)
 
-add_library(rg_proto_utils proto_utils.cpp)
-target_link_libraries(rg_proto_utils PRIVATE rg_proto)
+add_library(rg_service
+    rg_utils.cpp
+    rg_db.cpp
+    rg_logger.cpp
+    route_guide_service.h
+    rg_logger.h)
+target_link_libraries(rg_service PUBLIC rg_proto protobuf_utils common)
 ```
 
 **Rationale**:
-- Prevents duplication: rg_proto included once
-- Build organization: Separate proto code from utilities
+- Prevents duplication: rg_proto included once as OBJECT library
+- Build organization: Separate service code, generic utilities, and C++ compat code
 - Link-time optimization: Better dead code elimination
 
 **Result**:
-- librg_common.a: 58 KB (was 875 KB before optimization)
+- librg_service.a: ~15 MB (includes service logic, utils, db, logger)
 
 ### Summary Table
 
@@ -484,7 +488,7 @@ target_link_libraries(rg_proto_utils PRIVATE rg_proto)
 | gRPC + Protobuf + Abseil + c-ares + RE2 | Shared | Heavy infrastructure bundle |
 | OpenSSL + zlib | System | Security updates, universal |
 | spdlog + gflags + glaze | Static (optimized) | Small utilities, speed-optimized |
-| rg_proto + rg_proto_utils + rg_common | Static | Project code, OBJECT lib prevents duplication |
+| rg_proto + rg_service + protobuf_utils + common | Static | Project code, OBJECT lib prevents duplication |
 | EventLoop | Shared | External library |
 
 ## Compiler Compatibility (Critical!)
@@ -602,8 +606,7 @@ COPY --from=builder /usr/local/lib64/libc-ares*.so* /usr/local/lib64/
 RUN ldconfig
 
 # Copy your binaries
-COPY --from=builder /app/build/client/* /app/
-COPY --from=builder /app/build/server/* /app/
+COPY --from=builder /app/build/applications/*/* /app/
 
 CMD ["/app/route_guide_callback_server"]
 ```
@@ -857,13 +860,13 @@ ls -lh <binary1> <binary2>
 
 ```bash
 # Check shared library dependencies
-ldd client/route_guide_proxy_callback_client | grep -E "libprotobuf|libgrpc"
+ldd applications/reactor/route_guide_proxy_callback_client | grep -E "libprotobuf|libgrpc"
 
 # Check static library sizes
-ls -lh cmake-build-release-wsl-almalinux9-clang/common/librg_common.a
+ls -lh cmake-build-release-wsl-almalinux9-clang/rg_service/librg_service.a
 
 # Verify symbols are stripped
-file client/route_guide_proxy_callback_client
+file applications/reactor/route_guide_proxy_callback_client
 # Should show: "stripped" in output
 ```
 
@@ -942,5 +945,5 @@ file client/route_guide_proxy_callback_client
 ```
 
 **Next Steps:**
-- For reactor pattern documentation, see [client/reactor_client.md](/client/reactor_client.md)
+- For reactor pattern documentation, see [reactor_client.md](/applications/reactor/reactor_client.md)
 - For multi-compiler setup, see "Multi-Compiler Setup" section above

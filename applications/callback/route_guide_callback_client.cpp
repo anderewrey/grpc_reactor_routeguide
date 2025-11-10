@@ -24,10 +24,11 @@
 #include <utility>
 #include <vector>
 
-#include "proto/route_guide_service.h"
+#include "rg_service/route_guide_service.h"
 
-#include "common/db_utils.h"
-#include "proto/proto_utils.h"
+#include "rg_service/rg_db.h"
+#include "rg_service/rg_utils.h"
+#include "protobuf_utils/protobuf_utils.h"
 
 using grpc::Channel;
 using grpc::ClientContext;
@@ -57,11 +58,11 @@ class RouteGuideClient {
       std::mutex mu;
       std::condition_variable cv;
       bool done = false;
-      logger.info("REQUEST  | Point: {}", proto_utils::ToString(point));
+      logger.info("REQUEST  | Point: {}", protobuf_utils::ToString(point));
       stub_->async()->GetFeature(&context, &point, &feature,
                                  [&result, &mu, &cv, &done, &feature, &logger](const Status& status) {
         logger.info("RESPONSE | Status: OK: {} msg:{} Feature: {}",
-                    status.ok(), status.error_message(), proto_utils::ToString(feature));
+                    status.ok(), status.error_message(), protobuf_utils::ToString(feature));
         std::lock_guard<std::mutex> lock(mu);
         result = (status.ok() && feature.has_location());
         done = true;
@@ -76,9 +77,9 @@ class RouteGuideClient {
     };
 
     Feature feature;
-    get_feature(proto_utils::MakePoint(409146138, -746188906), feature);
-    get_feature(proto_utils::MakePoint(1, 1), feature);
-    get_feature(proto_utils::MakePoint(0, 0), feature);
+    get_feature(rg_utils::MakePoint(409146138, -746188906), feature);
+    get_feature(rg_utils::MakePoint(1, 1), feature);
+    get_feature(rg_utils::MakePoint(0, 0), feature);
     get_feature({}, feature);
   }
 
@@ -87,7 +88,7 @@ class RouteGuideClient {
      public:
       Reader(RouteGuide::Stub* stub, const Rectangle& rectangle) {
         logger_.info("ENTER    |");
-        logger_.info("REQUEST  | Rectangle: {}", proto_utils::ToString(rectangle));
+        logger_.info("REQUEST  | Rectangle: {}", protobuf_utils::ToString(rectangle));
         stub->async()->ListFeatures(&context_, &rectangle, this);
         logger_.info("ENTER    | StartRead");
         StartRead(&feature_);
@@ -96,7 +97,7 @@ class RouteGuideClient {
       }
       void OnReadDone(bool ok) override {
         if (ok) {
-          logger_.info("RESPONSE | OK: {} Feature: {}", ok, proto_utils::ToString(feature_));
+          logger_.info("RESPONSE | OK: {} Feature: {}", ok, protobuf_utils::ToString(feature_));
           StartRead(&feature_);
         } else {
           logger_.info("EXIT     | OnReadDone() OK: {}", ok);
@@ -127,7 +128,7 @@ class RouteGuideClient {
       bool done_ = false;
     };
 
-    Reader reader(stub_.get(), proto_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000));
+    Reader reader(stub_.get(), rg_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000));
     const auto status = reader.Await();
     routeguide::logger::Get(routeguide::RpcMethods::kListFeatures).info("EXIT     | post-Await() OK: {} msg: {}", status.ok(), status.error_message());
   }
@@ -147,7 +148,7 @@ class RouteGuideClient {
       void OnWriteDone(bool ok) override {
         logger_.info("         | OnWriteDone() OK: {} alarm_.Set()", ok);
         // Delay and then do the next write or WritesDone
-        alarm_.Set(std::chrono::system_clock::now() + std::chrono::milliseconds(proto_utils::GetRandomTimeDelay()),
+        alarm_.Set(std::chrono::system_clock::now() + std::chrono::milliseconds(rg_utils::GetRandomTimeDelay()),
                    [this](const bool not_cancelled) {
                      if (!not_cancelled) {
                        logger_.info("REQUEST  | cancelled");
@@ -180,8 +181,8 @@ class RouteGuideClient {
           return;  // No more pending writes, the stream is terminated
         }
         if (points_remaining_ != 0) {
-          const Point& point = proto_utils::GetRandomPoint(feature_list_);
-          logger_.info("REQUEST  | Point: {}", proto_utils::ToString(point));
+          const Point& point = rg_utils::GetRandomPoint(feature_list_);
+          logger_.info("REQUEST  | Point: {}", protobuf_utils::ToString(point));
           StartWrite(&point);
           points_remaining_--;
         } else {
@@ -204,17 +205,17 @@ class RouteGuideClient {
     Recorder recorder(stub_.get(), feature_list_);
     const auto status = recorder.Await(summary);
     routeguide::logger::Get(routeguide::RpcMethods::kRecordRoute).info("EXIT     | post-Await() OK: {} msg: {} RouteSummary: {}",
-                                                                         status.ok(), status.error_message(), proto_utils::ToString(summary));
+                                                                         status.ok(), status.error_message(), protobuf_utils::ToString(summary));
   }
 
   void RouteChat() {
     class Chatter : public grpc::ClientBidiReactor<RouteNote, RouteNote> {
      public:
       explicit Chatter(RouteGuide::Stub* stub)
-          : notes_{proto_utils::MakeRouteNote("First message", 1, 1),
-                   proto_utils::MakeRouteNote("Second message", 2, 2),
-                   proto_utils::MakeRouteNote("Third message", 3, 3),
-                   proto_utils::MakeRouteNote("First message again", 1, 1)},
+          : notes_{rg_utils::MakeRouteNote("First message", 1, 1),
+                   rg_utils::MakeRouteNote("Second message", 2, 2),
+                   rg_utils::MakeRouteNote("Third message", 3, 3),
+                   rg_utils::MakeRouteNote("First message again", 1, 1)},
             notes_iterator_(notes_.begin()) {
         logger_.info("ENTER    |");
         stub->async()->RouteChat(&context_, this);
@@ -228,7 +229,7 @@ class RouteGuideClient {
       void OnWriteDone(bool ok) override {
         logger_.info("         | OnWriteDone() OK: {} alarm_.Set()", ok);
         // Delay and then do the next write or WritesDone
-        alarm_.Set(std::chrono::system_clock::now() + std::chrono::milliseconds(proto_utils::GetRandomTimeDelay()),
+        alarm_.Set(std::chrono::system_clock::now() + std::chrono::milliseconds(rg_utils::GetRandomTimeDelay()),
                    [this](const bool not_cancelled) {
                      if (!not_cancelled) {
                        logger_.info("REQUEST  | cancelled");
@@ -240,7 +241,7 @@ class RouteGuideClient {
       void OnReadDone(bool ok) override {
         logger_.info("         | OnReadDone() OK: {}", ok);
         if (ok) {
-          logger_.info("RESPONSE | RouteNote: {}", proto_utils::ToString(server_note_));
+          logger_.info("RESPONSE | RouteNote: {}", protobuf_utils::ToString(server_note_));
           logger_.info("         | StartRead");
           StartRead(&server_note_);
         }
@@ -269,7 +270,7 @@ class RouteGuideClient {
         }
         if (notes_iterator_ != notes_.end()) {
           const auto& note = *notes_iterator_;
-          logger_.info("REQUEST  | RouteNote: {}", proto_utils::ToString(note));
+          logger_.info("REQUEST  | RouteNote: {}", protobuf_utils::ToString(note));
           StartWrite(&note);
           ++notes_iterator_;
         } else {
@@ -306,7 +307,7 @@ int main(int argc, char** argv) {
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-  feature_list_ = db_utils::GetDbFileContent();
+  feature_list_ = rg_db::GetDbFileContent();
   RouteGuideClient guide(
       grpc::CreateChannel("localhost:50051", grpc::InsecureChannelCredentials()));
 

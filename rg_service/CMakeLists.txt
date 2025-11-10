@@ -2,6 +2,9 @@
 find_package(absl CONFIG REQUIRED)
 find_package(protobuf CONFIG REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
+find_package(gflags CONFIG REQUIRED)
+find_package(glaze CONFIG REQUIRED)
+find_package(spdlog CONFIG REQUIRED)
 
 # Include protobuf/gRPC generation helper
 include(ProtobufGrpcGenerate)
@@ -10,7 +13,7 @@ set(PROTO_IMPORT_DIRS ${CMAKE_CURRENT_LIST_DIR})
 set(PROTO_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 #
-# Add Library target with protobuf sources
+# Library 1: rg_proto (generated protobuf/gRPC code)
 #
 add_library(rg_proto
     OBJECT
@@ -45,20 +48,35 @@ protobuf_grpc_generate(
 )
 
 #
-# proto_utils
+# Library 2: rg_service (RouteGuide business logic)
 #
-add_library(rg_proto_utils
-        "proto_utils.cpp"
+add_library(rg_service
+    rg_utils.cpp
+    rg_db.cpp
+    rg_logger.cpp
+    route_guide_service.h
+    rg_logger.h
 )
-target_include_directories(rg_proto_utils
-    PRIVATE
+
+target_include_directories(rg_service
+    PUBLIC
         ${CMAKE_SOURCE_DIR}
 )
-target_link_libraries(rg_proto_utils
+
+target_link_libraries(rg_service
     PUBLIC
-        rg_proto  # PUBLIC exports rg_proto's interface including all its PUBLIC dependencies
+        rg_proto
+        protobuf_utils
+        gflags::gflags
+        common
+    PRIVATE
+        spdlog::spdlog
+        glaze::glaze
+        protobuf::libprotobuf
+        gRPC::grpc++
+        gRPC::grpc
 )
 
 # OBJECT libraries don't always propagate INTERFACE_LINK_LIBRARIES properly
 # Explicitly add gRPC libraries to ensure they propagate to final executables
-target_link_libraries(rg_proto_utils PUBLIC protobuf::libprotobuf gRPC::grpc++ gRPC::grpc)
+target_link_libraries(rg_service PUBLIC protobuf::libprotobuf gRPC::grpc++ gRPC::grpc)
