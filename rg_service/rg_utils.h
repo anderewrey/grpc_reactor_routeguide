@@ -8,11 +8,11 @@
 #include <string>
 #include <vector>
 
-#include "proto/route_guide_service.h"
+#include "rg_service/route_guide_service.h"
 
 using FeatureList = std::vector<routeguide::Feature>;
 
-namespace proto_utils {
+namespace rg_utils {
 routeguide::Point MakePoint(int32_t latitude, int32_t longitude);
 routeguide::Rectangle MakeRectangle(int32_t latitude_lo, int32_t longitude_lo,
                                     int32_t latitude_hi, int32_t longitude_hi);
@@ -24,8 +24,7 @@ bool IsPointWithinRectangle(const routeguide::Rectangle& rectangle, const routeg
 routeguide::Feature GetFeatureFromPoint(const FeatureList& feature_list, const routeguide::Point& point);
 const routeguide::Point& GetRandomPoint(const FeatureList& feature_list);
 unsigned GetRandomTimeDelay();
-std::string ToString(const google::protobuf::Message& message);
-}  // namespace proto_utils
+}  // namespace rg_utils
 
 namespace routeguide {
 bool operator==(const Point& point1, const Point& point2);

@@ -64,7 +64,7 @@ sent anytime from any thread. The goal of that signal is to provoke (immediately
 
 On purpose, the following examples are coming from a sandbox code using a 3rdparty eventloop library.
 
-- [route_guide_proxy_callback_client.cpp](/client/route_guide_proxy_callback_client.cpp)
+- [route_guide_proxy_callback_client.cpp](/applications/reactor/route_guide_proxy_callback_client.cpp)
 - [EventLoop][eventloop-lib]
 
 For the sanity of the reader, some passages are removed and the code logic reduced to its maximum. It is recommended
@@ -285,7 +285,7 @@ sent anytime from any thread. The goal of that signal is to provoke (immediately
 
 On purpose, the following examples are coming from a sandbox code using a 3rdparty eventloop library.
 
-- [route_guide_proxy_callback_client.cpp](/client/route_guide_proxy_callback_client.cpp)
+- [route_guide_proxy_callback_client.cpp](/applications/reactor/route_guide_proxy_callback_client.cpp)
 - [EventLoop][eventloop-lib]
 
 For the sanity of the reader, some passages are removed and the code logic reduced to its maximum. It is recommended

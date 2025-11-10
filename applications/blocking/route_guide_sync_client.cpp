@@ -20,10 +20,11 @@
 #include <thread>
 #include <vector>
 
-#include "proto/route_guide_service.h"
+#include "rg_service/route_guide_service.h"
 
-#include "common/db_utils.h"
-#include "proto/proto_utils.h"
+#include "rg_service/rg_db.h"
+#include "rg_service/rg_utils.h"
+#include "protobuf_utils/protobuf_utils.h"
 
 using grpc::Channel;
 using grpc::ClientContext;
@@ -52,21 +53,21 @@ class RouteGuideClient {
     auto get_feature = [stub_ = stub_.get(), &logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature)](const Point& point, Feature& feature) {
       logger.info("ENTER    |");
       ClientContext context;
-      logger.info("REQUEST  | Point: {}", proto_utils::ToString(point));
+      logger.info("REQUEST  | Point: {}", protobuf_utils::ToString(point));
       if (const auto status = stub_->GetFeature(&context, point, &feature); !status.ok()) {
         logger.info("EXIT     | OK: {}  msg: {}", status.ok(), status.error_message());
         return false;
       }
-      logger.info("RESPONSE | Feature: {}", proto_utils::ToString(feature));
+      logger.info("RESPONSE | Feature: {}", protobuf_utils::ToString(feature));
 
       const bool result = feature.has_location();
       logger.info("EXIT     | return {}", result);
       return result;
     };
     Feature feature;
-    get_feature(proto_utils::MakePoint(409146138, -746188906), feature);
-    get_feature(proto_utils::MakePoint(1, 1), feature);
-    get_feature(proto_utils::MakePoint(0, 0), feature);
+    get_feature(rg_utils::MakePoint(409146138, -746188906), feature);
+    get_feature(rg_utils::MakePoint(1, 1), feature);
+    get_feature(rg_utils::MakePoint(0, 0), feature);
     get_feature({}, feature);
   }
 
@@ -75,11 +76,11 @@ class RouteGuideClient {
     Feature feature;
     ClientContext context;
     logger.info("ENTER    |");
-    const auto rectangle = proto_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000);
-    logger.info("REQUEST  | Rectangle: {}", proto_utils::ToString(rectangle));
+    const auto rectangle = rg_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000);
+    logger.info("REQUEST  | Rectangle: {}", protobuf_utils::ToString(rectangle));
     auto reader = stub_->ListFeatures(&context, rectangle);
     while (reader->Read(&feature)) {
-      logger.info("RESPONSE | Feature: {}", proto_utils::ToString(feature));
+      logger.info("RESPONSE | Feature: {}", protobuf_utils::ToString(feature));
     }
     logger.info("EXIT     | Pre-Finish()");
     const auto status = reader->Finish();
@@ -95,20 +96,20 @@ class RouteGuideClient {
 
     auto writer = stub_->RecordRoute(&context, &summary);
     for (int i = 0; i < kPoints; i++) {
-      const Point& point = proto_utils::GetRandomPoint(feature_list_);
-      logger.info("REQUEST  | Point: {}", proto_utils::ToString(point));
+      const Point& point = rg_utils::GetRandomPoint(feature_list_);
+      logger.info("REQUEST  | Point: {}", protobuf_utils::ToString(point));
       if (!writer->Write(point)) {
         // Broken stream.
         break;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(proto_utils::GetRandomTimeDelay()));
+      std::this_thread::sleep_for(std::chrono::milliseconds(rg_utils::GetRandomTimeDelay()));
     }
     logger.info("EXIT     | WritesDone");
     writer->WritesDone();
     logger.info("EXIT     | Finish");
     const auto status = writer->Finish();
     logger.info("RESPONSE | Status: OK: {} msg: {} RouteSummary: {}",
-                status.ok(), status.error_message(), proto_utils::ToString(summary));
+                status.ok(), status.error_message(), protobuf_utils::ToString(summary));
     logger.info("EXIT     |");
   }
 
@@ -118,12 +119,12 @@ class RouteGuideClient {
     ClientContext context;
     auto stream = stub_->RouteChat(&context);
     std::thread writer([stream = stream.get(), &logger]() {
-      std::vector notes{proto_utils::MakeRouteNote("First message", 1, 1),
-                        proto_utils::MakeRouteNote("Second message", 2, 2),
-                        proto_utils::MakeRouteNote("Third message", 3, 3),
-                        proto_utils::MakeRouteNote("First message again", 1, 1)};
+      std::vector notes{rg_utils::MakeRouteNote("First message", 1, 1),
+                        rg_utils::MakeRouteNote("Second message", 2, 2),
+                        rg_utils::MakeRouteNote("Third message", 3, 3),
+                        rg_utils::MakeRouteNote("First message again", 1, 1)};
       for (const RouteNote& note : notes) {
-      logger.info("REQUEST  | RouteNote: {}", proto_utils::ToString(note));
+      logger.info("REQUEST  | RouteNote: {}", protobuf_utils::ToString(note));
         stream->Write(note);
       }
       logger.info("EXIT     | pre-WritesDone");
@@ -134,7 +135,7 @@ class RouteGuideClient {
 
     RouteNote server_note;
     while (stream->Read(&server_note)) {
-          logger.info("RESPONSE | RouteNote: {}", proto_utils::ToString(server_note));
+          logger.info("RESPONSE | RouteNote: {}", protobuf_utils::ToString(server_note));
     }
     logger.info("EXIT     | waiting for writer.join()");
     writer.join();
@@ -155,7 +156,7 @@ int main(int argc, char** argv) {
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-  feature_list_ = db_utils::GetDbFileContent();
+  feature_list_ = rg_db::GetDbFileContent();
 
   RouteGuideClient guide(
       grpc::CreateChannel("localhost:50051", grpc::InsecureChannelCredentials()));

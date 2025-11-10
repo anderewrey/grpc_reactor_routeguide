@@ -48,7 +48,7 @@ them already available through the OS system:
 
 ## Implementation details about the client-side reactors
 
-Refer to [reactor_client.md](/client/reactor_client.md)
+Refer to [reactor_client.md](/applications/reactor/reactor_client.md)
 
 ## Thanks to
 

@@ -5,17 +5,10 @@
 
 #pragma once
 
-// Single point of import for generated proto/gRPC code
-#include "generated/route_guide.pb.h"
 #include "generated/route_guide.grpc.pb.h"
+#include "generated/route_guide.pb.h"
 
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
-
-#include <array>
-#include <memory>
-
-#include "common/utility.h"
+#include "rg_service/rg_logger.h"
 
 namespace routeguide {
 
@@ -28,6 +21,17 @@ enum class RpcMethods {
   kRpcMethodsLast,
 };
 constexpr auto kRpcMethodsQty = static_cast<size_t>(RpcMethods::kRpcMethodsLast);
+
+// Convert RpcMethods enum to string
+constexpr std::string_view ToString(const RpcMethods method) {
+  switch (method) {
+    case RpcMethods::kGetFeature:   return "GetFeature";
+    case RpcMethods::kListFeatures: return "ListFeatures";
+    case RpcMethods::kRecordRoute:  return "RecordRoute";
+    case RpcMethods::kRouteChat:    return "RouteChat";
+    default: return "Unknown";
+  }
+}
 
 // GetFeature RPC metadata
 namespace GetFeature {
@@ -56,21 +60,5 @@ using RequestT = RouteNote;
 using ResponseT = RouteNote;
 inline constexpr auto RpcKey = RpcMethods::kRouteChat;
 }  // namespace RouteChat
-
-// Logger registry for RouteGuide service
-namespace logger {
-inline std::array<std::shared_ptr<spdlog::logger>, kRpcMethodsQty>& Registry() {
-  static std::array<std::shared_ptr<spdlog::logger>, kRpcMethodsQty> loggers = {
-      spdlog::stdout_color_mt("GetFeature"),
-      spdlog::stdout_color_mt("ListFeatures"),
-      spdlog::stdout_color_mt("RecordRoute"),
-      spdlog::stdout_color_mt("RouteChat")};
-  return loggers;
-}
-
-inline spdlog::logger& Get(RpcMethods method) {
-  return *Registry()[std::to_underlying(method)];
-}
-}  // namespace logger
 
 }  // namespace routeguide

@@ -22,12 +22,13 @@
 #include <thread>
 #include <utility>
 
-#include "proto/route_guide_service.h"
+#include "rg_service/route_guide_service.h"
 
-#include "common/db_utils.h"
-#include "proto/proto_utils.h"
+#include "rg_service/rg_db.h"
+#include "rg_service/rg_utils.h"
+#include "protobuf_utils/protobuf_utils.h"
 
-#include "client/reactor_client_routeguide.h"
+#include "applications/reactor/reactor_client_routeguide.h"
 
 namespace {
 std::thread::id main_thread = std::this_thread::get_id();
@@ -67,7 +68,7 @@ class RouteGuideClient {
         routeguide::GetFeature::ResponseT response;
         reactor->GetResponse(response);
         // (Point 3.7) update application with response
-        logger.info("RESPONSE | {}: {}", response.GetTypeName(), proto_utils::ToString(response));
+        logger.info("RESPONSE | {}: {}", response.GetTypeName(), protobuf_utils::ToString(response));
       } else {
         logger.info("         | {} reactor: {} Status: OK: {} msg: {}",
                     event->getName(), fmt::ptr(reactor), status.ok(), status.error_message());
@@ -87,7 +88,7 @@ class RouteGuideClient {
       routeguide::ListFeatures::ResponseT response;
       reactor->GetResponse(response);
       // (Point 2.12) update application with response
-      logger.info("RESPONSE | {}: {}", response.GetTypeName(), proto_utils::ToString(response));
+      logger.info("RESPONSE | {}: {}", response.GetTypeName(), protobuf_utils::ToString(response));
 #if 0
       // Triggering extra concurrency: Un-comment that #IF block to probe the refusal of concurrent RPC calls.
       // Each received result from stream is reused to trigger a concurrent unary RPC request. If the RPC already has
@@ -129,7 +130,7 @@ class RouteGuideClient {
     auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature);
     if (reactor_map_[RpcKey]) {
       logger.info("         | reactor[{}] already in execution, ignoring: {}",
-                  fmt::ptr(reactor_map_[RpcKey].get()), proto_utils::ToString(point));
+                  fmt::ptr(reactor_map_[RpcKey].get()), protobuf_utils::ToString(point));
       return;
     }
     Callbacks cbs;
@@ -156,7 +157,7 @@ class RouteGuideClient {
 
     if (reactor_map_[RpcKey]) {
       logger.info("         | reactor[{}] already in execution, ignoring: {}",
-                  fmt::ptr(reactor_map_[RpcKey].get()), proto_utils::ToString(rect));
+                  fmt::ptr(reactor_map_[RpcKey].get()), protobuf_utils::ToString(rect));
       return;
     }
 
@@ -202,13 +203,13 @@ int main(int argc, char** argv) {
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-  feature_list_ = db_utils::GetDbFileContent();
+  feature_list_ = rg_db::GetDbFileContent();
   RouteGuideClient guide(grpc::CreateChannel("localhost:50051", grpc::InsecureChannelCredentials()));
 
   spdlog::info("-------------- ListFeatures --------------");
-  guide.ListFeatures(proto_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000));
+  guide.ListFeatures(rg_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000));
   spdlog::info("-------------- GetFeature --------------");
-  guide.GetFeature(proto_utils::GetRandomPoint(feature_list_));
+  guide.GetFeature(rg_utils::GetRandomPoint(feature_list_));
   EventLoop::Run();
   spdlog::info("-------------- LEAVING APPLICATION --------------");
   return 0;

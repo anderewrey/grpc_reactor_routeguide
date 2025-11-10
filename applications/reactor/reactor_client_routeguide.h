@@ -10,9 +10,9 @@
 #include <memory>
 #include <utility>
 
-#include "proto/route_guide_service.h"
+#include "rg_service/route_guide_service.h"
 
-#include "client/reactor_client.h"
+#include "applications/reactor/reactor_client.h"
 
 /************************
  * ClientReactor/GetFeature: Following code belongs to the API implementation
