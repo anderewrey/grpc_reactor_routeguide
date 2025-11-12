@@ -323,7 +323,7 @@ ls -lh cmake-build-release-wsl-almalinux9-clang/applications/*/route_guide_*
 
 ```bash
 cd cmake-build-release-wsl-almalinux9-clang
-ldd applications/reactor/route_guide_proxy_callback_client | grep -E "libprotobuf|libgrpc"
+ldd applications/reactor/route_guide_active_reactor_client | grep -E "libprotobuf|libgrpc"
 ```
 
 Should show:
@@ -384,7 +384,7 @@ endif()
 
 ### Library Composition Analysis
 
-**Debug Build Example** (route_guide_proxy_callback_client: 3.9 MB):
+**Debug Build Example** (route_guide_active_reactor_client: 3.9 MB):
 ```
 Text section:    ~1.0 MB  (executable code)
   - Application code (debuggable): ~400 KB
@@ -860,13 +860,13 @@ ls -lh <binary1> <binary2>
 
 ```bash
 # Check shared library dependencies
-ldd applications/reactor/route_guide_proxy_callback_client | grep -E "libprotobuf|libgrpc"
+ldd applications/reactor/route_guide_active_reactor_client | grep -E "libprotobuf|libgrpc"
 
 # Check static library sizes
 ls -lh cmake-build-release-wsl-almalinux9-clang/rg_service/librg_service.a
 
 # Verify symbols are stripped
-file applications/reactor/route_guide_proxy_callback_client
+file applications/reactor/route_guide_active_reactor_client
 # Should show: "stripped" in output
 ```
 

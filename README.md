@@ -58,7 +58,8 @@ Refer to [reactor_client.md](/applications/reactor/reactor_client.md)
 - Falko Axmann for his structured example about [CMake project with gRPC and protobuf][falko-grpc-cmake].
 - [Menno van der Graaf][mercotui] for being my rubberduck while learning about and developing the initial client-side
   implementation of the gRPC Callback API and struggling with the nonsense examples from gRPC.
-- Rainer Grimm for all his [books][rainer-books] and his [blog][modernescpp-blog] about modern C++.
+- Rainer Grimm (1962-2025) for his [books][rainer-books] and [blog][modernescpp-blog] about modern C++. He advocated
+  for ALS awareness and research throughout his journey with the disease. Consider supporting ALS research in his memory.
 
 <!-- Reference links -->
 [grpc-route-guide]: https://github.com/grpc/grpc/tree/master/examples/cpp/route_guide
