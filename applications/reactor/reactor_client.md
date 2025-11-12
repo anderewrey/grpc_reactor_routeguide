@@ -1,5 +1,44 @@
 # Reactor implementation of gRPC clients
 
+## Design Overview
+
+A gRPC thread invokes the reactor callbacks and the application thread is notified to process the response event. To
+avoid race conditions, the hold mechanism prevents the RPC from completing while the application thread processes the
+response. This approach eliminates the need for locks when accessing application state.
+
+### The Problem
+
+The gRPC reactor callbacks (e.g. `OnDone`, `OnReadDone`) are executed on threads from the gRPC internal thread pool, but
+the application cannot control which thread executes the callback. Client applications that use a single main thread or
+event loop require response processing to occur on a thread which is managed by the application to maintain thread-safe
+access with the software components of the main application.
+
+### Comparison with Direct Callbacks
+
+A direct callback implementation processes responses immediately within the gRPC thread callback and requires
+synchronization mechanisms when accessing shared application state. The synchronization requirement propagates throughout
+the application codebase, and all mutable state must be protected at every access point. The application loses
+single-threaded execution guarantees and must handle concurrent access everywhere. Long processing times block threads
+from the gRPC thread pool and reduce available concurrency.
+
+### The Solution: Proxy-Reactor Pattern
+
+This implementation combines two design patterns to address the threading problem. The result is single-threaded
+response processing without synchronization primitives. The proxy-reactor pattern defers response processing
+to the application thread through event notification. All responses are handled sequentially on a single application
+thread.
+
+Reactor Pattern (Event-driven concurrency):
+- Events from gRPC (`OnDone`, `OnReadDone`) are received and demultiplexed
+- Events are handled asynchronously without blocking
+- Event detection is separated from event handling
+
+Proxy Pattern (Indirection layer):
+- The proxy acts as an intermediary between gRPC's threading model and the application thread
+- RPC state (context, request, response) is held by the proxy instance with lifetime bound to the RPC
+- Thread-safe callbacks are provided to bridge gRPC threads to the application event loop
+- The proxy instance is destroyed by the application when the RPC is done and cannot be reused
+
 ## Unary RPC client
 
 gRPC API keywords: ClientUnaryReactor, ClientCallbackUnary
@@ -93,7 +132,7 @@ void GetFeature(routeguide::Point point) {
     EventLoop::TriggerEvent(kGetFeatureOnDone, reactor);  // Signal OnDoneCallback event from gRPC thread
   };
   reactor_map_[RpcKey] = std::make_unique<ClientReactor>(*stub_,
-                                                         std::move(routeguide::CreateClientContext()),
+                                                         std::move(CreateClientContext()),
                                                          std::move(point),
                                                          std::move(cbs));
 }
@@ -324,7 +363,7 @@ void ListFeatures(routeguide::Rectangle rect) {
     EventLoop::TriggerEvent(kListFeaturesOnDone, reactor);  // Signal OnDoneCallback event from gRPC thread
   };
   reactor_map_[RpcKey] = std::make_unique<ClientReactor>(*stub_,
-                                                         std::move(routeguide::CreateClientContext()),
+                                                         std::move(CreateClientContext()),
                                                          std::move(rect),
                                                          std::move(cbs));
 }
