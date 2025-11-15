@@ -16,6 +16,10 @@
 /************************
  * gRPC Reactor: Following code belongs to the API implementation
  * It is generic as much as possible
+ *
+ * Active Object Pattern: Method Request & Future components
+ * These generic reactor classes encapsulate RPC state (Method Request) and provide
+ * asynchronous result access (Future). See reactor_client.md for detailed documentation.
  ************************/
 namespace RpcReactor::Client {
 
@@ -24,7 +28,7 @@ namespace RpcReactor::Client {
 /// @tparam ResponseT type of protobuf message the RPC handles
 template <class ResponseT>
 requires std::derived_from<ResponseT, google::protobuf::Message>
-struct ProxyUnaryCallbacks {
+struct ActiveUnaryCallbacks {
   /// Function signature for ClientUnaryReactor::OnDone event. This event function is called by gRPC when the RPC is
   /// done and no more operation is possible with that reactor instance.
   /// @param reactor instance pointer on which the event is received
@@ -36,32 +40,33 @@ struct ProxyUnaryCallbacks {
 
 /// template class for unary RPC client reactor. This class is derived again by
 /// specialized RPC client reactors.
+/// Active Object components: Method Request (encapsulates RPC state) & Future (provides GetResponse(), Status())
 /// @tparam ResponseT type of protobuf message the RPC handles
 template <class ResponseT>
 requires std::derived_from<ResponseT, google::protobuf::Message>
-class ProxyUnaryReactor : public grpc::ClientUnaryReactor {
+class ActiveUnaryReactor : public grpc::ClientUnaryReactor {
  public:
   /// Constructor of the reactor class. It moves the received objects as members.
   /// @param context given to this reactor about the ongoing RPC method
   /// @param cbs given to this reactor to use as callable functions
-  ProxyUnaryReactor(std::unique_ptr<grpc::ClientContext> context, ProxyUnaryCallbacks<ResponseT>&& cbs)
+  ActiveUnaryReactor(std::unique_ptr<grpc::ClientContext> context, ActiveUnaryCallbacks<ResponseT>&& cbs)
       : context_(std::move(context)),
         cbs_(std::move(cbs)) {}
 
   /// Destructor of the reactor class. It tells the gRPC connection to close the channel.
   /// If the context/channel is already closed, there's no problem to TryCancel() it again.
-  ~ProxyUnaryReactor() override {
+  ~ActiveUnaryReactor() override {
     context_->TryCancel();
   }
 
   /// This class cannot be copied.
-  ProxyUnaryReactor(const ProxyUnaryReactor&) = delete;
+  ActiveUnaryReactor(const ActiveUnaryReactor&) = delete;
   /// This class cannot be copied.
-  ProxyUnaryReactor& operator=(const ProxyUnaryReactor&) = delete;
+  ActiveUnaryReactor& operator=(const ActiveUnaryReactor&) = delete;
   /// This class cannot be moved.
-  ProxyUnaryReactor(ProxyUnaryReactor&&) = delete;
+  ActiveUnaryReactor(ActiveUnaryReactor&&) = delete;
   /// This class cannot be moved.
-  ProxyUnaryReactor& operator=(ProxyUnaryReactor&&) = delete;
+  ActiveUnaryReactor& operator=(ActiveUnaryReactor&&) = delete;
 
   /// Sends a best-effort out-of-band cancel to the RPC. That signal is thread-safe
   /// and can be sent anytime from any thread. The goal of that signal is to provoke
@@ -113,7 +118,7 @@ class ProxyUnaryReactor : public grpc::ClientUnaryReactor {
 
  private:
   grpc::Status status_;
-  ProxyUnaryCallbacks<ResponseT> cbs_;
+  ActiveUnaryCallbacks<ResponseT> cbs_;
 
   // The application MAY call (but should not) GetResponse() while a gRPC thread is on OnDone().
   // That concurrent situation should not happen by design, unless the application
@@ -128,7 +133,7 @@ class ProxyUnaryReactor : public grpc::ClientUnaryReactor {
 /// @tparam ResponseT type of protobuf message the RPC handles
 template <class ResponseT>
 requires std::derived_from<ResponseT, google::protobuf::Message>
-struct ProxyReadCallbacks {
+struct ActiveReadCallbacks {
   /// Function signature for ClientReadReactor::OnReadDone event with positive OK flag
   /// @param reactor instance pointer on which the event is received
   /// @param response reference to the response message the reactor received
@@ -154,33 +159,34 @@ struct ProxyReadCallbacks {
 
 /// Template class for stream-reader RPC client reactor. This class is derived again by
 /// specialized RPC client reactors.
+/// Active Object components: Method Request (encapsulates RPC state) & Future (provides GetResponse(), Status())
 /// @tparam ResponseT type of protobuf message the RPC handles
 template <class ResponseT>
 requires std::derived_from<ResponseT, google::protobuf::Message>
-class ProxyReadReactor : public grpc::ClientReadReactor<ResponseT> {
+class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
  public:
   /// Constructor of the reactor class. It moves the received objects as members.
   /// @param context given to this reactor about the ongoing RPC method
   /// @param cbs given to this reactor to use as callable functions
-  ProxyReadReactor(std::unique_ptr<grpc::ClientContext> context,
-                   ProxyReadCallbacks<ResponseT>&& cbs)
+  ActiveReadReactor(std::unique_ptr<grpc::ClientContext> context,
+                    ActiveReadCallbacks<ResponseT>&& cbs)
       : context_(std::move(context)),
         cbs_(std::move(cbs)) { }
 
   /// Destructor of the reactor class. It tells the gRPC connection to close the channel.
   /// If the context/channel is already closed, there's no problem to TryCancel() it again.
-  ~ProxyReadReactor() override {
+  ~ActiveReadReactor() override {
     context_->TryCancel();
   }
 
   /// This class cannot be copied nor moved
-  ProxyReadReactor(const ProxyReadReactor&) = delete;
+  ActiveReadReactor(const ActiveReadReactor&) = delete;
   /// This class cannot be copied nor moved
-  ProxyReadReactor& operator=(const ProxyReadReactor&) = delete;
+  ActiveReadReactor& operator=(const ActiveReadReactor&) = delete;
   /// This class cannot be copied nor moved
-  ProxyReadReactor(ProxyReadReactor&&) = delete;
+  ActiveReadReactor(ActiveReadReactor&&) = delete;
   /// This class cannot be copied nor moved
-  ProxyReadReactor& operator=(ProxyReadReactor&&) = delete;
+  ActiveReadReactor& operator=(ActiveReadReactor&&) = delete;
 
   /// Sends a best-effort out-of-band cancel to the RPC. That signal is thread-safe
   /// and can be sent anytime from any thread. The goal of that signal is to provoke
@@ -276,7 +282,7 @@ class ProxyReadReactor : public grpc::ClientReadReactor<ResponseT> {
 
  private:
   grpc::Status status_;
-  ProxyReadCallbacks<ResponseT> cbs_;
+  ActiveReadCallbacks<ResponseT> cbs_;
 
   // The application MAY call GetResponse() while a gRPC thread is on OnReadDone().
   // That concurrent situation should not happen by design, unless the application

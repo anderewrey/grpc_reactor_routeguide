@@ -46,6 +46,13 @@ std::unique_ptr<grpc::ClientContext> CreateClientContext() {
  * That code is hosted on the application project, not auto-generated.
  * It also does the making and reading of proto messages. A good practice
  * would be to not expose the message types nor the `Status` outside of here.
+ *
+ * Active Object Pattern implementation:
+ * - RouteGuideClient methods (GetFeature, ListFeatures) = Proxy components
+ * - EventLoop::RegisterEvent handlers = Servant components
+ * - EventLoop::Run() in main = Scheduler component
+ * - Main thread serves as the Active Object's thread
+ * See reactor_client.md for detailed Active Object pattern documentation.
  ************************/
 class RouteGuideClient {
   static constexpr auto kGetFeatureOnDone{"GetFeatureOnDone"};
@@ -54,6 +61,8 @@ class RouteGuideClient {
   static constexpr auto kListFeaturesOnDone{"ListFeaturesOnDone"};
 
  public:
+  /// Constructor registers Servant handlers with EventLoop (Scheduler).
+  /// Servant components: Event handlers that process RPC responses on application thread.
   explicit RouteGuideClient(const std::shared_ptr<grpc::Channel>& channel)
       : stub_(routeguide::RouteGuide::NewStub(channel)) {
     EventLoop::RegisterEvent(kGetFeatureOnDone,
@@ -122,6 +131,8 @@ class RouteGuideClient {
     });
   }
 
+  /// Proxy component: Client-facing method that creates Method Request and returns immediately.
+  /// Runs on client thread (main application thread).
   void GetFeature(routeguide::Point point) {
     using routeguide::GetFeature::ClientReactor;
     using routeguide::GetFeature::Callbacks;
@@ -148,6 +159,8 @@ class RouteGuideClient {
     logger.info("         | reactor[{}] created", fmt::ptr(reactor_map_[RpcKey].get()));
   }
 
+  /// Proxy component: Client-facing method that creates Method Request and returns immediately.
+  /// Runs on client thread (main application thread).
   void ListFeatures(routeguide::Rectangle rect) {
     using routeguide::ListFeatures::ClientReactor;
     using routeguide::ListFeatures::Callbacks;
@@ -210,7 +223,7 @@ int main(int argc, char** argv) {
   guide.ListFeatures(rg_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000));
   spdlog::info("-------------- GetFeature --------------");
   guide.GetFeature(rg_utils::GetRandomPoint(feature_list_));
-  EventLoop::Run();
+  EventLoop::Run();  // Scheduler component: Continuously processes queued events on main application thread
   spdlog::info("-------------- LEAVING APPLICATION --------------");
   return 0;
 }

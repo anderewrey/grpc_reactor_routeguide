@@ -1,15 +1,121 @@
 # Reactor implementation of gRPC clients
 
+## Design Overview
+
+A gRPC thread invokes the reactor callbacks and the application thread is notified to process the response event. To
+avoid race conditions, the hold mechanism prevents the RPC from completing while the application thread processes the
+response. This approach eliminates the need for locks when accessing application state.
+
+### The Problem
+
+The gRPC reactor callbacks (e.g. `OnDone`, `OnReadDone`) are executed on threads from the gRPC internal thread pool, but
+the application cannot control which thread executes the callback. Client applications that use a single main thread or
+event loop require response processing to occur on a thread which is managed by the application to maintain thread-safe
+access with the software components of the main application.
+
+### Comparison with Direct Callbacks
+
+A direct callback implementation processes responses immediately within the gRPC thread callback and requires
+synchronization mechanisms when accessing shared application state. The synchronization requirement propagates throughout
+the application codebase, and all mutable state must be protected at every access point. The application loses
+single-threaded execution guarantees and must handle concurrent access everywhere. Long processing times block threads
+from the gRPC thread pool and reduce available concurrency.
+
+### The Solution: Active Object Pattern
+
+This implementation uses the [Active Object pattern][active-object-pattern] to address the threading problem. The result
+is single-threaded response processing without synchronization primitives. The active object pattern defers response
+processing to the application thread through event notification. All responses are handled sequentially on a single
+application thread.
+
+In this implementation, the main application thread serves as the Active Object's thread. It actively runs the EventLoop
+(Scheduler) which continuously processes queued events. gRPC reactor callbacks execute on gRPC internal threads and
+enqueue events, but the Servant (event handlers) processes responses on the main application thread. This ensures all
+business logic executes on a single thread without synchronization primitives.
+
+Active Object Pattern components:
+- Method Request: The reactor instance encapsulates an RPC invocation (context, request, response, callbacks)
+- Scheduler: EventLoop dispatches queued events to the application thread
+- Activation List: EventLoop's internal queue holds pending events
+- Servant: Application event handlers process responses on the application thread
+- Future: The reactor instance acts as a handle to retrieve results via `GetResponse()`
+- Proxy: Client methods (e.g., `GetFeature()`) create reactors and trigger event notifications
+
+Reactor Pattern (Event-driven concurrency):
+- Events from gRPC (`OnDone`, `OnReadDone`) are received and demultiplexed
+- Events are handled asynchronously without blocking
+- Event detection is separated from event handling
+
+## Active Object Components Implementation
+
+The Active Object pattern is based on key role components. The implementation is organized across three architectural
+layers.
+
+| File                                    | Components                   | Layer                |
+|-----------------------------------------|------------------------------|----------------------|
+| `reactor_client.h`                      | Method Request, Future       | Generic (reusable)   |
+| `reactor_client_routeguide.h`           | Method Request (specialized) | Service-specific     |
+| `route_guide_active_reactor_client.cpp` | Proxy, Servant, Scheduler    | Application          |
+| EventLoop library (external)            | Scheduler, Activation List   | Infrastructure       |
+
+| Pattern Component | Description                                                                                | Code Elements                                           |
+|-------------------|--------------------------------------------------------------------------------------------|---------------------------------------------------------|
+| Proxy             | Client-facing methods that run in client thread, create reactors, and return immediately   | `GetFeature()`, `ListFeatures()`                        |
+| Scheduler         | Event loop that dispatches queued events to the application thread                         | `EventLoop::Run()`, `TriggerEvent()`                    |
+| Activation List   | Event loop's internal queue that holds pending event notifications                         | EventLoop internal queue                                |
+| Method Request    | Reactor instances that encapsulate RPC state (ClientContext, request, response, callbacks) | `ActiveUnaryReactor`, `ActiveReadReactor`               |
+| Servant           | Application event handler functions that process responses on application thread           | `EventLoop::RegisterEvent()` handlers, `OnDoneCallback` |
+| Future            | Reactor instance handle that provides access to retrieve results asynchronously            | `GetResponse()`, `Status()`                             |
+
+### Proxy Component
+
+The Proxy component (not the Proxy design pattern) is the client-facing interface that applications call to initiate
+RPC operations. Proxy methods run on the client application thread and create reactor instances (Method Requests)
+without blocking.
+
+The Proxy method constructs the reactor, configures callbacks to notify the Scheduler (EventLoop), and returns control
+immediately to the caller.
+
+### Scheduler & Activation List Components
+
+The Scheduler dispatches queued events to the application thread, and the Activation List is the internal queue holding
+pending notifications. These components are provided by the [EventLoop library][eventloop-lib] library.
+
+The Scheduler bridges gRPC threads to the application thread. gRPC callbacks invoke `TriggerEvent()`, which enqueues
+notifications in the Activation List. The Scheduler dequeues and dispatches them to Servant handlers on the application
+thread, maintaining single-threaded execution.
+
+### Method Request Component
+
+The Method Request component encapsulates an RPC invocation with all necessary state: `ClientContext`, request message,
+response message, and callbacks. The reactor instances (e.g. `ActiveUnaryReactor`, `ActiveReadReactor`) implement this
+component.
+
+### Servant Component
+
+The Servant component consists of application functions that process RPC responses. The implementation provides two
+execution strategies:
+
+1. **Immediate processing**: Early callbacks (`OnDoneCallback`, `OnReadDoneOkCallback`) execute on gRPC threads for
+   quick decisions or lightweight processing
+2. **Deferred processing**: Handlers registered via `EventLoop::RegisterEvent()` execute on application thread for
+   heavier processing after Scheduler dispatch
+
+### Future Component
+
+The Future component provides asynchronous access to RPC results. The reactor instance acts as the Future, exposing
+`GetResponse()` to retrieve response data and `Status()` to check operation success or failure.
+
 ## Unary RPC client
 
 gRPC API keywords: ClientUnaryReactor, ClientCallbackUnary
 
 Both synchronous (blocking) and asynchronous methods are possible; the reactor is an asynchronous variant.
 
-### ProxyUnaryReactor class
+### ActiveUnaryReactor class
 
-Inherit from `grpc::ClientUnaryReactor`, this class follows some points of both [proxy][proxy-pattern] and
-[reactor][reactor-pattern] design patterns:
+Inherit from `grpc::ClientUnaryReactor`, this class implements the Method Request component of the
+[Active Object pattern][active-object-pattern] and uses the [Reactor pattern][reactor-pattern] for event handling:
 
 - This class is meant to run on concurrent threads.
 - Its constructor is executed by the caller and once the task is done, the caller must destroy it. The
@@ -20,19 +126,19 @@ Inherit from `grpc::ClientUnaryReactor`, this class follows some points of both 
   threads to take care at the same time.
 - Thread-unsafe: the gRPC callback (i.e. `ClientUnaryReactor::OnDone`) is not executed on client thread but on a
   random one (from gRPC thread pool). It is the responsibility of the user to provide a thread-safe callback function.
-  To ease that situation, the `ProxyUnaryReactor` class provides a callback slot (i.e. `OnDoneCallback`)
+  To ease that situation, the `ActiveUnaryReactor` class provides a callback slot (i.e. `OnDoneCallback`)
   which is called when `ClientUnaryReactor::OnDone` is signaled by the ClientCallbackUnary. That callback is meant to be
   assigned by the client side to notify its eventloop to allocate a shared time on its scheduler and proceeding with the
-  proxy reactor instance.
+  active reactor instance.
 
-When `ClientUnaryReactor::OnDone` event is handled in the proxy reactor, the arguments of the `OnDoneCallback` callback
+When `ClientUnaryReactor::OnDone` event is handled in the active reactor, the arguments of the `OnDoneCallback` callback
 function are:
 
 ````cpp
 using OnDoneCallback = std::function<void(grpc::ClientUnaryReactor* reactor, const grpc::Status&, const ResponseT&)>;
 ````
 
-- the pointer to the proxy reactor instance (i.e. `this`)
+- the pointer to the active reactor instance (i.e. `this`)
 - a reference to the `grpc::Status` content
 - a reference to the `Response` content
 
@@ -48,11 +154,11 @@ Three public functions can be called by the application side:
 - `void TryCancel()`
 
 `GetResponse()` function swaps the underlying data storage of the response object. The swap mechanism is important to
-avoid a deep-copy of the content of the response. For the `ProxyUnaryReactor`, having the response swapped is acceptable
+avoid a deep-copy of the content of the response. For the `ActiveUnaryReactor`, having the response swapped is acceptable
 because the unary RPC is meant to one response only, so the swap is a good technique to speed up the response proceeding
 time. The function will return true when the returned response is valid.
 
-`Status()` function simply returns a reference to the `grpc::Status` of the proxy reactor. Initialized as `Status::OK`,
+`Status()` function simply returns a reference to the `grpc::Status` of the active reactor. Initialized as `Status::OK`,
 its content is updated once `ClientUnaryReactor::OnDone` event is received. It means calling `Status()` at any other
 moments is meaningless.
 
@@ -64,15 +170,15 @@ sent anytime from any thread. The goal of that signal is to provoke (immediately
 
 On purpose, the following examples are coming from a sandbox code using a 3rdparty eventloop library.
 
-- [route_guide_proxy_callback_client.cpp](/applications/reactor/route_guide_proxy_callback_client.cpp)
+- [route_guide_active_reactor_client.cpp](/applications/reactor/route_guide_active_reactor_client.cpp)
 - [EventLoop][eventloop-lib]
 
 For the sanity of the reader, some passages are removed and the code logic reduced to its maximum. It is recommended
-to read the original code from the route_guide_proxy_callback_client.cpp file.
+to read the original code from the route_guide_active_reactor_client.cpp file.
 
-#### Instantiation of the ProxyUnaryReactor class
+#### Instantiation of the ActiveUnaryReactor class
 
-The following snippet instances a `ProxyUnaryReactor` dedicated to the `GetFeature` RPC of the `routeguide` API. It
+The following snippet instances a `ActiveUnaryReactor` dedicated to the `GetFeature` RPC of the `routeguide` API. It
 fills a callback structure with the related `OnDoneCallback`. In this example, the callback is bound to the eventloop
 notification function as an `kGetFeatureOnDone` event.
 
@@ -93,7 +199,7 @@ void GetFeature(routeguide::Point point) {
     EventLoop::TriggerEvent(kGetFeatureOnDone, reactor);  // Signal OnDoneCallback event from gRPC thread
   };
   reactor_map_[RpcKey] = std::make_unique<ClientReactor>(*stub_,
-                                                         std::move(routeguide::CreateClientContext()),
+                                                         std::move(CreateClientContext()),
                                                          std::move(point),
                                                          std::move(cbs));
 }
@@ -133,7 +239,7 @@ skinparam ParticipantPadding 50
 title gRPC Client reactor for unary RPC
 
 boundary    app      as "Application\nside"
-box "ProxyUnaryReactor" #beige
+box "ActiveUnaryReactor" #beige
 collections data     as "Data"
 control     reactor  as "ClientUnaryReactor"
 end box
@@ -195,10 +301,10 @@ gRPC API keywords: ClientReadReactor, ClientCallbackReader
 
 Only the asynchronous method is provided.
 
-### ProxyReadReactor class
+### ActiveReadReactor class
 
-Inherit from `grpc::ClientReadReactor`, this class follows some points of both [proxy][proxy-pattern] and
-[reactor][reactor-pattern] design patterns:
+Inherit from `grpc::ClientReadReactor`, this class implements the Method Request component of the
+[Active Object pattern][active-object-pattern] and uses the [Reactor pattern][reactor-pattern] for event handling:
 
 - This class is meant to run on concurrent threads.
 - Its constructor is executed by the caller and once the task is done, the caller must destroy it. The
@@ -209,9 +315,9 @@ Inherit from `grpc::ClientReadReactor`, this class follows some points of both [
   threads to take care at the same time.
 - Thread-unsafe: the gRPC callback (i.e. `ClientReadReactor::OnDone`) is not executed on client thread but on a
   random one (from gRPC thread pool). It is the responsibility of the user to provide a thread-safe callback function.
-  To ease that situation, the `ProxyReadReactor` class provides different callback slots which are called when
+  To ease that situation, the `ActiveReadReactor` class provides different callback slots which are called when
   the related event is signaled by the ClientReadReactor. That callback is meant to be assigned by the client side to
-  notify its eventloop to allocate a shared time on its scheduler and proceeding with the proxy reactor instance.
+  notify its eventloop to allocate a shared time on its scheduler and proceeding with the active reactor instance.
 
 The three callbacks are: `OnReadDoneOkCallback`, `OnReadDoneNOkCallback`, and `OnDoneCallback`.
 
@@ -219,29 +325,29 @@ The three callbacks are: `OnReadDoneOkCallback`, `OnReadDoneNOkCallback`, and `O
 using OnDoneCallback = std::function<void(grpc::ClientReadReactor<ResponseT>* reactor, const grpc::Status&)>;
 ````
 
-When `ClientReadReactor::OnDone` event is handled in the proxy reactor, the `OnDoneCallback` callback function is called
+When `ClientReadReactor::OnDone` event is handled in the active reactor, the `OnDoneCallback` callback function is called
 with the following arguments:
 
-- the pointer to the proxy reactor instance (i.e. `this`)
+- the pointer to the active reactor instance (i.e. `this`)
 - a reference to the `grpc::Status` content
 
 ````cpp
 using OnReadDoneNOkCallback = std::function<void(grpc::ClientReadReactor<ResponseT>* reactor)>;
 ````
 
-When `ClientReadReactor::OnReadDone` event with a negative OK is handled in the proxy reactor, the
+When `ClientReadReactor::OnReadDone` event with a negative OK is handled in the active reactor, the
 `OnReadDoneNOkCallback` callback function is called with the following argument:
 
-- the pointer to the proxy reactor instance (i.e. `this`)
+- the pointer to the active reactor instance (i.e. `this`)
 
 ````cpp
 using OnReadDoneOkCallback = std::function<bool(grpc::ClientReadReactor<ResponseT>* reactor, const ResponseT&)>;
 ````
 
-When `ClientReadReactor::OnReadDone` event with a positive OK is handled in the proxy reactor, the
+When `ClientReadReactor::OnReadDone` event with a positive OK is handled in the active reactor, the
 `OnReadDoneOkCallback` callback function is called with the following argument:
 
-- the pointer to the proxy reactor instance (i.e. `this`)
+- the pointer to the active reactor instance (i.e. `this`)
 - a reference to the `Response` content
 
 For the sake of the gRPC processing, it is strongly discouraged to process the response during that callback event. It
@@ -250,11 +356,11 @@ One difference is that callback requires a return value: a boolean flag.
 
 When it returns:
 
-- true, the proxy reactor will hold the RPC and no more concurrent gRPC events are possible. That way, it is
+- true, the active reactor will hold the RPC and no more concurrent gRPC events are possible. That way, it is
 thread-safe to access the reactor from a different processing thread without concurrent events (e.g. RPC termination).
 Once the proceeding of the response is done, the RPC must be signaled to start a new read and then the hold can be
 removed.
-- false, the proxy reactor will immediately start a new response reading without waiting. That case can be useful when
+- false, the active reactor will immediately start a new response reading without waiting. That case can be useful when
 the responses are put on a queue or when it is discarded.
 
 #### Class functions
@@ -267,13 +373,13 @@ Three public functions can be called by the application side:
 
 `GetResponse()` function (badly named, sorry) does two important things: it swaps the underlying data storage of the
 response variable and then (if the stream allows it) it triggers immediately a new read on the stream and resume the
-RPC. The swap mechanism is important to avoid a deep-copy of the content of the response. For the `ProxyReadReactor`,
+RPC. The swap mechanism is important to avoid a deep-copy of the content of the response. For the `ActiveReadReactor`,
 the content of that response is not valuable because it overwrites it on each reading, so the swap is a good technique
 to speed up the response proceeding time. The function will return true when the returned response is valid. For
 thread-safe reading, a hold must be added over the reactor if the response handling is done out of the
 `ClientReadReactor::OnReadDone` event.
 
-`Status()` function simply returns a reference to the `grpc::Status` of the proxy reactor. Initialized as `Status::OK`,
+`Status()` function simply returns a reference to the `grpc::Status` of the active reactor. Initialized as `Status::OK`,
 its content is updated once `ClientReadReactor::OnDone` event is received. It means calling `Status()` at any other
 moments is meaningless.
 
@@ -285,15 +391,15 @@ sent anytime from any thread. The goal of that signal is to provoke (immediately
 
 On purpose, the following examples are coming from a sandbox code using a 3rdparty eventloop library.
 
-- [route_guide_proxy_callback_client.cpp](/applications/reactor/route_guide_proxy_callback_client.cpp)
+- [route_guide_active_reactor_client.cpp](/applications/reactor/route_guide_active_reactor_client.cpp)
 - [EventLoop][eventloop-lib]
 
 For the sanity of the reader, some passages are removed and the code logic reduced to its maximum. It is recommended
-to read the original code from the route_guide_proxy_callback_client.cpp file.
+to read the original code from the route_guide_active_reactor_client.cpp file.
 
-#### Instantiation of the ProxyReadReactor class
+#### Instantiation of the ActiveReadReactor class
 
-The following snippet instances a `ProxyReadReactor` dedicated to the `ListFeatures` RPC of the `routeguide` API. It
+The following snippet instances a `ActiveReadReactor` dedicated to the `ListFeatures` RPC of the `routeguide` API. It
 fills a callback structure with the related bound functions. In this example, the callbacks are bound to the eventloop
 notification function as an `kListFeaturesOnReadDoneOk`, `kListFeaturesOnReadDoneNOk`, or `kListFeaturesOnDone` event.
 
@@ -324,7 +430,7 @@ void ListFeatures(routeguide::Rectangle rect) {
     EventLoop::TriggerEvent(kListFeaturesOnDone, reactor);  // Signal OnDoneCallback event from gRPC thread
   };
   reactor_map_[RpcKey] = std::make_unique<ClientReactor>(*stub_,
-                                                         std::move(routeguide::CreateClientContext()),
+                                                         std::move(CreateClientContext()),
                                                          std::move(rect),
                                                          std::move(cbs));
 }
@@ -341,7 +447,7 @@ void ListFeatures(routeguide::Rectangle rect) {
 The following snippet is an example code of the application-side callback. That code is meant to be executed on the main
 application thread, scheduled by the eventloop of the application. In this example, that lambda is used as the callback
 and given to the eventloop when the `kListFeaturesOnDone` is notified. The main goal of that callback is to destroy
-the proxy reactor instance.
+the active reactor instance.
 
 From the PlantUML sequence diagram, the corresponding points are 4.10 and 4.11.
 
@@ -373,7 +479,7 @@ EventLoop::RegisterEvent(kListFeaturesOnReadDoneNOk, [](const Event*) {
 The following snippet is an example code of the application-side callback. That code is meant to be executed on the main
 application thread, scheduled by the eventloop of the application. In this example, that lambda is used as the callback
 and given to the eventloop when the `kListFeaturesOnReadDoneOk` is notified. The main goal of that callback is to read
-the response from the proxy reactor and starting a new read operation on the stream.
+the response from the active reactor and starting a new read operation on the stream.
 
 From the PlantUML sequence diagram, the corresponding points are from 2.8 to 2.11.
 
@@ -397,7 +503,7 @@ skinparam ParticipantPadding 50
 title gRPC Client reactor for server-side stream RPC
 
 boundary    app      as "Application\nside"
-box "ProxyReadReactor" #beige
+box "ActiveReadReactor" #beige
 collections data     as "Data"
 control     reactor  as "ClientReadReactor"
 end box
@@ -523,7 +629,7 @@ gRPC API keywords: ClientBidiReactor, ClientCallbackReaderWriter
 Upcoming development
 
 <!-- Reference links -->
-[proxy-pattern]: https://refactoring.guru/design-patterns/proxy
+[active-object-pattern]: https://www.modernescpp.com/index.php/active-object/
 [reactor-pattern]: https://www.modernescpp.com/index.php/reactor/
 [eventloop-lib]: https://github.com/amoldhamale1105/EventLoop
 [grpc-callback-tutorial]: https://grpc.io/docs/languages/cpp/callback/
