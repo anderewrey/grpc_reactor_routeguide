@@ -34,6 +34,7 @@ enqueue events, but the Servant (event handlers) processes responses on the main
 business logic executes on a single thread without synchronization primitives.
 
 Active Object Pattern components:
+
 - Method Request: The reactor instance encapsulates an RPC invocation (context, request, response, callbacks)
 - Scheduler: EventLoop dispatches queued events to the application thread
 - Activation List: EventLoop's internal queue holds pending events
@@ -42,6 +43,7 @@ Active Object Pattern components:
 - Proxy: Client methods (e.g., `GetFeature()`) create reactors and trigger event notifications
 
 Reactor Pattern (Event-driven concurrency):
+
 - Events from gRPC (`OnDone`, `OnReadDone`) are received and demultiplexed
 - Events are handled asynchronously without blocking
 - Event detection is separated from event handling
@@ -58,14 +60,14 @@ layers.
 | `route_guide_active_reactor_client.cpp` | Proxy, Servant, Scheduler    | Application          |
 | EventLoop library (external)            | Scheduler, Activation List   | Infrastructure       |
 
-| Pattern Component | Description                                                                                | Code Elements                                           |
-|-------------------|--------------------------------------------------------------------------------------------|---------------------------------------------------------|
-| Proxy             | Client-facing methods that run in client thread, create reactors, and return immediately   | `GetFeature()`, `ListFeatures()`                        |
-| Scheduler         | Event loop that dispatches queued events to the application thread                         | `EventLoop::Run()`, `TriggerEvent()`                    |
-| Activation List   | Event loop's internal queue that holds pending event notifications                         | EventLoop internal queue                                |
-| Method Request    | Reactor instances that encapsulate RPC state (ClientContext, request, response, callbacks) | `ActiveUnaryReactor`, `ActiveReadReactor`               |
-| Servant           | Application event handler functions that process responses on application thread           | `EventLoop::RegisterEvent()` handlers, `OnDoneCallback` |
-| Future            | Reactor instance handle that provides access to retrieve results asynchronously            | `GetResponse()`, `Status()`                             |
+| Pattern Component | Description                                    | Code Elements                                  |
+|-------------------|------------------------------------------------|------------------------------------------------|
+| Proxy             | Client methods creating reactors               | `GetFeature()`, `ListFeatures()`               |
+| Scheduler         | Event loop dispatching to app thread           | `EventLoop::Run()`, `TriggerEvent()`           |
+| Activation List   | Event loop queue of pending notifications      | EventLoop internal queue                       |
+| Method Request    | Reactor instances encapsulating RPC state      | `ActiveUnaryReactor`, `ActiveReadReactor`      |
+| Servant           | Event handlers processing responses            | `RegisterEvent()` handlers, `OnDoneCallback`   |
+| Future            | Reactor handle for retrieving results          | `GetResponse()`, `Status()`                    |
 
 ### Proxy Component
 

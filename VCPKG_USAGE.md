@@ -13,7 +13,7 @@ The project uses vcpkg to manage gRPC, Protobuf, and Abseil dependencies with th
 
 ## Project Structure
 
-```
+```text
 grpc_reactor_routeguide/
 ├── vcpkg.json                      # Dependency manifest
 ├── vcpkg-configuration.json        # Registry and overlay configuration
@@ -36,11 +36,13 @@ grpc_reactor_routeguide/
 ## Verified Multi-Compiler Support
 
 This project has been successfully tested with:
+
 - **Clang 19.1.7** (AlmaLinux 9 system package)
 - **GCC 11.5.0** (AlmaLinux 9 default)
 - **GCC 13.3.1** (Red Hat toolset)
 
 All combinations successfully:
+
 - Build vcpkg dependencies with Release optimization (`-O3 -march=native -mtune=native`)
 - Build Debug application linking against Release libraries (Linux ABI compatibility)
 - Link executables without undefined reference errors
@@ -95,6 +97,7 @@ cmake --build cmake-build-vcpkg-debug-clang
 ```
 
 **Explanation of flags:**
+
 - `-GNinja`: Use Ninja generator for faster parallel builds
 - `-DCMAKE_BUILD_TYPE=Debug`: Build application in Debug mode (enables debugging symbols, no optimization)
 - `-DCMAKE_C_COMPILER_LAUNCHER=ccache`: Use ccache to cache C compilation results (speeds up rebuilds)
@@ -108,6 +111,7 @@ cmake --build cmake-build-vcpkg-debug-clang
 - `-DVCPKG_OVERLAY_PORTS=./vcpkg/ports`: Path to custom port overlays (for gRPC submodule support)
 
 **Why this works:**
+
 - Linux ABI compatibility allows mixing Debug application with Release libraries
 - Application gets full debug info for development
 - Dependencies (gRPC/Protobuf/Abseil) are optimized with `-O3 -march=native -mtune=native`
@@ -213,6 +217,7 @@ set(VCPKG_CMAKE_CONFIGURE_OPTIONS
 ```
 
 The compiler paths differ for each triplet:
+
 - `x64-linux-gcc11-release.cmake`: Uses `gcc-11` and `g++-11`
 - `x64-linux-gcc13-release.cmake`: Uses `gcc-13` and `g++-13`
 - `x64-linux-clang19-release.cmake`: Uses `clang-19` and `clang++-19`
@@ -252,6 +257,7 @@ endif()
 ```
 
 Key configuration options:
+
 - gRPC v1.73.1 (June 2025, stable)
 - Module providers: Protobuf, Abseil, c-ares, RE2 from submodules
 - Package providers: OpenSSL, zlib from system (via vcpkg)
@@ -276,6 +282,7 @@ On Linux (unlike Windows/MSVC), mixing Debug and Release builds is safe and reco
 ```
 
 **Why it works:**
+
 - "Debug" and "Release" on Linux are just compiler flags
 - No separate debug/release C++ standard library
 - No ABI differences in STL containers or allocators
@@ -328,6 +335,7 @@ Declares project dependencies. vcpkg automatically resolves transitive dependenc
 ```
 
 **Key settings:**
+
 - **baseline**: Pinned to September 2025 release to avoid vcpkg-cmake REMOVE_DUPLICATES bug in later versions
 - **overlay-triplets**: Use custom compiler-specific triplets
 - **overlay-ports**: Use custom gRPC port with submodule support
@@ -337,7 +345,8 @@ Declares project dependencies. vcpkg automatically resolves transitive dependenc
 ### Issue: Operation REMOVE_DUPLICATES not recognized
 
 **Error:**
-```
+
+```text
 CMake Error at scripts/cmake/vcpkg_host_path_list.cmake:60 (message):
   Operation REMOVE_DUPLICATES not recognized.
 ```
@@ -345,6 +354,7 @@ CMake Error at scripts/cmake/vcpkg_host_path_list.cmake:60 (message):
 **Cause:** vcpkg-cmake version 2025-08-07 or later has a regression.
 
 **Solution:** Use September 2025 baseline (already configured in vcpkg-configuration.json):
+
 ```json
 "baseline": "4334d8b4c8916018600212ab4dd4bbdc343065d1"
 ```
@@ -352,7 +362,8 @@ CMake Error at scripts/cmake/vcpkg_host_path_list.cmake:60 (message):
 ### Issue: Git submodules not found during build
 
 **Error:**
-```
+
+```text
 CMake Error: add_subdirectory given source "third_party/cares/cares" which is not a directory.
 ```
 
@@ -365,7 +376,8 @@ The custom port at `vcpkg/ports/grpc/portfile.cmake` uses direct git clone with 
 ### Issue: Mixing compilers causes undefined references
 
 **Error:**
-```
+
+```text
 undefined reference to `absl::lts_20250127::log_internal::LogMessage::operator<<(unsigned long)'
 ```
 
@@ -392,6 +404,7 @@ By default, vcpkg installs packages to `vcpkg_installed/` in project root.
 **Solution 1:** Already gitignored via `.gitignore` pattern `vcpkg_*/`
 
 **Solution 2:** Install to build directory instead:
+
 ```bash
 cmake -B build \
   -DVCPKG_INSTALLED_DIR=build/vcpkg_installed \
@@ -405,6 +418,7 @@ This keeps everything under `build/` which is already gitignored.
 ### vcpkg Dependency Installation (First Time)
 
 **Clang 19:**
+
 - **Total time:** 13.5 minutes
   - zlib: 6.9 seconds
   - openssl: 52 seconds
@@ -419,6 +433,7 @@ This keeps everything under `build/` which is already gitignored.
   - UPB (micro protobuf, from submodule)
 
 **GCC 11:**
+
 - **Total time:** 13 minutes
   - zlib: 6.9 seconds
   - openssl: 52 seconds
@@ -427,11 +442,13 @@ This keeps everything under `build/` which is already gitignored.
 ### Application Build Time
 
 **With vcpkg-installed dependencies:**
+
 - **Configure:** ~1 minute (813 seconds total, includes vcpkg manifest resolution)
 - **Build:** ~1 minute (37 targets with ccache)
 - **Total:** ~2 minutes from clean configuration to executable
 
 **Subsequent builds:**
+
 - **Configure:** ~5 seconds (cached vcpkg dependencies)
 - **Build:** ~10 seconds (ccache hits for unchanged files)
 
@@ -466,16 +483,19 @@ cmake -B build-clang19 -DCMAKE_CXX_COMPILER=clang++-19 \
 To update to a newer gRPC version:
 
 1. Edit `vcpkg/ports/grpc/portfile.cmake`:
+
    ```cmake
    --branch v1.76.0  # Update version tag
    ```
 
 2. Edit `vcpkg/ports/grpc/vcpkg.json`:
+
    ```json
    "version": "1.76.0"  # Update version
    ```
 
 3. Rebuild:
+
    ```bash
    rm -rf vcpkg_installed
    vcpkg install --triplet=x64-linux-clang19-release
@@ -500,11 +520,13 @@ See vcpkg documentation for details.
 To build static libraries instead of shared:
 
 1. Edit triplet file:
+
    ```cmake
    set(VCPKG_LIBRARY_LINKAGE static)  # Change from dynamic
    ```
 
 2. Rebuild dependencies:
+
    ```bash
    rm -rf vcpkg_installed
    vcpkg install --triplet=x64-linux-clang19-release
@@ -514,8 +536,14 @@ To build static libraries instead of shared:
 
 ## References
 
-- vcpkg documentation: https://learn.microsoft.com/en-us/vcpkg/
-- vcpkg triplet reference: https://learn.microsoft.com/en-us/vcpkg/users/triplets
-- vcpkg binary caching: https://learn.microsoft.com/en-us/vcpkg/consume/binary-caching
-- gRPC GitHub (submodule issues): https://github.com/microsoft/vcpkg/issues/6886
+- vcpkg documentation: [vcpkg-docs]
+- vcpkg triplet reference: [vcpkg-triplets]
+- vcpkg binary caching: [vcpkg-binary-caching]
+- gRPC GitHub (submodule issues): [vcpkg-grpc-issue]
 - Project-specific build guide: [GRPC_BUILD_GUIDE.md](GRPC_BUILD_GUIDE.md)
+
+<!-- Reference links -->
+[vcpkg-docs]: https://learn.microsoft.com/en-us/vcpkg/
+[vcpkg-triplets]: https://learn.microsoft.com/en-us/vcpkg/users/triplets
+[vcpkg-binary-caching]: https://learn.microsoft.com/en-us/vcpkg/consume/binary-caching
+[vcpkg-grpc-issue]: https://github.com/microsoft/vcpkg/issues/6886
