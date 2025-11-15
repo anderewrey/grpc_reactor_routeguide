@@ -67,7 +67,8 @@ class RouteGuideClient {
       : stub_(routeguide::RouteGuide::NewStub(channel)) {
     EventLoop::RegisterEvent(kGetFeatureOnDone,
                              [&reactor_ = reactor_map_[routeguide::GetFeature::RpcKey],
-                              &logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature)](const EventLoop::Event* event) {
+                              &logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature)]
+                             (const EventLoop::Event* event) {
       // (Point 3.5) ProceedEvent: OnDone
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::GetFeature::ClientReactor*>(event->getData());
@@ -86,9 +87,10 @@ class RouteGuideClient {
       reactor_.reset();
       logger.info("         | reactor[{}] ended", fmt::ptr(reactor));
     });
+    auto& list_logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures);
     EventLoop::RegisterEvent(kListFeaturesOnReadDoneOk,
                              [this, &reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
-                              &logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures)](const EventLoop::Event* event) {
+                              &logger = list_logger](const EventLoop::Event* event) {
       // (Point 2.7) ProceedEvent: OnReadDoneOk
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
@@ -107,7 +109,7 @@ class RouteGuideClient {
     });
     EventLoop::RegisterEvent(kListFeaturesOnReadDoneNOk,
                              [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
-                              &logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures)](const EventLoop::Event* event) {
+                              &logger = list_logger](const EventLoop::Event* event) {
       // (Point 4.7) ProceedEvent: OnReadDoneNOk
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
@@ -117,7 +119,7 @@ class RouteGuideClient {
     });
     EventLoop::RegisterEvent(kListFeaturesOnDone,
                              [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
-                              &logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures)](const EventLoop::Event* event) {
+                              &logger = list_logger](const EventLoop::Event* event) {
       // (Point 4.9) ProceedEvent: OnDone
       assert(main_thread == std::this_thread::get_id());  // application thread
       auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());

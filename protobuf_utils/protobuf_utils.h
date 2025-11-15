@@ -6,7 +6,8 @@
 #pragma once
 
 #include <string>
-#include <google/protobuf/message.h>
+
+namespace google::protobuf { class Message; }
 
 namespace protobuf_utils {
 std::string ToString(const google::protobuf::Message& message);

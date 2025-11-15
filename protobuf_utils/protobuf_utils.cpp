@@ -5,7 +5,9 @@
 
 #include "protobuf_utils/protobuf_utils.h"
 
-#include <google/protobuf/text_format.h>
+#include <string>
+
+#include <google/protobuf/text_format.h>  // NOLINT(build/include_order)
 
 std::string protobuf_utils::ToString(const google::protobuf::Message& message) {
   static google::protobuf::TextFormat::Printer printer;

@@ -44,13 +44,16 @@ std::thread::id main_thread = std::this_thread::get_id();
 FeatureList feature_list_;
 }  // anonymous namespace
 
+namespace rg_logger = routeguide::logger;
+
 class RouteGuideClient {
  public:
   explicit RouteGuideClient(const std::shared_ptr<Channel>& channel)
       : stub_(RouteGuide::NewStub(channel)) {}
 
   void GetFeature() {
-    auto get_feature = [stub_ = stub_.get(), &logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature)](const Point& point, Feature& feature) {
+    auto get_feature = [stub_ = stub_.get(), &logger = rg_logger::Get(routeguide::RpcMethods::kGetFeature)]
+                        (const Point& point, Feature& feature) {
       logger.info("ENTER    |");
       ClientContext context;
       logger.info("REQUEST  | Point: {}", protobuf_utils::ToString(point));
@@ -72,7 +75,7 @@ class RouteGuideClient {
   }
 
   void ListFeatures() {
-    auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures);
+    auto& logger = rg_logger::Get(routeguide::RpcMethods::kListFeatures);
     Feature feature;
     ClientContext context;
     logger.info("ENTER    |");
@@ -88,7 +91,7 @@ class RouteGuideClient {
   }
 
   void RecordRoute() {
-    auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kRecordRoute);
+    auto& logger = rg_logger::Get(routeguide::RpcMethods::kRecordRoute);
     logger.info("ENTER    |");
     RouteSummary summary;
     ClientContext context;
@@ -114,7 +117,7 @@ class RouteGuideClient {
   }
 
   void RouteChat() {
-    auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kRouteChat);
+    auto& logger = rg_logger::Get(routeguide::RpcMethods::kRouteChat);
     logger.info("ENTER    |");
     ClientContext context;
     auto stream = stub_->RouteChat(&context);

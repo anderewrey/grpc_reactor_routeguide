@@ -45,13 +45,16 @@ std::thread::id main_thread = std::this_thread::get_id();
 FeatureList feature_list_;
 }  // anonymous namespace
 
+namespace rg_logger = routeguide::logger;
+
 class RouteGuideClient {
  public:
   explicit RouteGuideClient(const std::shared_ptr<Channel>& channel)
       : stub_(RouteGuide::NewStub(channel)) {}
 
   void GetFeature() {
-    auto get_feature = [stub_ = stub_.get(), &logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature)](const Point& point, Feature& feature) {
+    auto get_feature = [stub = stub_.get(), &logger = rg_logger::Get(routeguide::RpcMethods::kGetFeature)]
+                       (const Point& point, Feature& feature) {
       logger.info("ENTER    |");
       ClientContext context;
       bool result;
@@ -59,8 +62,8 @@ class RouteGuideClient {
       std::condition_variable cv;
       bool done = false;
       logger.info("REQUEST  | Point: {}", protobuf_utils::ToString(point));
-      stub_->async()->GetFeature(&context, &point, &feature,
-                                 [&result, &mu, &cv, &done, &feature, &logger](const Status& status) {
+      stub->async()->GetFeature(&context, &point, &feature,
+                                [&result, &mu, &cv, &done, &feature, &logger](const Status& status) {
         logger.info("RESPONSE | Status: OK: {} msg:{} Feature: {}",
                     status.ok(), status.error_message(), protobuf_utils::ToString(feature));
         std::lock_guard<std::mutex> lock(mu);
@@ -121,7 +124,8 @@ class RouteGuideClient {
      private:
       ClientContext context_;
       Feature feature_;
-      std::mutex mu_;      spdlog::logger& logger_ = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures);
+      std::mutex mu_;
+      spdlog::logger& logger_ = rg_logger::Get(routeguide::RpcMethods::kListFeatures);
 
       std::condition_variable cv_;
       Status status_;
@@ -130,7 +134,8 @@ class RouteGuideClient {
 
     Reader reader(stub_.get(), rg_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000));
     const auto status = reader.Await();
-    routeguide::logger::Get(routeguide::RpcMethods::kListFeatures).info("EXIT     | post-Await() OK: {} msg: {}", status.ok(), status.error_message());
+    auto& logger = rg_logger::Get(routeguide::RpcMethods::kListFeatures);
+    logger.info("EXIT     | post-Await() OK: {} msg: {}", status.ok(), status.error_message());
   }
 
   void RecordRoute() {
@@ -191,7 +196,7 @@ class RouteGuideClient {
         }
       }
       ClientContext context_;
-      spdlog::logger& logger_ = routeguide::logger::Get(routeguide::RpcMethods::kRecordRoute);
+      spdlog::logger& logger_ = rg_logger::Get(routeguide::RpcMethods::kRecordRoute);
       RouteSummary summary_;
       const FeatureList& feature_list_;
       grpc::Alarm alarm_;  // To postpone an action in the eventloop (handled by gRPC in its own thread pool)
@@ -204,8 +209,9 @@ class RouteGuideClient {
     RouteSummary summary;
     Recorder recorder(stub_.get(), feature_list_);
     const auto status = recorder.Await(summary);
-    routeguide::logger::Get(routeguide::RpcMethods::kRecordRoute).info("EXIT     | post-Await() OK: {} msg: {} RouteSummary: {}",
-                                                                         status.ok(), status.error_message(), protobuf_utils::ToString(summary));
+    auto& logger = rg_logger::Get(routeguide::RpcMethods::kRecordRoute);
+    logger.info("EXIT     | post-Await() OK: {} msg: {} RouteSummary: {}",
+                status.ok(), status.error_message(), protobuf_utils::ToString(summary));
   }
 
   void RouteChat() {
@@ -279,7 +285,7 @@ class RouteGuideClient {
         }
       }
       ClientContext context_;
-      spdlog::logger& logger_ = routeguide::logger::Get(routeguide::RpcMethods::kRouteChat);
+      spdlog::logger& logger_ = rg_logger::Get(routeguide::RpcMethods::kRouteChat);
       const std::vector<RouteNote> notes_;
       std::vector<RouteNote>::const_iterator notes_iterator_;
       RouteNote server_note_;
@@ -292,7 +298,8 @@ class RouteGuideClient {
 
     Chatter chatter(stub_.get());
     const auto status = chatter.Await();
-    routeguide::logger::Get(routeguide::RpcMethods::kRouteChat).info("EXIT     | post-Await() OK: {} msg: {}", status.ok(), status.error_message());
+    auto& logger = rg_logger::Get(routeguide::RpcMethods::kRouteChat);
+    logger.info("EXIT     | post-Await() OK: {} msg: {}", status.ok(), status.error_message());
   }
 
  private:

@@ -4,14 +4,16 @@
 ///
 
 #include "rg_service/rg_logger.h"
-#include "rg_service/route_guide_service.h"
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 
 #include <array>
 #include <memory>
+#include <string>
 
 #include "common/compat.h"
+
+#include "rg_service/route_guide_service.h"
 
 namespace routeguide::logger {
 static class RGLoggers {
