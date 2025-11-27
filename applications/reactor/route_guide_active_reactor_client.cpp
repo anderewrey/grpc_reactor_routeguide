@@ -42,17 +42,23 @@ std::unique_ptr<grpc::ClientContext> CreateClientContext() {
 }  // anonymous namespace
 
 /************************
- * RPC handling: Following code belongs to the application.
- * That code is hosted on the application project, not auto-generated.
- * It also does the making and reading of proto messages. A good practice
- * would be to not expose the message types nor the `Status` outside of here.
+ * Active Object Pattern Implementation
  *
- * Active Object Pattern implementation:
- * - RouteGuideClient methods (GetFeature, ListFeatures) = Proxy components
- * - EventLoop::RegisterEvent handlers = Servant components
- * - EventLoop::Run() in main = Scheduler component
- * - Main thread serves as the Active Object's thread
- * See reactor_client.md for detailed Active Object pattern documentation.
+ * This application demonstrates the Active Object pattern combined with the
+ * Reactor pattern for event-driven asynchronous RPC handling.
+ *
+ * Component mapping:
+ * - RouteGuideClient methods (GetFeature, ListFeatures) = Proxy
+ * - ClientReactor classes (ActiveUnaryReactor, ActiveReadReactor) = Method Request
+ * - EventLoop = Scheduler + Activation Queue
+ * - EventLoop::RegisterEvent handlers = Servant (business logic placeholder)
+ * - GetResponse() / Status() = Future
+ * - AddHold/RemoveHold = Guards (prevent concurrent access)
+ *
+ * Note: This demo uses simple logging as Servant logic. Production applications
+ * would implement actual business logic in the event handlers.
+ *
+ * See reactor_client.md for detailed pattern documentation.
  ************************/
 class RouteGuideClient {
   static constexpr auto kGetFeatureOnDone{"GetFeatureOnDone"};
@@ -61,8 +67,8 @@ class RouteGuideClient {
   static constexpr auto kListFeaturesOnDone{"ListFeaturesOnDone"};
 
  public:
-  /// Constructor registers Servant handlers with EventLoop (Scheduler).
-  /// Servant components: Event handlers that process RPC responses on application thread.
+  /// Constructor registers response handlers with EventLoop (Scheduler).
+  /// Response handlers process RPC responses on the application thread (adapted Servant role).
   explicit RouteGuideClient(const std::shared_ptr<grpc::Channel>& channel)
       : stub_(routeguide::RouteGuide::NewStub(channel)) {
     EventLoop::RegisterEvent(kGetFeatureOnDone,

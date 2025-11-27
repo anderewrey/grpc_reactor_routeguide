@@ -23,24 +23,87 @@ from the gRPC thread pool and reduce available concurrency.
 
 ### The Solution: Active Object Pattern
 
-This implementation uses the [Active Object pattern][active-object-pattern] to address the threading problem. The result
-is single-threaded response processing without synchronization primitives. The active object pattern defers response
+This implementation uses the [Active Object pattern][active-object-pattern] to address the threading problem. The
+result is single-threaded response processing without synchronization primitives. The pattern defers response
 processing to the application thread through event notification. All responses are handled sequentially on a single
 application thread.
 
 In this implementation, the main application thread serves as the Active Object's thread. It actively runs the EventLoop
 (Scheduler) which continuously processes queued events. gRPC reactor callbacks execute on gRPC internal threads and
-enqueue events, but the Servant (event handlers) processes responses on the main application thread. This ensures all
-business logic executes on a single thread without synchronization primitives.
+enqueue events, and the response handlers process responses on the main application thread. This ensures all application
+logic executes on a single thread without synchronization primitives.
 
-Active Object Pattern components:
+### Library Architecture
 
-- Method Request: The reactor instance encapsulates an RPC invocation (context, request, response, callbacks)
-- Scheduler: EventLoop dispatches queued events to the application thread
-- Activation List: EventLoop's internal queue holds pending events
-- Servant: Application event handlers process responses on the application thread
-- Future: The reactor instance acts as a handle to retrieve results via `GetResponse()`
-- Proxy: Client methods (e.g., `GetFeature()`) create reactors and trigger event notifications
+This reactor library implements the Active Object pattern infrastructure, designed for use by applications that provide
+their own business logic.
+
+**What the Library Provides:**
+
+- **Method Request encapsulation**: `ActiveUnaryReactor` and `ActiveReadReactor` classes
+- **Scheduler integration**: Callbacks trigger `EventLoop::TriggerEvent()`
+- **Guard mechanism**: `AddHold()`/`RemoveHold()` prevents concurrent access during response processing
+- **Future-like access**: `GetResponse()` and `Status()` for deferred result retrieval
+
+**What Applications Provide:**
+
+- **Servant (business logic)**: Implemented in `EventLoop::RegisterEvent()` handlers
+- **Domain-specific processing**: Transform RPC responses into application state changes
+
+**Demo vs Production:**
+
+The demo application (`route_guide_active_reactor_client.cpp`) uses simple logging as Servant logic:
+
+```cpp
+// Demo: Logging only
+EventLoop::RegisterEvent(kGetFeatureOnDone, [](const Event* event) {
+  logger.info("RESPONSE | {}", response);  // Placeholder Servant logic
+});
+```
+
+Production applications implement actual business logic:
+
+```cpp
+// Production: Real Servant logic
+EventLoop::RegisterEvent(kGetFeatureOnDone, [&app_state](const Event* event) {
+  auto response = reactor->GetResponse();
+  app_state.UpdateFeatureCache(response);     // Business logic
+  ui_controller.NotifyFeatureLoaded(response); // State changes
+  metrics.RecordFeatureQuery(response);        // Application concerns
+});
+```
+
+This separation is intentional: the library handles the concurrency complexity, applications handle the domain logic.
+
+### Pattern Components
+
+This implementation follows the Active Object pattern, combining it with the Reactor pattern for event-driven
+processing.
+
+**Components mapping:**
+
+| Active Object Component | This Implementation | Notes |
+|------------------------|---------------------|-------|
+| Proxy | `GetFeature()`, `ListFeatures()` methods | Creates Method Requests, returns immediately |
+| Method Request | `ActiveUnaryReactor`, `ActiveReadReactor` | Encapsulates RPC state with guards |
+| Activation Queue | EventLoop internal queue | Holds pending event notifications |
+| Scheduler | `EventLoop::Run()` | Dispatches events to handlers |
+| Servant | `EventLoop::RegisterEvent()` handlers | Application-provided business logic |
+| Future | `GetResponse()`, `Status()` | Deferred result access |
+| Guards | `AddHold()`/`RemoveHold()` | Prevents concurrent access during processing |
+
+**Library vs Application Responsibilities:**
+
+| Aspect | Definition | This Implementation |
+|--------|------------------|---------------------|
+| Guards | Method Requests have `guard()` for synchronization | `AddHold()`/`RemoveHold()` mechanism |
+| Servant | Business logic component with state | Application-provided (demo uses logging placeholders) |
+| Scope | Full client-server encapsulation | Client-side library (server has separate Servant) |
+
+**Combined pattern characteristics:**
+
+- **Active Object**: Proxy, Method Request, Activation Queue, Scheduler, Servant, Future, Guards
+- **Reactor pattern**: Event demultiplexing, event handlers, non-blocking I/O
 
 Reactor Pattern (Event-driven concurrency):
 
@@ -48,44 +111,48 @@ Reactor Pattern (Event-driven concurrency):
 - Events are handled asynchronously without blocking
 - Event detection is separated from event handling
 
-## Active Object Components Implementation
+## Component Implementation
 
-The Active Object pattern is based on key role components. The implementation is organized across three architectural
-layers.
+The implementation is organized across three architectural layers, mapping Active Object concepts to concrete code.
 
-| File                                    | Components                   | Layer                |
-|-----------------------------------------|------------------------------|----------------------|
-| `reactor_client.h`                      | Method Request, Future       | Generic (reusable)   |
-| `reactor_client_routeguide.h`           | Method Request (specialized) | Service-specific     |
-| `route_guide_active_reactor_client.cpp` | Proxy, Servant, Scheduler    | Application          |
-| EventLoop library (external)            | Scheduler, Activation List   | Infrastructure       |
+| File                                    | Components                      | Layer                |
+|-----------------------------------------|---------------------------------|----------------------|
+| `reactor_client.h`                      | Method Request, Future, Guards  | Generic (reusable)   |
+| `reactor_client_routeguide.h`           | Method Request (specialized)    | Service-specific     |
+| `route_guide_active_reactor_client.cpp` | Proxy, Servant                  | Application          |
+| EventLoop library (external)            | Scheduler, Activation Queue     | Infrastructure       |
 
-| Pattern Component | Description                                    | Code Elements                                  |
-|-------------------|------------------------------------------------|------------------------------------------------|
-| Proxy             | Client methods creating reactors               | `GetFeature()`, `ListFeatures()`               |
-| Scheduler         | Event loop dispatching to app thread           | `EventLoop::Run()`, `TriggerEvent()`           |
-| Activation List   | Event loop queue of pending notifications      | EventLoop internal queue                       |
-| Method Request    | Reactor instances encapsulating RPC state      | `ActiveUnaryReactor`, `ActiveReadReactor`      |
-| Servant           | Event handlers processing responses            | `RegisterEvent()` handlers, `OnDoneCallback`   |
-| Future            | Reactor handle for retrieving results          | `GetResponse()`, `Status()`                    |
+| Pattern Component  | Description                                    | Code Elements                                  |
+|--------------------|------------------------------------------------|------------------------------------------------|
+| Proxy              | Client methods creating reactors               | `GetFeature()`, `ListFeatures()`               |
+| Scheduler          | Event loop dispatching to app thread           | `EventLoop::Run()`, `TriggerEvent()`           |
+| Activation Queue   | Event loop queue of pending notifications      | EventLoop internal queue                       |
+| Method Request     | Reactor instances encapsulating RPC state      | `ActiveUnaryReactor`, `ActiveReadReactor`      |
+| Servant            | Application business logic handlers            | `RegisterEvent()` handlers                     |
+| Future             | Reactor handle for retrieving results          | `GetResponse()`, `Status()`                    |
+| Guards             | Prevents concurrent access during processing   | `AddHold()`, `RemoveHold()`                    |
 
 ### Proxy Component
 
-The Proxy component (not the Proxy design pattern) is the client-facing interface that applications call to initiate
-RPC operations. Proxy methods run on the client application thread and create reactor instances (Method Requests)
-without blocking.
+The Proxy component provides the client-facing interface that applications call to initiate RPC operations. Proxy
+methods run on the client application thread and create reactor instances (Method Requests) without blocking.
+
+> **Note on terminology:** This component shares characteristics with the GoF Proxy pattern (providing a surrogate
+> interface) but serves a different purpose. In Active Object, the Proxy transforms synchronous method calls into
+> asynchronous Method Requests, whereas GoF Proxy primarily controls access to an object. The term "proxy" here
+> describes the component's role in the Active Object pattern, not a direct application of the GoF Proxy pattern.
 
 The Proxy method constructs the reactor, configures callbacks to notify the Scheduler (EventLoop), and returns control
 immediately to the caller.
 
-### Scheduler & Activation List Components
+### Scheduler & Activation Queue Components
 
-The Scheduler dispatches queued events to the application thread, and the Activation List is the internal queue holding
-pending notifications. These components are provided by the [EventLoop library][eventloop-lib] library.
+The Scheduler dispatches queued events to the application thread, and the Activation Queue is the internal queue holding
+pending notifications. These components are provided by the [EventLoop library][eventloop-lib].
 
 The Scheduler bridges gRPC threads to the application thread. gRPC callbacks invoke `TriggerEvent()`, which enqueues
-notifications in the Activation List. The Scheduler dequeues and dispatches them to Servant handlers on the application
-thread, maintaining single-threaded execution.
+notifications in the Activation Queue. The Scheduler dequeues and dispatches them to response handlers on the
+application thread, maintaining single-threaded execution.
 
 ### Method Request Component
 
@@ -95,13 +162,18 @@ component.
 
 ### Servant Component
 
-The Servant component consists of application functions that process RPC responses. The implementation provides two
-execution strategies:
+The Servant component contains application-provided business logic. In this client-side implementation, the Servant is
+implemented via `EventLoop::RegisterEvent()` handlers that process RPC results on the application thread.
+
+The response handling provides two execution strategies:
 
 1. **Immediate processing**: Early callbacks (`OnDoneCallback`, `OnReadDoneOkCallback`) execute on gRPC threads for
    quick decisions or lightweight processing
-2. **Deferred processing**: Handlers registered via `EventLoop::RegisterEvent()` execute on application thread for
-   heavier processing after Scheduler dispatch
+2. **Deferred processing**: Handlers registered via `EventLoop::RegisterEvent()` execute on the application thread for
+   response processing after Scheduler dispatch
+
+The demo application uses simple logging as placeholder Servant logic. Production applications implement actual
+business logic (state updates, UI notifications, domain processing) in these handlers.
 
 ### Future Component
 
