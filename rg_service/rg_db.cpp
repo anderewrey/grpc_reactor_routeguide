@@ -39,8 +39,9 @@ FeatureList rg_db::GetDbFileContent() {
   }
 
   FeatureJsonList json_data;
-  if (const auto error = glz::read_file_json(json_data, FLAGS_db_path, std::string())) {
-    spdlog::error("Error parsing the db file: code {} {}", fmt::underlying(error.ec), glz::nameof(error.ec));
+  std::string buffer;
+  if (const auto error = glz::read_file_json(json_data, FLAGS_db_path, buffer)) {
+    spdlog::error("Error parsing the db file: {}", glz::format_error(error, buffer));
     return {};
   }
 

@@ -2,9 +2,9 @@
   "version": 3,
   "configurePresets": [
     {
-      "name": "vcpkg-clang19-debug",
-      "displayName": "vcpkg Clang 19 Debug",
-      "description": "Debug build using Clang 19 with vcpkg libraries (Release libs + Debug app for Linux ABI compatibility)",
+      "name": "vcpkg-clang-debug",
+      "displayName": "vcpkg Clang Debug",
+      "description": "Debug build using Clang with vcpkg libraries (Release libs + Debug app for Linux ABI compatibility)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/cmake-build-vcpkg-debug-clang",
       "cacheVariables": {
@@ -13,15 +13,15 @@
         "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
         "CMAKE_CXX_COMPILER": "clang++",
         "CMAKE_CXX_STANDARD": "20",
-        "VCPKG_TARGET_TRIPLET": "x64-linux-clang19-release",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-clang-release",
         "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg/triplets",
         "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg/ports"
       }
     },
     {
-      "name": "vcpkg-clang19-release",
-      "displayName": "vcpkg Clang 19 Release",
-      "description": "Release build using Clang 19 with vcpkg libraries",
+      "name": "vcpkg-clang-release",
+      "displayName": "vcpkg Clang Release",
+      "description": "Release build using Clang with vcpkg libraries",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/cmake-build-vcpkg-release-clang",
       "cacheVariables": {
@@ -30,15 +30,15 @@
         "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
         "CMAKE_CXX_COMPILER": "clang++",
         "CMAKE_CXX_STANDARD": "20",
-        "VCPKG_TARGET_TRIPLET": "x64-linux-clang19-release",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-clang-release",
         "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg/triplets",
         "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg/ports"
       }
     },
     {
       "name": "vcpkg-gcc-debug",
-      "displayName": "vcpkg GCC 11 Debug",
-      "description": "Debug build using GCC 11 with vcpkg libraries (Release libs + Debug app for Linux ABI compatibility)",
+      "displayName": "vcpkg GCC Debug",
+      "description": "Debug build using GCC with vcpkg libraries (Release libs + Debug app for Linux ABI compatibility)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/cmake-build-vcpkg-debug-gcc",
       "cacheVariables": {
@@ -54,8 +54,8 @@
     },
     {
       "name": "vcpkg-gcc-release",
-      "displayName": "vcpkg GCC 11 Release",
-      "description": "Release build using GCC 11 with vcpkg libraries",
+      "displayName": "vcpkg GCC Release",
+      "description": "Release build using GCC with vcpkg libraries",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/cmake-build-vcpkg-release-gcc",
       "cacheVariables": {

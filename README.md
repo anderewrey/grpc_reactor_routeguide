@@ -25,26 +25,18 @@ For details about the compilers: [C++20 compiler support][cpp20-support]
 - C++ compiler (GCC 11 or above, Clang, ...)
 - CMake
 
-### Dependencies automatically solved by CMake
+### Dependencies (managed by vcpkg)
 
-The following third-parties are fetched by CMake and compiled for the need of the project:
+All dependencies are managed through [vcpkg][vcpkg] and declared in [vcpkg.json](/vcpkg.json):
 
-- [EventLoop][eventloop-lib] library which follows the state-of-the-art of eventloop mechanisms and its replacement with
-  similar library or implementation should be easy.
-- [gflags][gflags-lib] library for command-line arguments processing.
-- [glaze][glaze-lib] library to handle the JSON database in a better way than the original code from the gRPC example.
-- [spdlog][spdlog-lib] library for logging using the {fmt} style.
+- [gRPC][grpc] for RPC communication, including Protobuf and Abseil.
+- [EventLoop][eventloop-lib] for asynchronous event handling
+- [gflags][gflags-lib] for command-line argument processing
+- [glaze][glaze-lib] for JSON parsing
+- [spdlog][spdlog-lib] for logging
+- [GoogleTest][gtest-lib] for unit testing
 
-### External dependencies
-
-- gRPC
-- Protobuf, which is usually included through gRPC
-
-Because downloading and compiling gRPC on project build is a long and annoying process, it is better instead to have
-them already available through the OS system:
-
-- **System installation**: Install via package manager or manual compilation (see
-  [GRPC_BUILD_GUIDE.md](/GRPC_BUILD_GUIDE.md))
+See [VCPKG_USAGE.md](/VCPKG_USAGE.md) for setup instructions and multi-compiler support.
 
 ## Implementation details about the client-side reactors
 
@@ -62,6 +54,9 @@ Refer to [reactor_client.md](/applications/reactor/reactor_client.md)
   for ALS awareness and research throughout his journey with the disease. Consider supporting ALS research in his memory.
 
 <!-- Reference links -->
+[vcpkg]: https://vcpkg.io/
+[grpc]: https://grpc.io/
+[gtest-lib]: https://github.com/google/googletest
 [grpc-route-guide]: https://github.com/grpc/grpc/tree/master/examples/cpp/route_guide
 [grpc-callback-api]: https://grpc.io/docs/languages/cpp/callback/
 [grpc-best-practices]: https://grpc.io/docs/languages/cpp/best_practices/

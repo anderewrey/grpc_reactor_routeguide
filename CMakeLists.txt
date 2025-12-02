@@ -9,6 +9,9 @@ include(VcpkgAutoDetect)
 project(grpc-reactor-routeguide LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 
+# Enable CTest for GoogleTest integration
+enable_testing()
+
 # Verify compiler compatibility with system libraries (gRPC/Protobuf/Abseil)
 include(CompilerCompatibilityCheck)
 

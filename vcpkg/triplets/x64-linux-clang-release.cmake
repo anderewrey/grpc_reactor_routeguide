@@ -11,10 +11,10 @@ set(VCPKG_BUILD_TYPE release)
 set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE
     "${CMAKE_CURRENT_LIST_DIR}/../toolchains/ccache-toolchain.cmake")
 
-# Clang 19 specific settings with optimizations
+# Clang specific settings with optimizations
 set(VCPKG_CMAKE_CONFIGURE_OPTIONS
-    "-DCMAKE_C_COMPILER=clang-19"
-    "-DCMAKE_CXX_COMPILER=clang++-19"
+    "-DCMAKE_C_COMPILER=clang"
+    "-DCMAKE_CXX_COMPILER=clang++"
     "-DCMAKE_C_FLAGS_RELEASE=-O3 -DNDEBUG -march=native -mtune=native -g0"
     "-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG -march=native -mtune=native -g0"
     "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON")

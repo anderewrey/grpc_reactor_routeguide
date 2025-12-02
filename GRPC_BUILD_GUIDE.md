@@ -119,14 +119,14 @@ sudo ldconfig
 
 ### Core Build Configuration
 
-| Option | Default | Recommended | Purpose |
-|--------|---------|-------------|---------|
-| `CMAKE_BUILD_TYPE` | - | `Release` | Sets optimization level and defines |
-| `CMAKE_INSTALL_PREFIX` | `/usr/local` | `/usr/local` | Where to install libraries/headers |
-| `CMAKE_CXX_STANDARD` | `14` | `20` | C++ standard version (match your project) |
-| `BUILD_SHARED_LIBS` | `OFF` | `ON` | Build .so instead of .a (smaller app binaries) |
-| `CMAKE_C_COMPILER` | system default | `/usr/bin/gcc` | C compiler to use |
-| `CMAKE_CXX_COMPILER` | system default | `/usr/bin/g++` | C++ compiler to use |
+| Option                 | Default        | Recommended    | Purpose                                        |
+|------------------------|----------------|----------------|------------------------------------------------|
+| `CMAKE_BUILD_TYPE`     | -              | `Release`      | Sets optimization level and defines            |
+| `CMAKE_INSTALL_PREFIX` | `/usr/local`   | `/usr/local`   | Where to install libraries/headers             |
+| `CMAKE_CXX_STANDARD`   | `14`           | `20`           | C++ standard version (match your project)      |
+| `BUILD_SHARED_LIBS`    | `OFF`          | `ON`           | Build .so instead of .a (smaller app binaries) |
+| `CMAKE_C_COMPILER`     | system default | `/usr/bin/gcc` | C compiler to use                              |
+| `CMAKE_CXX_COMPILER`   | system default | `/usr/bin/g++` | C++ compiler to use                            |
 
 ### Optimization Flags
 

@@ -82,23 +82,23 @@ processing.
 
 **Components mapping:**
 
-| Active Object Component | This Implementation | Notes |
-|------------------------|---------------------|-------|
-| Proxy | `GetFeature()`, `ListFeatures()` methods | Creates Method Requests, returns immediately |
-| Method Request | `ActiveUnaryReactor`, `ActiveReadReactor` | Encapsulates RPC state with guards |
-| Activation Queue | EventLoop internal queue | Holds pending event notifications |
-| Scheduler | `EventLoop::Run()` | Dispatches events to handlers |
-| Servant | `EventLoop::RegisterEvent()` handlers | Application-provided business logic |
-| Future | `GetResponse()`, `Status()` | Deferred result access |
-| Guards | `AddHold()`/`RemoveHold()` | Prevents concurrent access during processing |
+| Active Object Component | This Implementation                       | Notes                                        |
+|-------------------------|-------------------------------------------|----------------------------------------------|
+| Proxy                   | `GetFeature()`, `ListFeatures()` methods  | Creates Method Requests, returns immediately |
+| Method Request          | `ActiveUnaryReactor`, `ActiveReadReactor` | Encapsulates RPC state with guards           |
+| Activation Queue        | EventLoop internal queue                  | Holds pending event notifications            |
+| Scheduler               | `EventLoop::Run()`                        | Dispatches events to handlers                |
+| Servant                 | `EventLoop::RegisterEvent()` handlers     | Application-provided business logic          |
+| Future                  | `GetResponse()`, `Status()`               | Deferred result access                       |
+| Guards                  | `AddHold()`/`RemoveHold()`                | Prevents concurrent access during processing |
 
 **Library vs Application Responsibilities:**
 
-| Aspect | Definition | This Implementation |
-|--------|------------------|---------------------|
-| Guards | Method Requests have `guard()` for synchronization | `AddHold()`/`RemoveHold()` mechanism |
-| Servant | Business logic component with state | Application-provided (demo uses logging placeholders) |
-| Scope | Full client-server encapsulation | Client-side library (server has separate Servant) |
+| Aspect  | Definition                                         | This Implementation                                   |
+|---------|----------------------------------------------------|-------------------------------------------------------|
+| Guards  | Method Requests have `guard()` for synchronization | `AddHold()`/`RemoveHold()` mechanism                  |
+| Servant | Business logic component with state                | Application-provided (demo uses logging placeholders) |
+| Scope   | Full client-server encapsulation                   | Client-side library (server has separate Servant)     |
 
 **Combined pattern characteristics:**
 

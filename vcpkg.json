@@ -8,6 +8,13 @@
     "spdlog",
     "gflags",
     "glaze",
-    "eventloop"
+    "eventloop",
+    "gtest"
+  ],
+  "overrides": [
+    { "name": "spdlog", "version": "1.15.3" },
+    { "name": "gflags", "version": "2.2.2" },
+    { "name": "gtest", "version": "1.17.0" },
+    { "name": "glaze", "version": "2.9.2" }
   ]
 }

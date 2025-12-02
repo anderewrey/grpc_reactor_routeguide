@@ -1,7 +1,7 @@
 {
   "name": "grpc",
   "version": "1.73.1",
-  "description": "gRPC C++ with custom optimizations for grpc_reactor_routeguide project",
+  "description": "gRPC C++ - overlay port required for custom build from git submodule with project-specific optimizations",
   "homepage": "https://github.com/grpc/grpc",
   "license": "Apache-2.0",
   "dependencies": [

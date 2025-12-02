@@ -22,3 +22,6 @@ target_link_libraries(route_guide_active_reactor_client
 file(COPY ${CMAKE_SOURCE_DIR}/rg_service/route_guide_db.json
      DESTINATION "${CMAKE_CURRENT_BINARY_DIR}"
 )
+
+# Tests subdirectory
+add_subdirectory(tests)

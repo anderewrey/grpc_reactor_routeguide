@@ -2,6 +2,8 @@
 find_package(absl CONFIG REQUIRED)
 find_package(protobuf CONFIG REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
+# vcpkg's gflags defaults to non-namespaced targets. This enables gflags::gflags target.
+set(GFLAGS_USE_TARGET_NAMESPACE TRUE)
 find_package(gflags CONFIG REQUIRED)
 find_package(glaze CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
