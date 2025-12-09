@@ -3,11 +3,11 @@
 /// Copyright 2024-2025 anderewrey
 ///
 ///
-/// POC Option A: Real EventLoop + In-Process Server
+/// Client Reactor Integration Tests
 ///
 /// Tests the full integration path: reactor → gRPC → EventLoop → application thread.
-/// This approach validates the production usage pattern where gRPC callbacks trigger
-/// EventLoop events that dispatch response processing to the application thread.
+/// Validates the production usage pattern where gRPC callbacks trigger EventLoop events
+/// that dispatch response processing to the application thread.
 ///
 /// The test fixture creates:
 /// - An in-process gRPC server with controllable responses (TestRouteGuideService)
@@ -40,6 +40,20 @@
 #include "applications/reactor/reactor_client_routeguide.h"
 
 namespace {
+
+/// Global test environment to manage EventLoop lifecycle.
+/// EventLoop doesn't support restart after Halt(), so we start it once for all tests.
+class EventLoopEnvironment : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    EventLoop::SetMode(EventLoop::Mode::NON_BLOCK);
+    EventLoop::Run();
+  }
+
+  void TearDown() override {
+    EventLoop::Halt();
+  }
+};
 
 /// Controllable test service - returns preconfigured responses
 class TestRouteGuideService final : public routeguide::RouteGuide::CallbackService {
@@ -103,7 +117,7 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
 };
 
 /// Test fixture with in-process server and EventLoop integration
-class ReactorIntegrationTest_OptionA : public ::testing::Test {
+class ClientReactorIntegrationTest : public ::testing::Test {
  protected:
   void SetUp() override {
     // Build in-process server
@@ -123,15 +137,10 @@ class ReactorIntegrationTest_OptionA : public ::testing::Test {
     // Store main thread ID for assertions
     main_thread_id_ = std::this_thread::get_id();
 
-    // Start EventLoop in non-blocking mode (runs in background thread)
-    EventLoop::SetMode(EventLoop::Mode::NON_BLOCK);
-    EventLoop::Run();
+    // EventLoop is managed by EventLoopEnvironment (started once for all tests)
   }
 
   void TearDown() override {
-    // Stop EventLoop
-    EventLoop::Halt();
-
     if (server_) {
       server_->Shutdown();
     }
@@ -157,7 +166,7 @@ class ReactorIntegrationTest_OptionA : public ::testing::Test {
 /// 4. Response data is correctly extracted via GetResponse()
 ///
 /// Thread assertions confirm callbacks do NOT run on the main thread.
-TEST_F(ReactorIntegrationTest_OptionA, GetFeature_ValidPoint_ReturnsFeature) {
+TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_ReturnsFeature) {
   // Configure expected response
   routeguide::Feature expected_feature;
   expected_feature.set_name("Test Feature");
@@ -239,7 +248,7 @@ TEST_F(ReactorIntegrationTest_OptionA, GetFeature_ValidPoint_ReturnsFeature) {
 /// - All streamed responses are received and dispatched correctly
 /// - Thread assertions confirm gRPC → EventLoop thread transition
 /// - Response data integrity across thread boundaries
-TEST_F(ReactorIntegrationTest_OptionA, ListFeatures_MultipleResponses_DispatchesToEventLoop) {
+TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesToEventLoop) {
   // Configure server to return multiple features
   std::vector<routeguide::Feature> expected_features;
   for (int i = 0; i < 3; ++i) {
@@ -333,7 +342,7 @@ TEST_F(ReactorIntegrationTest_OptionA, ListFeatures_MultipleResponses_Dispatches
 /// - OK: Server response arrived before cancel signal took effect
 ///
 /// Thread assertions confirm the EventLoop dispatch path is exercised.
-TEST_F(ReactorIntegrationTest_OptionA, TryCancel_UnaryRpc_DispatchesToEventLoop) {
+TEST_F(ClientReactorIntegrationTest, TryCancel_UnaryRpc_DispatchesToEventLoop) {
   routeguide::Feature feature;
   feature.set_name("Should not receive");
   test_service_.SetGetFeatureResponse(feature);
@@ -381,5 +390,7 @@ TEST_F(ReactorIntegrationTest_OptionA, TryCancel_UnaryRpc_DispatchesToEventLoop)
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
+  // Register global environment to manage EventLoop lifecycle (start once, stop once)
+  ::testing::AddGlobalTestEnvironment(new EventLoopEnvironment());
   return RUN_ALL_TESTS();
 }

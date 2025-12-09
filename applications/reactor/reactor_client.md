@@ -111,6 +111,101 @@ Reactor Pattern (Event-driven concurrency):
 - Events are handled asynchronously without blocking
 - Event detection is separated from event handling
 
+## API Naming Conventions
+
+The reactor library exposes a high-level application API that abstracts gRPC's internal terminology. The naming
+reflects client/server semantics rather than gRPC implementation details.
+
+### Client vs Server Message Semantics
+
+| Role       | Sends     | Receives  |
+|------------|-----------|-----------|
+| **Client** | Requests  | Responses |
+| **Server** | Responses | Requests  |
+
+### gRPC Internal API (Hidden from Application)
+
+These gRPC functions are called internally by the reactor classes and are not exposed to application code:
+
+| gRPC Function           | Purpose                          | Called by                                         |
+|-------------------------|----------------------------------|---------------------------------------------------|
+| `StartCall()`           | Initiates the RPC                | Adapter constructor                               |
+| `StartRead(&response_)` | Begins async read operation      | Base constructor, `GetResponse()`, `OnReadDone()` |
+| `StartWrite(&request)`  | Begins async write operation     | Inside `SendRequest()`                            |
+| `StartWritesDone()`     | Signals end of client writes     | Inside `CloseRequestStream()`                     |
+| `AddHold()`             | Prevents OnDone until RemoveHold | Inside `OnReadDone()`                             |
+| `RemoveHold()`          | Releases hold, allows OnDone     | Inside `GetResponse()`                            |
+
+### gRPC Callbacks (Protected Overrides)
+
+These callbacks are invoked by gRPC and handled internally by the reactor classes:
+
+| gRPC Callback          | When it fires             | Invokes user callback            |
+|------------------------|---------------------------|----------------------------------|
+| `OnReadDone(bool ok)`  | Read operation completed  | `cbs_.read_ok` or `cbs_.read_nok`|
+| `OnWriteDone(bool ok)` | Write operation completed | `cbs_.write_done`                |
+| `OnDone(Status)`       | RPC terminated            | `cbs_.done`                      |
+
+### Application-Facing API
+
+These methods are exposed to application code with naming that reflects application-level semantics:
+
+| Method                 | Purpose                              | Notes                             |
+|------------------------|--------------------------------------|-----------------------------------|
+| `SendRequest()`        | Send a request message on the stream | Client sends requests             |
+| `CloseRequestStream()` | Signal end of client requests        | Stream remains open for responses |
+| `GetResponse()`        | Extract a received response via swap | Client receives responses         |
+| `TryCancel()`          | Cancel the entire RPC                | Thread-safe, any thread           |
+| `Status()`             | Get final RPC status                 | Valid after `OnDone`              |
+
+### Future Server-Side API
+
+For server-side reactors, the naming will mirror client-side with role reversal:
+
+| Method                  | Purpose                               | Notes                            |
+|-------------------------|---------------------------------------|----------------------------------|
+| `SendResponse()`        | Send a response message on the stream | Server sends responses           |
+| `CloseResponseStream()` | Signal end of server responses        | Stream remains open for requests |
+| `GetRequest()`          | Extract a received request via swap   | Server receives requests         |
+| `Finish(status)`        | Complete the RPC with status          | Server-initiated termination     |
+
+### Complete API Matrix
+
+#### Client-Side Reactors
+
+| RPC Type          | Send             | Close Stream           | Receive          | Cancel         | Status     |
+|-------------------|------------------|------------------------|------------------|----------------|------------|
+| **Unary**         | (constructor)    | N/A                    | `GetResponse()`  | `TryCancel()`  | `Status()` |
+| **Server-Stream** | (constructor)    | N/A                    | `GetResponse()`  | `TryCancel()`  | `Status()` |
+| **Client-Stream** | `SendRequest()`  | `CloseRequestStream()` | (in `OnDone`)    | `TryCancel()`  | `Status()` |
+| **Bidi**          | `SendRequest()`  | `CloseRequestStream()` | `GetResponse()`  | `TryCancel()`  | `Status()` |
+
+#### Server-Side Reactors (Future)
+
+| RPC Type          | Receive        | Send               | Close Stream            | Finish           |
+|-------------------|----------------|--------------------|-------------------------|------------------|
+| **Unary**         | (params)       | (via `Finish()`)   | N/A                     | `Finish(status)` |
+| **Server-Stream** | (params)       | `SendResponse()`   | `CloseResponseStream()` | `Finish(status)` |
+| **Client-Stream** | `GetRequest()` | (via `Finish()`)   | N/A                     | `Finish(status)` |
+| **Bidi**          | `GetRequest()` | `SendResponse()`   | `CloseResponseStream()` | `Finish(status)` |
+
+### Bidirectional Stream Message Flow
+
+```text
+Client                              Server
+  |                                   |
+  |---SendRequest()----------------->|  GetRequest()
+  |---SendRequest()----------------->|  GetRequest()
+  |---CloseRequestStream()---------->|  (read stream ends)
+  |                                   |
+  |<------------------SendResponse()--|
+  |  GetResponse()                    |
+  |<------------------SendResponse()--|
+  |  GetResponse()                    |
+  |<-----------CloseResponseStream()--|
+  |  (read stream ends)               |
+```
+
 ## Component Implementation
 
 The implementation is organized across three architectural layers, mapping Active Object concepts to concrete code.

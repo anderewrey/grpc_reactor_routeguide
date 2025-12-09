@@ -33,7 +33,8 @@
 *.app
 
 # IDE config files
-.idea/
+.*/
+_*/
 
 # build directories
 cmake-*/

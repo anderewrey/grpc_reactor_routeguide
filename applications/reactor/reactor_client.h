@@ -295,4 +295,372 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
   // Set by gRPC thread, read by application thread.
   std::atomic_bool read_no_more_{false};
 };
+
+/// Template callbacks for stream-writer RPC client reactor. It contains all available callbacks slots
+/// needed by specialized RPC client reactors.
+/// @tparam RequestT type of protobuf message the RPC sends
+/// @tparam ResponseT type of protobuf message the RPC receives as final response
+template <class RequestT, class ResponseT>
+requires std::derived_from<RequestT, google::protobuf::Message> &&
+         std::derived_from<ResponseT, google::protobuf::Message>
+struct ActiveWriteCallbacks {
+  /// Function signature for ClientWriteReactor::OnWriteDone event
+  /// @param reactor instance pointer on which the event is received
+  /// @param ok true if the write was successful, false otherwise
+  using OnWriteDoneCallback = std::function<void(grpc::ClientWriteReactor<RequestT>*, bool ok)>;
+  OnWriteDoneCallback write_done;  ///< Slot for ClientWriteReactor::OnWriteDone event
+
+  /// Function signature for ClientWriteReactor::OnDone event. This event function is called by gRPC when the RPC is
+  /// done and no more operation is possible with that reactor instance.
+  /// @param reactor instance pointer on which the event is received
+  /// @param status reference to the reason of the event
+  /// @param response reference to the response message the reactor received
+  using OnDoneCallback = std::function<void(grpc::ClientWriteReactor<RequestT>*,
+                                            const grpc::Status&,
+                                            const ResponseT&)>;
+  OnDoneCallback done;  ///< Slot for ClientWriteReactor::OnDone event
+};
+
+/// Template class for stream-writer RPC client reactor. This class is derived again by
+/// specialized RPC client reactors.
+/// Active Object components: Method Request (encapsulates RPC state) & Future (provides GetResponse(), Status())
+/// @tparam RequestT type of protobuf message the RPC sends
+/// @tparam ResponseT type of protobuf message the RPC receives as final response
+template <class RequestT, class ResponseT>
+requires std::derived_from<RequestT, google::protobuf::Message> &&
+         std::derived_from<ResponseT, google::protobuf::Message>
+class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
+ public:
+  /// Constructor of the reactor class. It moves the received objects as members.
+  /// @param context given to this reactor about the ongoing RPC method
+  /// @param cbs given to this reactor to use as callable functions
+  ActiveWriteReactor(std::unique_ptr<grpc::ClientContext> context,
+                     ActiveWriteCallbacks<RequestT, ResponseT>&& cbs)
+      : context_(std::move(context)),
+        cbs_(std::move(cbs)) {}
+
+  /// Destructor of the reactor class. It tells the gRPC connection to close the channel.
+  /// If the context/channel is already closed, there's no problem to TryCancel() it again.
+  ~ActiveWriteReactor() override {
+    context_->TryCancel();
+  }
+
+  /// This class cannot be copied.
+  ActiveWriteReactor(const ActiveWriteReactor&) = delete;
+  /// This class cannot be copied.
+  ActiveWriteReactor& operator=(const ActiveWriteReactor&) = delete;
+  /// This class cannot be moved.
+  ActiveWriteReactor(ActiveWriteReactor&&) = delete;
+  /// This class cannot be moved.
+  ActiveWriteReactor& operator=(ActiveWriteReactor&&) = delete;
+
+  /// Sends a request message asynchronously on the client stream.
+  /// The write operation completes asynchronously and OnWriteDone() will be called.
+  /// gRPC requires that only one write be in flight at a time, so this method
+  /// returns false if a write is already pending. Callers should wait for
+  /// OnWriteDone() before calling SendRequest() again.
+  /// @param request message to send
+  /// @return true if the write was initiated, false if rejected (stream closed or write pending)
+  bool SendRequest(const RequestT& request) {
+    if (writes_done_) return false;  // Stream already closed
+    if (write_pending_) return false;  // Write already in progress
+    write_pending_ = true;
+    this->StartWrite(&request);
+    return true;
+  }
+
+  /// Signals the end of the client request stream.
+  /// After this call, no more SendRequest() calls are allowed.
+  void CloseRequestStream() {
+    writes_done_ = true;
+    this->StartWritesDone();
+  }
+
+  /// Sends a best-effort out-of-band cancel to the RPC. That signal is thread-safe
+  /// and can be sent anytime from any thread. The goal of that signal is to provoke
+  /// the `OnDone` event from the RPC.
+  void TryCancel() const {
+    context_->TryCancel();
+  }
+
+  /// Swaps the underlying data storage of the response object.
+  /// The swap mechanism is important to avoid a deep-copy of the content of the
+  /// response. Having the response swapped is acceptable because the client-streaming RPC
+  /// is meant to receive one final response only, so the swap is a good technique to speed up
+  /// the response proceeding time.
+  /// @param[out] response instance to swap
+  /// @return true when the returned response is valid, false otherwise.
+  bool GetResponse(ResponseT& response) {
+    if (!response_ready_) return false;
+    swap(response_, response);  // Moving the read content on the user side
+    response_ready_ = false;
+    return true;
+  }
+
+  /// Obtain the status of the RPC set by the `OnDone` event. Calling this
+  /// function at any other moment is meaningless.
+  /// @return reference to the grpc::Status object
+  const grpc::Status& Status() { return status_; }
+
+ protected:
+  /// This event function is called by gRPC when a write operation completes.
+  /// The OnWriteDoneCallback is then called, but on the same gRPC thread.
+  /// @param ok true if the write was successful
+  void OnWriteDone(bool ok) override {
+    write_pending_ = false;
+    if (cbs_.write_done) cbs_.write_done(this, ok);
+  }
+
+  /// This event function is called by gRPC when the RPC is done. The OnDoneCallback
+  /// callback is then called, but on the same gRPC thread. The received status
+  /// is also copied into the reactor.
+  /// @param status info coming from gRPC
+  void OnDone(const grpc::Status& status) override {
+    response_ready_ = status.ok();
+    if (cbs_.done) {
+      status_ = status;  // doing deep-copy unfortunately
+      cbs_.done(this, status, response_);
+    }
+  }
+
+ protected:
+  std::unique_ptr<grpc::ClientContext> context_;  ///< gRPC client context for this RPC
+  ResponseT response_;  ///< response holder
+
+ private:
+  grpc::Status status_;
+  ActiveWriteCallbacks<RequestT, ResponseT> cbs_;
+
+  // Flag indicating the response is ready to be read via GetResponse()
+  // Set by gRPC thread, read by application thread.
+  std::atomic_bool response_ready_{false};
+
+  // Flag indicating a write operation is in progress.
+  // gRPC requires that only one write be in flight at a time.
+  // Set by application thread via StartWrite, cleared by gRPC thread via OnWriteDone.
+  std::atomic_bool write_pending_{false};
+
+  // Flag indicating CloseRequestStream() has been called.
+  // After this, no more SendRequest() calls are allowed.
+  // Set by application thread, read by application thread.
+  std::atomic_bool writes_done_{false};
+};
+/// Template callbacks for bidirectional streaming RPC client reactor. It contains all available
+/// callback slots needed by specialized RPC client reactors.
+/// @tparam RequestT type of protobuf message the RPC sends
+/// @tparam ResponseT type of protobuf message the RPC receives
+template <class RequestT, class ResponseT>
+requires std::derived_from<RequestT, google::protobuf::Message> &&
+         std::derived_from<ResponseT, google::protobuf::Message>
+struct ActiveBidiCallbacks {
+  /// Function signature for ClientBidiReactor::OnReadDone event with positive OK flag.
+  /// @param reactor instance pointer on which the event is received
+  /// @param response reference to the response message the reactor received
+  /// @retval true the response must be kept intact by the reactor until read later through GetResponse() function.
+  ///         The reactor is put on hold in the meantime.
+  /// @retval false the response is unwanted and the reactor can immediately execute a new read operation to obtain
+  ///         a new response.
+  using OnReadDoneOkCallback = std::function<bool(grpc::ClientBidiReactor<RequestT, ResponseT>*, const ResponseT&)>;
+  OnReadDoneOkCallback read_ok;  ///< Slot for ClientBidiReactor::OnReadDone event with positive OK flag
+
+  /// Function signature for ClientBidiReactor::OnReadDone event with negative OK flag.
+  /// @param reactor instance pointer on which the event is received
+  using OnReadDoneNOkCallback = std::function<void(grpc::ClientBidiReactor<RequestT, ResponseT>*)>;
+  OnReadDoneNOkCallback read_nok;  ///< Slot for ClientBidiReactor::OnReadDone event with negative OK flag
+
+  /// Function signature for ClientBidiReactor::OnWriteDone event.
+  /// @param reactor instance pointer on which the event is received
+  /// @param ok true if the write was successful, false otherwise
+  using OnWriteDoneCallback = std::function<void(grpc::ClientBidiReactor<RequestT, ResponseT>*, bool ok)>;
+  OnWriteDoneCallback write_done;  ///< Slot for ClientBidiReactor::OnWriteDone event
+
+  /// Function signature for ClientBidiReactor::OnDone event. This event function is called by gRPC when the RPC is
+  /// done and no more operation is possible with that reactor instance.
+  /// @param reactor instance pointer on which the event is received
+  /// @param status reference to the reason of the event
+  using OnDoneCallback = std::function<void(grpc::ClientBidiReactor<RequestT, ResponseT>*, const grpc::Status&)>;
+  OnDoneCallback done;  ///< Slot for ClientBidiReactor::OnDone event
+};
+
+/// Template class for bidirectional streaming RPC client reactor. This class is derived again by
+/// specialized RPC client reactors.
+/// Active Object components: Method Request (encapsulates RPC state) & Future (provides GetResponse(), Status())
+/// @tparam RequestT type of protobuf message the RPC sends
+/// @tparam ResponseT type of protobuf message the RPC receives
+template <class RequestT, class ResponseT>
+requires std::derived_from<RequestT, google::protobuf::Message> &&
+         std::derived_from<ResponseT, google::protobuf::Message>
+class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
+ public:
+  /// Constructor of the reactor class. It moves the received objects as members.
+  /// The derived, specialized reactor must call StartRead() after binding this reactor
+  /// to the RPC via stub.async()->Method(context, this), and before StartCall().
+  /// Calling StartRead() here, before that binding exists, would segfault.
+  /// @param context given to this reactor about the ongoing RPC method
+  /// @param cbs given to this reactor to use as callable functions
+  ActiveBidiReactor(std::unique_ptr<grpc::ClientContext> context,
+                    ActiveBidiCallbacks<RequestT, ResponseT>&& cbs)
+      : context_(std::move(context)),
+        cbs_(std::move(cbs)) {}
+
+  /// Destructor of the reactor class. It tells the gRPC connection to close the channel.
+  /// If the context/channel is already closed, there's no problem to TryCancel() it again.
+  ~ActiveBidiReactor() override {
+    context_->TryCancel();
+  }
+
+  /// This class cannot be copied.
+  ActiveBidiReactor(const ActiveBidiReactor&) = delete;
+  /// This class cannot be copied.
+  ActiveBidiReactor& operator=(const ActiveBidiReactor&) = delete;
+  /// This class cannot be moved.
+  ActiveBidiReactor(ActiveBidiReactor&&) = delete;
+  /// This class cannot be moved.
+  ActiveBidiReactor& operator=(ActiveBidiReactor&&) = delete;
+
+  /// Sends a request message asynchronously on the bidirectional stream.
+  /// The write operation completes asynchronously and OnWriteDone() will be called.
+  /// gRPC requires that only one write be in flight at a time, so this method
+  /// returns false if a write is already pending. Callers should wait for
+  /// OnWriteDone() before calling SendRequest() again.
+  /// @param request message to send
+  /// @return true if the write was initiated, false if rejected (stream closed, write pending,
+  ///         or the RPC has already finished/is finishing)
+  bool SendRequest(const RequestT& request) {
+    // read_no_more_ is also set by OnDone(), so this rejects writes once the RPC is known to be
+    // finished. This narrows but does not fully close the race with a concurrent OnDone: the flag
+    // may still flip to true right after this check (TOCTOU). A full fix needs the same
+    // AddHold()/RemoveHold() protection OnReadDone() uses for the read side.
+    if (read_no_more_) return false;  // RPC already finished (or finishing)
+    if (writes_done_) return false;  // Stream already closed
+    if (write_pending_) return false;  // Write already in progress
+    write_pending_ = true;
+    this->StartWrite(&request);
+    return true;
+  }
+
+  /// Signals the end of the client request stream.
+  /// After this call, no more SendRequest() calls are allowed.
+  /// The server may continue sending responses.
+  void CloseRequestStream() {
+    if (read_no_more_) return;  // Same race-narrowing guard as SendRequest(), see above
+    writes_done_ = true;
+    this->StartWritesDone();
+  }
+
+  /// Sends a best-effort out-of-band cancel to the RPC. That signal is thread-safe
+  /// and can be sent anytime from any thread. The goal of that signal is to provoke
+  /// the `OnDone` event from the RPC.
+  void TryCancel() const {
+    context_->TryCancel();
+  }
+
+  /// Swaps the underlying data storage of the response object and resume the held RPC.
+  /// The swap mechanism is important to avoid a deep-copy of the content of the
+  /// response. Having the response swapped is acceptable because the bidirectional
+  /// RPC overwrites the response at each received message, so the swap is a
+  /// good technique to speed up the response proceeding time.
+  /// @param[out] response instance to swap
+  /// @return true when the returned response is valid, false otherwise.
+  bool GetResponse(ResponseT& response) {
+    if (!response_ready_) return false;
+    swap(response_, response);  // Moving the read content on the user side
+    response_ready_ = false;
+    if (!read_no_more_) {
+      // Restart reading
+      this->StartRead(&response_);
+      // Resuming RPC
+      this->RemoveHold();
+    }
+    return true;
+  }
+
+  /// Obtain the status of the RPC set by the `OnDone` event. Calling this
+  /// function at any other moment is meaningless.
+  /// @return reference to the grpc::Status object
+  const grpc::Status& Status() { return status_; }
+
+ protected:
+  /// This event function is called by gRPC when the stream has a read event. The user-side
+  /// callback is then called, but on the same gRPC thread.
+  /// Based on the value of the `ok` flag, the OnReadDoneOkCallback or OnReadDoneNOkCallback
+  /// is called.
+  /// @param ok true: a response is received. false: the read stream is closed.
+  void OnReadDone(const bool ok) override {
+    response_ready_ = ok;
+    if (!ok) {
+      read_no_more_ = true;
+      if (cbs_.read_nok) cbs_.read_nok(this);
+      return;
+    }
+    if (cbs_.read_ok && cbs_.read_ok(this, response_)) {
+      // The next StartRead() is taking place outside of this gRPC event (see GetResponse above),
+      // and so the RPC must be put on hold until the application thread took care of
+      // the response and requested a new reading.
+      // If that hold is not enforced, a concurrent OnDone event may be received
+      // while the application is exactly on the point to call StartRead(). Prior
+      // OnDone is got, the underlying bound callback (raw pointer) is already
+      // destroyed by gRPC, so any operation request will segfault. IMO, gRPC
+      // can protect itself easily against that situation, but it doesn't (gRPC 1.51.1)
+      // and instead introduced that Hold mechanism: https://github.com/grpc/grpc/pull/18072
+      // So the solution is to call AddHold() here and when the application thread
+      // proceeded the response, calling StartRead() and then RemoveHold()
+      // does the needed protection to ensure the underlying callback is still
+      // living.
+      this->AddHold();
+      return;
+    }
+    response_ready_ = false;
+    this->StartRead(&response_);
+  }
+
+  /// This event function is called by gRPC when a write operation completes.
+  /// The OnWriteDoneCallback is then called, but on the same gRPC thread.
+  /// @param ok true if the write was successful
+  void OnWriteDone(bool ok) override {
+    write_pending_ = false;
+    if (cbs_.write_done) cbs_.write_done(this, ok);
+  }
+
+  /// This event function is called by gRPC when the RPC is done and no more operation is possible
+  /// with that reactor instance. The OnDoneCallback is then called, but on the same gRPC thread.
+  /// The received status is also copied into the reactor.
+  /// @param status info coming from gRPC
+  void OnDone(const grpc::Status& status) override {
+    read_no_more_ = true;
+    if (cbs_.done) {
+      status_ = status;  // doing deep-copy unfortunately
+      cbs_.done(this, status);
+    }
+  }
+
+ protected:
+  std::unique_ptr<grpc::ClientContext> context_;  ///< gRPC client context for this RPC
+  ResponseT response_;  ///< response holder
+
+ private:
+  grpc::Status status_;
+  ActiveBidiCallbacks<RequestT, ResponseT> cbs_;
+
+  // The application MAY call GetResponse() while a gRPC thread is on OnReadDone().
+  // That concurrent situation should not happen by design, unless the application
+  // is not waiting for the OnReadDoneOkCallback prior reading the response_;
+  // Once response_ready_ is set, the response_ may be thread-safely used by the application.
+  // Set by gRPC thread, read by application thread.
+  std::atomic_bool response_ready_{false};
+
+  // Once we got a OnReadDone(N-OK) or OnDone(), no more StartRead() must be called.
+  // Set by gRPC thread, read by application thread.
+  std::atomic_bool read_no_more_{false};
+
+  // Flag indicating a write operation is in progress.
+  // gRPC requires that only one write be in flight at a time.
+  // Set by application thread via StartWrite, cleared by gRPC thread via OnWriteDone.
+  std::atomic_bool write_pending_{false};
+
+  // Flag indicating CloseRequestStream() has been called.
+  // After this, no more SendRequest() calls are allowed.
+  // Set by application thread, read by application thread.
+  std::atomic_bool writes_done_{false};
+};
 }  // namespace RpcReactor::Client
