@@ -271,13 +271,13 @@ TEST_F(ActiveBidiReactorTest, RouteChat_SendReceive_MatchesNotes) {
   sent_notes.push_back(MakeRouteNote(100, 200, "Second note"));
   sent_notes.push_back(MakeRouteNote(100, 200, "Third note"));
 
-  for (const auto& note : sent_notes) {
+  for (auto& note : sent_notes) {
     {
       std::unique_lock<std::mutex> lock(write_mutex);
       write_cv.wait(lock, [&write_ready] { return write_ready; });
       write_ready = false;
     }
-    reactor->SendRequest(note);
+    reactor->SendRequest(std::move(note));
   }
 
   // Wait for last write to complete
@@ -366,13 +366,13 @@ TEST_F(ActiveBidiReactorTest, RouteChat_InterleavedMessages_AllReceived) {
   notes.push_back(MakeRouteNote(100, 200, "A2"));  // Location A, second (gets A1)
   notes.push_back(MakeRouteNote(300, 400, "B2"));  // Location B, second (gets B1)
 
-  for (const auto& note : notes) {
+  for (auto& note : notes) {
     {
       std::unique_lock<std::mutex> lock(write_mutex);
       write_cv.wait(lock, [&write_ready] { return write_ready; });
       write_ready = false;
     }
-    reactor->SendRequest(note);
+    reactor->SendRequest(std::move(note));
   }
 
   {

@@ -131,7 +131,8 @@ These gRPC functions are called internally by the reactor classes and are not ex
 |-------------------------|----------------------------------|---------------------------------------------------|
 | `StartCall()`           | Initiates the RPC                | Adapter constructor                               |
 | `StartRead(&response_)` | Begins async read operation      | Base constructor, `GetResponse()`, `OnReadDone()` |
-| `StartWrite(&request)`  | Begins async write operation     | Inside `SendRequest()`                            |
+| `StartWrite()`          | Begins async write operation     | Inside `SendRequest()`                            |
+| `StartWriteLast()`      | Write + implied close, one op    | Inside `SendLastRequest()`                        |
 | `StartWritesDone()`     | Signals end of client writes     | Inside `CloseRequestStream()`                     |
 | `AddHold()`             | Prevents OnDone until RemoveHold | Inside `OnReadDone()`                             |
 | `RemoveHold()`          | Releases hold, allows OnDone     | Inside `GetResponse()`                            |
@@ -140,23 +141,61 @@ These gRPC functions are called internally by the reactor classes and are not ex
 
 These callbacks are invoked by gRPC and handled internally by the reactor classes:
 
-| gRPC Callback          | When it fires             | Invokes user callback            |
-|------------------------|---------------------------|----------------------------------|
-| `OnReadDone(bool ok)`  | Read operation completed  | `cbs_.read_ok` or `cbs_.read_nok`|
-| `OnWriteDone(bool ok)` | Write operation completed | `cbs_.write_done`                |
-| `OnDone(Status)`       | RPC terminated            | `cbs_.done`                      |
+| gRPC Callback               | When it fires                        | Invokes user callback             |
+|-----------------------------|--------------------------------------|-----------------------------------|
+| `OnReadDone(bool ok)`       | Read operation completed             | `cbs_.read_ok` or `cbs_.read_nok` |
+| `OnWriteDone(bool ok)`      | Write operation completed            | `cbs_.write_done`                 |
+| `OnWritesDoneDone(bool ok)` | Explicit StartWritesDone() completed | none (internal only)              |
+| `OnDone(Status)`            | RPC terminated                       | `cbs_.done`                       |
+
+### Stream Completion Tracking
+
+Each of `ActiveReadReactor`, `ActiveWriteReactor`, and `ActiveBidiReactor` tracks whether further read/write
+operations are still valid via an internal `stream_no_more_` flag:
+
+- Set by `OnReadDone(false)`, `OnWriteDone(false)`, `OnWritesDoneDone()`, and `OnDone()` (whichever apply to that
+  reactor's direction).
+- Checked before issuing a new `StartRead()`, `StartWrite()`, `StartWriteLast()`, or `StartWritesDone()`.
+- `ActiveBidiReactor` uses a single flag for both directions instead of one per direction. Per gRPC's own
+  contract (`grpcpp/support/client_callback.h`), a failure on either read or write means no new read/write
+  operation will succeed, so tracking the two directions separately would not add information.
+- `OnWritesDoneDone()` fires only for an explicit `StartWritesDone()` (i.e. `CloseRequestStream()`), not for a
+  close implied via `StartWriteLast()` (i.e. `SendLastRequest()`) - per gRPC's own documented distinction.
+- This narrows, but does not fully close, a race with a concurrent `OnDone()`: the flag can flip to true right
+  after a call already checked it. Closing that race fully would need the same `AddHold()`/`RemoveHold()`
+  protection `OnReadDone()` already uses for the read side.
+
+### Hold Semantics: Per-RPC, Not Per-Direction
+
+gRPC's hold count (`AddHold()`/`RemoveHold()`) is a single counter shared by the entire RPC, not one counter per
+read/write direction - confirmed from the `ClientCallbackReaderWriterImpl` implementation
+(`grpcpp/support/client_callback.h`), where `Read()`, `Write()`, `WritesDone()`, and `AddHold()`/`AddMultipleHolds()`
+all increment the same `callbacks_outstanding_` member. This has a direct consequence for `ActiveBidiReactor`:
+
+- A hold added in `OnReadDone()` (protecting a response held for later `GetResponse()`) does not block other,
+  independent reactions from firing - in particular, `OnWriteDone(false)` on an unrelated in-flight write can
+  still fire and set `stream_no_more_` while that hold is outstanding. The hold only gates `OnDone()`, not other
+  callbacks.
+- Consequently, `GetResponse()` must call `RemoveHold()` unconditionally, whether or not it restarts reading -
+  only the restart is conditional on `stream_no_more_`. Skipping `RemoveHold()` when `stream_no_more_` happens to
+  already be true would leak the hold and stall the RPC (`OnDone()` would never fire) rather than fail loudly.
 
 ### Application-Facing API
 
 These methods are exposed to application code with naming that reflects application-level semantics:
 
-| Method                 | Purpose                              | Notes                             |
-|------------------------|--------------------------------------|-----------------------------------|
-| `SendRequest()`        | Send a request message on the stream | Client sends requests             |
-| `CloseRequestStream()` | Signal end of client requests        | Stream remains open for responses |
-| `GetResponse()`        | Extract a received response via swap | Client receives responses         |
-| `TryCancel()`          | Cancel the entire RPC                | Thread-safe, any thread           |
-| `Status()`             | Get final RPC status                 | Valid after `OnDone`              |
+| Method                 | Purpose                                      | Notes                                        |
+|------------------------|----------------------------------------------|----------------------------------------------|
+| `SendRequest()`        | Send a request message on the stream         | Takes ownership; caller gives up the request |
+| `SendLastRequest()`    | Send the final request and close, atomically | For a known-last message                     |
+| `CloseRequestStream()` | Signal end of client requests                | Returns false if rejected (see below)        |
+| `GetResponse()`        | Extract a received response via swap         | Client receives responses                    |
+| `TryCancel()`          | Cancel the entire RPC                        | Thread-safe, any thread                      |
+| `Status()`             | Get final RPC status                         | Valid after `OnDone`                         |
+
+`CloseRequestStream()` returns `false` (does nothing) if already closed, if a write is still in flight, or if the
+RPC has already failed/finished - callers should wait for `OnWriteDone()` and retry, or use `SendLastRequest()`
+instead when the last message is known in advance.
 
 ### Future Server-Side API
 
@@ -177,7 +216,7 @@ For server-side reactors, the naming will mirror client-side with role reversal:
 |-------------------|------------------|------------------------|------------------|----------------|------------|
 | **Unary**         | (constructor)    | N/A                    | `GetResponse()`  | `TryCancel()`  | `Status()` |
 | **Server-Stream** | (constructor)    | N/A                    | `GetResponse()`  | `TryCancel()`  | `Status()` |
-| **Client-Stream** | `SendRequest()`  | `CloseRequestStream()` | (in `OnDone`)    | `TryCancel()`  | `Status()` |
+| **Client-Stream** | `SendRequest()`  | `CloseRequestStream()` | `GetResponse()`  | `TryCancel()`  | `Status()` |
 | **Bidi**          | `SendRequest()`  | `CloseRequestStream()` | `GetResponse()`  | `TryCancel()`  | `Status()` |
 
 #### Server-Side Reactors (Future)
@@ -789,13 +828,27 @@ end
 
 gRPC API keywords: ClientWriteReactor, ClientCallbackWriter
 
-Upcoming development
+Implemented and unit-tested: `ActiveWriteReactor` (Method Request, Future) in
+[reactor_client.h](/applications/reactor/reactor_client.h), specialized as `RecordRoute::ClientReactor` in
+[reactor_client_routeguide.h](/applications/reactor/reactor_client_routeguide.h). Test coverage:
+[active_write_reactor_test.cpp](/applications/reactor/tests/active_write_reactor_test.cpp).
+
+No example client wiring (Proxy method, EventLoop handlers) exists yet in
+[route_guide_active_reactor_client.cpp](/applications/reactor/route_guide_active_reactor_client.cpp); that
+application still only calls `GetFeature()` and `ListFeatures()`.
 
 ## Bidirectional streaming RPC client
 
 gRPC API keywords: ClientBidiReactor, ClientCallbackReaderWriter
 
-Upcoming development
+Implemented and unit-tested: `ActiveBidiReactor` (Method Request, Future) in
+[reactor_client.h](/applications/reactor/reactor_client.h), specialized as `RouteChat::ClientReactor` in
+[reactor_client_routeguide.h](/applications/reactor/reactor_client_routeguide.h). Test coverage:
+[active_bidi_reactor_test.cpp](/applications/reactor/tests/active_bidi_reactor_test.cpp).
+
+No example client wiring exists yet in
+[route_guide_active_reactor_client.cpp](/applications/reactor/route_guide_active_reactor_client.cpp), same as the
+client-streaming case above.
 
 <!-- Reference links -->
 [active-object-pattern]: https://www.modernescpp.com/index.php/active-object/

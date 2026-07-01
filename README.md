@@ -12,6 +12,8 @@ This project is based on gRPC library and provides an implementation to:
 
 - send request and receive response messages ([unary reactor][client-unary-reactor])
 - to connect to a stream and receives streamed response messages ([read reactor][client-read-reactor])
+- to send a stream of request messages and receive one final response ([write reactor][client-write-reactor])
+- to send and receive streamed messages concurrently ([bidi reactor][client-bidi-reactor])
 
 ## Requirements
 
@@ -69,6 +71,8 @@ Refer to [reactor_client.md](/applications/reactor/reactor_client.md)
 [protobuf-best-practices]: https://protobuf.dev/best-practices/
 [client-unary-reactor]: https://grpc.github.io/grpc/cpp/classgrpc_1_1_client_unary_reactor.html
 [client-read-reactor]: https://grpc.github.io/grpc/cpp/classgrpc_1_1_client_read_reactor.html
+[client-write-reactor]: https://grpc.github.io/grpc/cpp/classgrpc_1_1_client_write_reactor.html
+[client-bidi-reactor]: https://grpc.github.io/grpc/cpp/classgrpc_1_1_client_bidi_reactor.html
 [cpp20-support]: https://en.cppreference.com/w/cpp/compiler_support/20
 [eventloop-lib]: https://github.com/amoldhamale1105/EventLoop
 [gflags-lib]: https://github.com/gflags/gflags

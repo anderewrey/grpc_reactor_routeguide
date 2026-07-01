@@ -259,14 +259,18 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_MultiplePoints_ReturnsCorrectSummary)
   points.push_back(rg_utils::MakePoint(408000000, -740000000));  // North Point (feature)
   points.push_back(rg_utils::MakePoint(409000000, -740000000));  // Unknown point (not a feature)
 
-  for (const auto& point : points) {
+  // Computed before sending: SendRequest() takes ownership of each point, so points cannot be
+  // read again afterward.
+  double expected_distance = CalculateExpectedDistance(points);
+
+  for (auto& point : points) {
     // Wait for previous write to complete before sending next
     {
       std::unique_lock<std::mutex> lock(write_mutex);
       write_cv.wait(lock, [&write_ready] { return write_ready; });
       write_ready = false;
     }
-    reactor->SendRequest(point);
+    reactor->SendRequest(std::move(point));
   }
 
   // Wait for last write to complete before WritesDone
@@ -291,7 +295,6 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_MultiplePoints_ReturnsCorrectSummary)
   EXPECT_EQ(result.summary.feature_count(), 2);  // NYC and North Point are known features
 
   // Verify distance is calculated (should be > 0 for different coordinates)
-  double expected_distance = CalculateExpectedDistance(points);
   EXPECT_GT(result.summary.distance(), 0);
   // Allow small tolerance for floating point to int conversion
   EXPECT_NEAR(result.summary.distance(), expected_distance, 1.0);
