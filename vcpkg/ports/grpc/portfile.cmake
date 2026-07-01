@@ -40,9 +40,21 @@ endif()
 # This ensures version compatibility of the gRPC bundle:
 # gRPC + Protobuf + Abseil + c-ares + RE2
 
+# vcpkg always sets CMAKE_SYSTEM_NAME (VCPKG_CMAKE_SYSTEM_NAME), which makes CMake
+# report CMAKE_CROSSCOMPILING=TRUE even for native builds. For native builds, tell
+# CMake the truth so gRPC uses its in-tree codegen targets.
+set(GRPC_EXTRA_OPTIONS "")
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux"
+   AND VCPKG_CMAKE_SYSTEM_NAME STREQUAL "Linux"
+   AND VCPKG_TARGET_ARCHITECTURE STREQUAL "x64")
+    list(APPEND GRPC_EXTRA_OPTIONS "-DCMAKE_CROSSCOMPILING=OFF")
+endif()
+
 vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
     OPTIONS
+        ${GRPC_EXTRA_OPTIONS}
+
         # Installation
         -DgRPC_INSTALL=ON
         -DgRPC_BUILD_TESTS=OFF
