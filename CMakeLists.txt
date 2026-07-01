@@ -21,6 +21,9 @@ include(ConfigureRPath)
 # Apply binary size optimizations for Release builds
 include(BuildOptimizations)
 
+# Configure and report the compiler launcher (ccache when available)
+include(CompilerLauncher)
+
 # Find EventLoop for async applications
 find_package(EventLoop CONFIG REQUIRED)
 

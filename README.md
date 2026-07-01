@@ -22,8 +22,10 @@ For details about the compilers: [C++20 compiler support][cpp20-support]
 
 ### Build tools
 
-- C++ compiler (GCC 11 or above, Clang, ...)
-- CMake
+- C++ compiler (GCC 11 or above, or Clang)
+- CMake 3.25 or above
+- Ninja
+- Git
 
 ### Dependencies (managed by vcpkg)
 
@@ -36,7 +38,10 @@ All dependencies are managed through [vcpkg][vcpkg] and declared in [vcpkg.json]
 - [spdlog][spdlog-lib] for logging
 - [GoogleTest][gtest-lib] for unit testing
 
-See [VCPKG_USAGE.md](/VCPKG_USAGE.md) for setup instructions and multi-compiler support.
+## Building
+
+See [DEVELOPING.md](/DEVELOPING.md) for prerequisites, build, run, test, and lint instructions.
+For vcpkg setup and multi-compiler support, see [VCPKG_USAGE.md](/VCPKG_USAGE.md).
 
 ## Implementation details about the client-side reactors
 
