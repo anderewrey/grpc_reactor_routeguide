@@ -9,8 +9,6 @@
       "binaryDir": "${sourceDir}/cmake-build-vcpkg-debug-clang",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
-        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
         "CMAKE_CXX_COMPILER": "clang++",
         "CMAKE_CXX_STANDARD": "20",
         "VCPKG_TARGET_TRIPLET": "x64-linux-clang-release",
@@ -26,8 +24,6 @@
       "binaryDir": "${sourceDir}/cmake-build-vcpkg-release-clang",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
-        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
         "CMAKE_CXX_COMPILER": "clang++",
         "CMAKE_CXX_STANDARD": "20",
         "VCPKG_TARGET_TRIPLET": "x64-linux-clang-release",
@@ -43,8 +39,6 @@
       "binaryDir": "${sourceDir}/cmake-build-vcpkg-debug-gcc",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
-        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
         "CMAKE_CXX_COMPILER": "g++",
         "CMAKE_CXX_STANDARD": "20",
         "VCPKG_TARGET_TRIPLET": "x64-linux-gcc-release",
@@ -60,8 +54,6 @@
       "binaryDir": "${sourceDir}/cmake-build-vcpkg-release-gcc",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
-        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
         "CMAKE_CXX_COMPILER": "g++",
         "CMAKE_CXX_STANDARD": "20",
         "VCPKG_TARGET_TRIPLET": "x64-linux-gcc-release",
@@ -77,8 +69,6 @@
       "binaryDir": "${sourceDir}/cmake-build-vcpkg-debug-gcc13",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
-        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
         "CMAKE_CXX_COMPILER": "/opt/rh/gcc-toolset-13/root/usr/bin/g++",
         "CMAKE_CXX_STANDARD": "20",
         "VCPKG_TARGET_TRIPLET": "x64-linux-gcc13-release",
@@ -94,8 +84,6 @@
       "binaryDir": "${sourceDir}/cmake-build-vcpkg-release-gcc13",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
-        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
         "CMAKE_CXX_COMPILER": "/opt/rh/gcc-toolset-13/root/usr/bin/g++",
         "CMAKE_CXX_STANDARD": "20",
         "VCPKG_TARGET_TRIPLET": "x64-linux-gcc13-release",
