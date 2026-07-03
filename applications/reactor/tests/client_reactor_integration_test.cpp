@@ -37,6 +37,7 @@
 #include <vector>
 
 #include "rg_service/route_guide_service.h"
+#include "applications/reactor/reactor_eventloop.h"
 #include "applications/reactor/reactor_client_routeguide.h"
 
 namespace {
@@ -183,7 +184,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_ReturnsFeature) {
   // Register event handler (Servant role in Active Object pattern)
   // In NON_BLOCK mode, EventLoop runs in a background thread
   static constexpr auto kTestOnDone = "TestGetFeatureOnDone";
-  EventLoop::RegisterEvent(kTestOnDone, [&](const EventLoop::Event* event) {
+  RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
     // In NON_BLOCK mode, this runs on EventLoop's background thread (not main thread)
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
 
@@ -270,7 +271,7 @@ TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesTo
   static constexpr auto kTestOnReadOk = "TestListFeaturesOnReadOk";
   static constexpr auto kTestOnDone = "TestListFeaturesOnDone";
 
-  EventLoop::RegisterEvent(kTestOnReadOk, [&](const EventLoop::Event* event) {
+  RpcReactor::EventConnection on_read_ok_guard(kTestOnReadOk, [&](const EventLoop::Event* event) {
     // Verify we're on EventLoop thread (not main thread)
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
 
@@ -280,7 +281,7 @@ TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesTo
     received_features.push_back(feature);
   });
 
-  EventLoop::RegisterEvent(kTestOnDone, [&](const EventLoop::Event* event) {
+  RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
 
     auto* r = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
@@ -352,7 +353,7 @@ TEST_F(ClientReactorIntegrationTest, TryCancel_UnaryRpc_DispatchesToEventLoop) {
   std::unique_ptr<routeguide::GetFeature::ClientReactor> reactor;
 
   static constexpr auto kTestOnDone = "TestCancelOnDone";
-  EventLoop::RegisterEvent(kTestOnDone, [&](const EventLoop::Event* event) {
+  RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
     auto* r = static_cast<routeguide::GetFeature::ClientReactor*>(event->getData());
     received_status = r->Status();

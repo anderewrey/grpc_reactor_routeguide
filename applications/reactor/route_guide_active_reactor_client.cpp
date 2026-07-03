@@ -28,6 +28,7 @@
 #include "rg_service/rg_utils.h"
 #include "protobuf_utils/protobuf_utils.h"
 
+#include "applications/reactor/reactor_eventloop.h"
 #include "applications/reactor/reactor_client_routeguide.h"
 
 namespace {
@@ -69,74 +70,78 @@ class RouteGuideClient {
  public:
   /// Constructor registers response handlers with EventLoop (Scheduler).
   /// Response handlers process RPC responses on the application thread (adapted Servant role).
+  /// Each handler is owned by an EventConnection member, so it is deregistered automatically
+  /// when this object is destroyed.
   explicit RouteGuideClient(const std::shared_ptr<grpc::Channel>& channel)
-      : stub_(routeguide::RouteGuide::NewStub(channel)) {
-    EventLoop::RegisterEvent(kGetFeatureOnDone,
-                             [&reactor_ = reactor_map_[routeguide::GetFeature::RpcKey],
-                              &logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature)]
-                             (const EventLoop::Event* event) {
-      // (Point 3.5) ProceedEvent: OnDone
-      assert(main_thread == std::this_thread::get_id());  // application thread
-      auto* reactor = static_cast<routeguide::GetFeature::ClientReactor*>(event->getData());
-      assert(reactor == reactor_.get());
-      if (const auto status = reactor->Status(); status.ok()) {
-        // (Point 3.6) extracts response
-        routeguide::GetFeature::ResponseT response;
-        reactor->GetResponse(response);
-        // (Point 3.7) update application with response
-        logger.info("RESPONSE | {}: {}", response.GetTypeName(), protobuf_utils::ToString(response));
-      } else {
-        logger.info("         | {} reactor: {} Status: OK: {} msg: {}",
-                    event->getName(), fmt::ptr(reactor), status.ok(), status.error_message());
-      }
-      // (Point 3.8) Destroy reactor
-      reactor_.reset();
-      logger.info("         | reactor[{}] ended", fmt::ptr(reactor));
-    });
-    auto& list_logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures);
-    EventLoop::RegisterEvent(kListFeaturesOnReadDoneOk,
-                             [this, &reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
-                              &logger = list_logger](const EventLoop::Event* event) {
-      // (Point 2.7) ProceedEvent: OnReadDoneOk
-      assert(main_thread == std::this_thread::get_id());  // application thread
-      auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
-      assert(reactor == reactor_.get());
-      // (Point 2.8, 2.9, 2.10, 2.11) extracts response and restart RPC
-      routeguide::ListFeatures::ResponseT response;
-      reactor->GetResponse(response);
-      // (Point 2.12) update application with response
-      logger.info("RESPONSE | {}: {}", response.GetTypeName(), protobuf_utils::ToString(response));
+      : stub_(routeguide::RouteGuide::NewStub(channel)),
+        get_feature_on_done_(kGetFeatureOnDone,
+            [&reactor_ = reactor_map_[routeguide::GetFeature::RpcKey],
+             &logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature)]
+            (const EventLoop::Event* event) {
+          // (Point 3.5) ProceedEvent: OnDone
+          assert(main_thread == std::this_thread::get_id());  // application thread
+          auto* reactor = static_cast<routeguide::GetFeature::ClientReactor*>(event->getData());
+          assert(reactor == reactor_.get());
+          if (const auto status = reactor->Status(); status.ok()) {
+            // (Point 3.6) extracts response
+            routeguide::GetFeature::ResponseT response;
+            reactor->GetResponse(response);
+            // (Point 3.7) update application with response
+            logger.info("RESPONSE | {}: {}", response.GetTypeName(), protobuf_utils::ToString(response));
+          } else {
+            logger.info("         | {} reactor: {} Status: OK: {} msg: {}",
+                        event->getName(), fmt::ptr(reactor), status.ok(), status.error_message());
+          }
+          // (Point 3.8) Destroy reactor
+          reactor_.reset();
+          logger.info("         | reactor[{}] ended", fmt::ptr(reactor));
+        }),
+        list_features_on_read_done_ok_(kListFeaturesOnReadDoneOk,
+            [this, &reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
+             &logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures)]
+            (const EventLoop::Event* event) {
+          // (Point 2.7) ProceedEvent: OnReadDoneOk
+          assert(main_thread == std::this_thread::get_id());  // application thread
+          auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
+          assert(reactor == reactor_.get());
+          // (Point 2.8, 2.9, 2.10, 2.11) extracts response and restart RPC
+          routeguide::ListFeatures::ResponseT response;
+          reactor->GetResponse(response);
+          // (Point 2.12) update application with response
+          logger.info("RESPONSE | {}: {}", response.GetTypeName(), protobuf_utils::ToString(response));
 #if 0
-      // Triggering extra concurrency: Un-comment that #IF block to probe the refusal of concurrent RPC calls.
-      // Each received result from stream is reused to trigger a concurrent unary RPC request. If the RPC already has
-      // a pending operation, the new call is refused.
-      GetFeature(response.location());
+          // Triggering extra concurrency: Un-comment that #IF block to probe the refusal of concurrent RPC calls.
+          // Each received result from stream is reused to trigger a concurrent unary RPC request. If the RPC already
+          // has a pending operation, the new call is refused.
+          GetFeature(response.location());
 #endif
-    });
-    EventLoop::RegisterEvent(kListFeaturesOnReadDoneNOk,
-                             [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
-                              &logger = list_logger](const EventLoop::Event* event) {
-      // (Point 4.7) ProceedEvent: OnReadDoneNOk
-      assert(main_thread == std::this_thread::get_id());  // application thread
-      auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
-      assert(reactor == reactor_.get());
-      // (Point 4.8) update application
-      logger.info("         | {} reactor: {}", event->getName(), fmt::ptr(reactor));
-    });
-    EventLoop::RegisterEvent(kListFeaturesOnDone,
-                             [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
-                              &logger = list_logger](const EventLoop::Event* event) {
-      // (Point 4.9) ProceedEvent: OnDone
-      assert(main_thread == std::this_thread::get_id());  // application thread
-      auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
-      assert(reactor == reactor_.get());
-      const auto status = reactor->Status();
-      // (Point 4.8) update application with status
-      logger.info("         | {} reactor: {}", event->getName(), fmt::ptr(reactor));
-      // (Point 4.11) Destroy reactor
-      reactor_.reset();
-      logger.info("         | reactor[{}] ended", fmt::ptr(reactor));
-    });
+        }),
+        list_features_on_read_done_nok_(kListFeaturesOnReadDoneNOk,
+            [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
+             &logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures)]
+            (const EventLoop::Event* event) {
+          // (Point 4.7) ProceedEvent: OnReadDoneNOk
+          assert(main_thread == std::this_thread::get_id());  // application thread
+          auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
+          assert(reactor == reactor_.get());
+          // (Point 4.8) update application
+          logger.info("         | {} reactor: {}", event->getName(), fmt::ptr(reactor));
+        }),
+        list_features_on_done_(kListFeaturesOnDone,
+            [&reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
+             &logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures)]
+            (const EventLoop::Event* event) {
+          // (Point 4.9) ProceedEvent: OnDone
+          assert(main_thread == std::this_thread::get_id());  // application thread
+          auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
+          assert(reactor == reactor_.get());
+          const auto status = reactor->Status();
+          // (Point 4.8) update application with status
+          logger.info("         | {} reactor: {}", event->getName(), fmt::ptr(reactor));
+          // (Point 4.11) Destroy reactor
+          reactor_.reset();
+          logger.info("         | reactor[{}] ended", fmt::ptr(reactor));
+        }) {
   }
 
   /// Proxy component: Client-facing method that creates Method Request and returns immediately.
@@ -214,6 +219,12 @@ class RouteGuideClient {
   // Container of all RPC reactor instances. A new dedicated instance must be created for each RPC call and be destroyed
   // once the RPC is done (i.e. 'OnDone' event)
   std::map<routeguide::RpcMethods, std::unique_ptr<grpc::internal::ClientReactor>> reactor_map_;
+  // EventLoop handler registrations, one per event name used above. Declared after reactor_map_
+  // so it already exists when these are constructed, since their callbacks capture entries of it.
+  RpcReactor::EventConnection get_feature_on_done_;
+  RpcReactor::EventConnection list_features_on_read_done_ok_;
+  RpcReactor::EventConnection list_features_on_read_done_nok_;
+  RpcReactor::EventConnection list_features_on_done_;
 };
 
 int main(int argc, char** argv) {

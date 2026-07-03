@@ -13,7 +13,6 @@ target_include_directories(route_guide_callback_client
 target_link_libraries(route_guide_callback_client
     PRIVATE
         rg_service
-        EventLoop::EventLoop
 )
 
 # Server executable
