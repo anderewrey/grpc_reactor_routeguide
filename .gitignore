@@ -32,7 +32,7 @@
 *.out
 *.app
 
-# IDE config files
+# IDE config directories and internal/private output directories
 .*/
 _*/
 

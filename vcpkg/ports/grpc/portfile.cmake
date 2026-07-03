@@ -1,5 +1,5 @@
 # Custom gRPC port for grpc_reactor_routeguide project
-# Based on GRPC_BUILD_GUIDE.md specifications
+# Based on docs/grpc-build-guide.md specifications
 # Version: 1.73.1
 # C++ only, speed-optimized, minimal features
 
@@ -12,7 +12,7 @@
 #    See: https://github.com/microsoft/vcpkg/issues/6886
 #         https://github.com/microsoft/vcpkg/issues/1036
 #
-# This approach matches GRPC_BUILD_GUIDE.md: git clone --depth 1 --recurse-submodules
+# This approach matches docs/grpc-build-guide.md: git clone --depth 1 --recurse-submodules
 
 set(SOURCE_PATH "${CURRENT_BUILDTREES_DIR}/src/grpc-v1.73.1")
 

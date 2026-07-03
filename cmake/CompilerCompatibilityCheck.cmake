@@ -107,10 +107,10 @@ if(NOT USING_VCPKG AND NOT SKIP_COMPILER_CHECK)
             "  1. Switch to the compiler used to build system libraries:\n"
             "     cmake -B build -DCMAKE_CXX_COMPILER=<matching-compiler>\n"
             "  2. Rebuild system libraries with your current compiler\n"
-            "     (See GRPC_BUILD_GUIDE.md)\n"
+            "     (See docs/grpc-build-guide.md)\n"
             "  3. Bypass this check (NOT RECOMMENDED, will likely fail at link time):\n"
             "     cmake -B build -DSKIP_COMPILER_CHECK=ON\n"
-            "See GRPC_BUILD_GUIDE.md for detailed explanation.\n"
+            "See docs/grpc-build-guide.md for detailed explanation.\n"
             "================================================================================")
     endif()
 

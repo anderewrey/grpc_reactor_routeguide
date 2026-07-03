@@ -291,7 +291,7 @@ On Linux (unlike Windows/MSVC), mixing Debug and Release builds is safe and reco
 ### Benefits
 
 | Build Type | Your Code | Dependencies | Result |
-|------------|-----------|--------------|--------|
+| ------------ | ----------- | -------------- | -------- |
 | **Debug** | `-O0 -g` | `-O3` (Release) | Fast debugging + fast execution |
 | **Release** | `-O3` | `-O3` (Release) | Full optimization everywhere |
 | **RelWithDebInfo** | `-O2 -g` | `-O3` (Release) | Balanced performance + debugging |
@@ -540,7 +540,7 @@ To build static libraries instead of shared:
 - vcpkg triplet reference: [vcpkg-triplets]
 - vcpkg binary caching: [vcpkg-binary-caching]
 - gRPC GitHub (submodule issues): [vcpkg-grpc-issue]
-- Project-specific build guide: [GRPC_BUILD_GUIDE.md](GRPC_BUILD_GUIDE.md)
+- Project-specific build guide: [grpc-build-guide.md](/docs/grpc-build-guide.md)
 
 <!-- Reference links -->
 [vcpkg-docs]: https://learn.microsoft.com/en-us/vcpkg/

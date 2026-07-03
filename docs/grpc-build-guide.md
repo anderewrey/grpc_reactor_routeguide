@@ -131,7 +131,7 @@ sudo ldconfig
 ### Optimization Flags
 
 | Flag | Purpose | Recommended | Impact |
-|------|---------|-------------|--------|
+| ------ | --------- | ------------- | -------- |
 | `-O3` | Maximum optimization | **YES** | 10-20% faster, slightly larger code |
 | `-march=native` | Use CPU-specific instructions | **YES** | 5-10% faster, not portable |
 | `-mtune=native` | Tune for specific CPU | **YES** | Small improvement, not portable |
@@ -153,7 +153,7 @@ flags if deploying to different CPU architectures.
 **Only build what you need** - each plugin adds ~500 KB and build time.
 
 | Option | Default | C++ Only | All Languages |
-|--------|---------|----------|---------------|
+| -------- | --------- | ---------- | --------------- |
 | `gRPC_BUILD_GRPC_CPP_PLUGIN` | `ON` | `ON` | `ON` |
 | `gRPC_BUILD_GRPC_CSHARP_PLUGIN` | `ON` | `OFF` | `ON` |
 | `gRPC_BUILD_GRPC_NODE_PLUGIN` | `ON` | `OFF` | `ON` |
@@ -167,7 +167,7 @@ flags if deploying to different CPU architectures.
 ### gRPC Core Options
 
 | Option | Default | Recommended | Purpose |
-|--------|---------|-------------|---------|
+| -------- | --------- | ------------- | --------- |
 | `gRPC_INSTALL` | `ON` | `ON` | Install to CMAKE_INSTALL_PREFIX |
 | `gRPC_BUILD_TESTS` | `OFF` | `OFF` | Don't build gRPC tests (saves time) |
 | `gRPC_BUILD_CODEGEN` | `ON` | `ON` | Build protoc and grpc_cpp_plugin |
@@ -182,7 +182,7 @@ flags if deploying to different CPU architectures.
 - `package` = Use system-installed packages (faster, requires system libs)
 
 | Dependency | Default | Recommended | Reason |
-|------------|---------|-------------|--------|
+| ------------ | --------- | ------------- | -------- |
 | `gRPC_SSL_PROVIDER` | `module` | `package` | Use system OpenSSL (security updates) |
 | `gRPC_ZLIB_PROVIDER` | `module` | `package` | System zlib already optimized |
 | `gRPC_CARES_PROVIDER` | `module` | `module` | Build from gRPC submodule (version-matched) |
@@ -203,7 +203,7 @@ flags if deploying to different CPU architectures.
 ### Protobuf-Specific Options
 
 | Option | Default | Recommended | Purpose |
-|--------|---------|-------------|---------|
+| -------- | --------- | ------------- | --------- |
 | `protobuf_BUILD_TESTS` | `ON` | `OFF` | Skip protobuf tests |
 | `protobuf_BUILD_EXAMPLES` | `OFF` | `OFF` | Skip examples |
 | `protobuf_BUILD_CONFORMANCE` | `OFF` | `OFF` | Skip conformance tests |
@@ -216,7 +216,7 @@ flags if deploying to different CPU architectures.
 ### Advanced/Optional Options
 
 | Option | Default | When to Use | Impact |
-|--------|---------|-------------|--------|
+| -------- | --------- | ------------- | -------- |
 | `CMAKE_INTERPROCEDURAL_OPTIMIZATION` | `OFF` | Maximum speed, have time | 5-15% faster, 2x build time |
 | `CMAKE_C_COMPILER_LAUNCHER=ccache` | - | Have ccache installed | Much faster rebuilds |
 | `CMAKE_CXX_COMPILER_LAUNCHER=ccache` | - | Have ccache installed | Much faster rebuilds |
@@ -355,7 +355,7 @@ libgrpc.so.48 => /usr/local/lib/libgrpc.so.48
 ### Achieved Results
 
 | Configuration | Binary Size | Reduction | Status |
-|---------------|-------------|-----------|--------|
+| --------------- | ------------- | ----------- | -------- |
 | Original Release | 3.1 MB | Baseline | — |
 | **Phase 1** (symbol stripping + dead code) | **2.1 MB** | **32%** | Active |
 | **Phase 2** (shared gRPC/Protobuf) | **500-600 KB** | **80-84%** | Active |
@@ -515,7 +515,7 @@ target_link_libraries(rg_service PUBLIC rg_proto protobuf_utils common)
 ### Summary Table
 
 | Library Category | Type | Rationale |
-|------------------|------|-----------|
+| ------------------ | ------ | ----------- |
 | gRPC + Protobuf + Abseil + c-ares + RE2 | Shared | Heavy infrastructure bundle |
 | OpenSSL + zlib | System | Security updates, universal |
 | spdlog + gflags + glaze | Static (optimized) | Small utilities, speed-optimized |
@@ -808,7 +808,7 @@ sudo ldconfig
 ### Speed Optimizations Applied
 
 | Optimization | Impact | Trade-off |
-|--------------|--------|-----------|
+| -------------- | -------- | ----------- |
 | `-O3` | Maximum speed (inlining, vectorization) | Larger code (mitigated by shared libs) |
 | `-march=native -mtune=native` | CPU-specific instructions (AVX, AVX2) | Not portable to different CPUs |
 | LTO (`-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON`) | Cross-module optimization | Slower build time (~2x) |
@@ -818,7 +818,7 @@ sudo ldconfig
 ### Runtime Performance Improvement
 
 | Optimization | Improvement | Notes |
-|--------------|-------------|-------|
+| -------------- | ------------- | ------- |
 | `-O3` vs `-O0` | +20-40% | Biggest impact |
 | `-march=native -mtune=native` | +5-15% | CPU-specific instructions |
 | LTO | +5-15% | Cross-module inlining |
@@ -931,7 +931,7 @@ file applications/reactor/route_guide_active_reactor_client
 ### Build Times
 
 | Configuration | Time | Reason |
-|---------------|------|--------|
+| --------------- | ------ | -------- |
 | Default (all plugins, all providers=module) | 60-90 min | Builds everything from source |
 | Recommended (C++ only, system OpenSSL/zlib) | 15-30 min | Reuses system libs, skips unused plugins |
 | With LTO | 30-60 min | Cross-module optimization takes time |
@@ -940,7 +940,7 @@ file applications/reactor/route_guide_active_reactor_client
 ### Binary Sizes (Your Application)
 
 | Configuration | Binary Size | Explanation |
-|---------------|-------------|-------------|
+| --------------- | ------------- | ------------- |
 | Static protobuf, no optimization | ~3.1 MB | Baseline |
 | Static protobuf, optimized (-O3, strip) | ~2.1 MB | Phase 1 optimization |
 | **Shared protobuf, optimized** | **~500-600 KB** | **This build** |
@@ -949,7 +949,7 @@ file applications/reactor/route_guide_active_reactor_client
 ## Comparison Table
 
 | Configuration | Binary Size | Runtime Perf | Debug Info | Status |
-|---------------|-------------|--------------|------------|--------|
+| --------------- | ------------- | -------------- | ------------ | -------- |
 | Debug (old) | 11 MB | Slow | Full | Baseline |
 | Debug (optimized deps) | **3.7-4.3 MB** | Medium | App only | **Active** |
 | Release (old) | 3.1 MB | Fast | Symbols | Baseline |

@@ -2,7 +2,7 @@
 
 This document covers setting up a development environment, building the applications, running the binaries, running
 tests, and linting. Dependencies are managed by [vcpkg][vcpkg], which fetches and builds all C++ libraries from
-source. See [VCPKG_USAGE.md](/VCPKG_USAGE.md) for multi-compiler details and [GRPC_BUILD_GUIDE.md](/GRPC_BUILD_GUIDE.md)
+source. See [vcpkg-usage.md](/docs/vcpkg-usage.md) for multi-compiler details and [grpc-build-guide.md](/docs/grpc-build-guide.md)
 for gRPC build tuning.
 
 ## Prerequisites
@@ -102,7 +102,7 @@ Available presets:
 | `vcpkg-gcc13-release` | GCC 13 toolset | Release | `cmake-build-vcpkg-release-gcc13` |
 
 The `gcc13` presets expect the compiler at `/opt/rh/gcc-toolset-13`. Debug presets build the application in Debug
-against Release libraries, which is supported on Linux (see [VCPKG_USAGE.md](/VCPKG_USAGE.md)).
+against Release libraries, which is supported on Linux (see [vcpkg-usage.md](/docs/vcpkg-usage.md)).
 
 ## Clean
 
@@ -153,7 +153,7 @@ The client applications connect to a running server, so start a server before it
 
 ## Test
 
-Tests use GoogleTest and run through CTest. See [_bmad-output/testing.md](/_bmad-output/testing.md) for the test
+Tests use GoogleTest and run through CTest. See [testing.md](/docs/testing.md) for the test
 architecture and coverage matrix.
 
 ```bash
@@ -182,12 +182,12 @@ pre-commit run --all-files
   is usually transient — re-run the configure and vcpkg resumes from the cached, already-built packages.
 - An OpenSSL build failure mentioning `IPC::Cmd` (or another Perl module) means the Perl modules listed in
   [From-source build dependencies](#from-source-build-dependencies-openssl) are not installed.
-- See [VCPKG_USAGE.md](/VCPKG_USAGE.md) for compiler-mismatch and other vcpkg-specific issues.
+- See [vcpkg-usage.md](/docs/vcpkg-usage.md) for compiler-mismatch and other vcpkg-specific issues.
 
 ## See also
 
-- [VCPKG_USAGE.md](/VCPKG_USAGE.md) - vcpkg setup, custom triplets, multi-compiler support
-- [GRPC_BUILD_GUIDE.md](/GRPC_BUILD_GUIDE.md) - gRPC build options and optimization
+- [vcpkg-usage.md](/docs/vcpkg-usage.md) - vcpkg setup, custom triplets, multi-compiler support
+- [grpc-build-guide.md](/docs/grpc-build-guide.md) - gRPC build options and optimization
 - [reactor_client.md](/applications/reactor/reactor_client.md) - reactor pattern implementation
 
 <!-- Reference links -->
