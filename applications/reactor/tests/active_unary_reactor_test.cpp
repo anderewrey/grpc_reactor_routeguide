@@ -17,12 +17,6 @@
 #include <gtest/gtest.h>
 
 #include <grpc/grpc.h>
-#include <grpcpp/channel.h>
-#include <grpcpp/client_context.h>
-#include <grpcpp/create_channel.h>
-#include <grpcpp/security/server_credentials.h>
-#include <grpcpp/server.h>
-#include <grpcpp/server_builder.h>
 
 #include <atomic>
 #include <chrono>
@@ -35,6 +29,7 @@
 #include "rg_service/route_guide_service.h"
 #include "rg_service/rg_utils.h"
 #include "applications/reactor/reactor_client_routeguide.h"
+#include "applications/reactor/tests/route_guide_test_fixture.h"
 
 namespace {
 
@@ -83,39 +78,7 @@ struct GetFeatureResult {
 };
 
 /// Test fixture with in-process server
-class ActiveUnaryReactorTest : public ::testing::Test {
- protected:
-  void SetUp() override {
-    // Build in-process server
-    grpc::ServerBuilder builder;
-    builder.RegisterService(&test_service_);
-    int selected_port = 0;
-    builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(), &selected_port);
-    server_ = builder.BuildAndStart();
-    ASSERT_NE(server_, nullptr) << "Failed to start in-process server";
-    ASSERT_GT(selected_port, 0) << "Failed to get dynamic port";
-
-    // Create channel to in-process server
-    std::string server_address = "localhost:" + std::to_string(selected_port);
-    channel_ = grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
-    stub_ = routeguide::RouteGuide::NewStub(channel_);
-  }
-
-  void TearDown() override {
-    if (server_) {
-      server_->Shutdown();
-    }
-  }
-
-  std::unique_ptr<grpc::ClientContext> CreateClientContext() {
-    return std::make_unique<grpc::ClientContext>();
-  }
-
-  TestRouteGuideService test_service_;
-  std::unique_ptr<grpc::Server> server_;
-  std::shared_ptr<grpc::Channel> channel_;
-  std::unique_ptr<routeguide::RouteGuide::Stub> stub_;
-};
+class ActiveUnaryReactorTest : public RouteGuideTestFixtureBase<TestRouteGuideService> {};
 
 // =============================================================================
 // GetFeature Unary RPC Tests
@@ -145,9 +108,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_ValidPoint_ReturnsFeature) {
   std::future<GetFeatureResult> result_future = result_promise.get_future();
 
   // Create request
-  routeguide::Point request;
-  request.set_latitude(407128000);
-  request.set_longitude(-740060000);
+  routeguide::Point request = rg_utils::MakePoint(407128000, -740060000);
 
   // Create callbacks
   routeguide::GetFeature::Callbacks cbs;
@@ -200,9 +161,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_UnknownPoint_ReturnsEmptyFeature) {
   std::promise<GetFeatureResult> result_promise;
   std::future<GetFeatureResult> result_future = result_promise.get_future();
 
-  routeguide::Point request;
-  request.set_latitude(0);
-  request.set_longitude(0);
+  routeguide::Point request = rg_utils::MakePoint(0, 0);
 
   routeguide::GetFeature::Callbacks cbs;
   cbs.done = [&result_promise](grpc::ClientUnaryReactor* base_reactor,
@@ -248,9 +207,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_ServerError_PropagatesStatus) {
   std::promise<GetFeatureResult> result_promise;
   std::future<GetFeatureResult> result_future = result_promise.get_future();
 
-  routeguide::Point request;
-  request.set_latitude(123);
-  request.set_longitude(456);
+  routeguide::Point request = rg_utils::MakePoint(123, 456);
 
   routeguide::GetFeature::Callbacks cbs;
   cbs.done = [&result_promise](grpc::ClientUnaryReactor*,
@@ -287,9 +244,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_NotFoundError_PropagatesStatus) {
   std::promise<GetFeatureResult> result_promise;
   std::future<GetFeatureResult> result_future = result_promise.get_future();
 
-  routeguide::Point request;
-  request.set_latitude(999999999);
-  request.set_longitude(999999999);
+  routeguide::Point request = rg_utils::MakePoint(999999999, 999999999);
 
   routeguide::GetFeature::Callbacks cbs;
   cbs.done = [&result_promise](grpc::ClientUnaryReactor*,
@@ -333,9 +288,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_TryCancel_TriggersOnDone) {
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::Point request;
-  request.set_latitude(123);
-  request.set_longitude(456);
+  routeguide::Point request = rg_utils::MakePoint(123, 456);
 
   routeguide::GetFeature::Callbacks cbs;
   cbs.done = [&done_promise](grpc::ClientUnaryReactor*,
@@ -376,9 +329,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_DeadlineExceeded_PropagatesStatus) {
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::Point request;
-  request.set_latitude(123);
-  request.set_longitude(456);
+  routeguide::Point request = rg_utils::MakePoint(123, 456);
 
   routeguide::GetFeature::Callbacks cbs;
   cbs.done = [&done_promise](grpc::ClientUnaryReactor*,
@@ -425,9 +376,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_MultipleConcurrent_AllComplete) {
   std::vector<grpc::Status> statuses(kNumConcurrentRpcs);
 
   for (int i = 0; i < kNumConcurrentRpcs; ++i) {
-    routeguide::Point request;
-    request.set_latitude(i * 100);
-    request.set_longitude(i * -100);
+    routeguide::Point request = rg_utils::MakePoint(i * 100, i * -100);
 
     routeguide::GetFeature::Callbacks cbs;
     cbs.done = [&completed_count, &all_done_promise, &statuses, i, kNumConcurrentRpcs](
@@ -467,9 +416,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_GetResponseBeforeOnDone_ReturnsFalse) 
   std::future<void> done_future = done_promise.get_future();
   bool get_response_after_done = false;
 
-  routeguide::Point request;
-  request.set_latitude(123);
-  request.set_longitude(456);
+  routeguide::Point request = rg_utils::MakePoint(123, 456);
 
   routeguide::GetFeature::Callbacks cbs;
   cbs.done = [&done_promise, &get_response_after_done](grpc::ClientUnaryReactor* base_reactor,
@@ -498,8 +445,3 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_GetResponseBeforeOnDone_ReturnsFalse) 
 }
 
 }  // namespace
-
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

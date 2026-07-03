@@ -17,12 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <grpc/grpc.h>
-#include <grpcpp/channel.h>
 #include <grpcpp/client_context.h>
-#include <grpcpp/create_channel.h>
-#include <grpcpp/security/server_credentials.h>
-#include <grpcpp/server.h>
-#include <grpcpp/server_builder.h>
 
 #include <atomic>
 #include <chrono>
@@ -37,7 +32,9 @@
 #include <vector>
 
 #include "rg_service/route_guide_service.h"
+#include "rg_service/rg_utils.h"
 #include "applications/reactor/reactor_client_routeguide.h"
+#include "applications/reactor/tests/route_guide_test_fixture.h"
 
 namespace {
 
@@ -148,15 +145,6 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
   int max_messages_ = -1;  // -1 means no limit
 };
 
-/// Helper to create a RouteNote with location and message
-routeguide::RouteNote MakeRouteNote(int latitude, int longitude, const std::string& message) {
-  routeguide::RouteNote note;
-  note.mutable_location()->set_latitude(latitude);
-  note.mutable_location()->set_longitude(longitude);
-  note.set_message(message);
-  return note;
-}
-
 /// Result container for RouteChat tests
 struct RouteChatResult {
   grpc::Status status;
@@ -167,33 +155,11 @@ struct RouteChatResult {
 };
 
 /// Test fixture with in-process server
-class ActiveBidiReactorTest : public ::testing::Test {
+class ActiveBidiReactorTest : public RouteGuideTestFixtureBase<TestRouteGuideService> {
  protected:
-  void SetUp() override {
-    // Build in-process server
-    grpc::ServerBuilder builder;
-    builder.RegisterService(&test_service_);
-    int selected_port = 0;
-    builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(), &selected_port);
-    server_ = builder.BuildAndStart();
-    ASSERT_NE(server_, nullptr) << "Failed to start in-process server";
-    ASSERT_GT(selected_port, 0) << "Failed to get dynamic port";
-
-    // Create channel to in-process server
-    std::string server_address = "localhost:" + std::to_string(selected_port);
-    channel_ = grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
-    stub_ = routeguide::RouteGuide::NewStub(channel_);
-  }
-
   void TearDown() override {
-    if (server_) {
-      server_->Shutdown();
-    }
+    RouteGuideTestFixtureBase::TearDown();
     test_service_.ClearMaxMessages();
-  }
-
-  std::unique_ptr<grpc::ClientContext> CreateClientContext() {
-    return std::make_unique<grpc::ClientContext>();
   }
 
   std::unique_ptr<grpc::ClientContext> CreateClientContextWithDeadline(
@@ -202,11 +168,6 @@ class ActiveBidiReactorTest : public ::testing::Test {
     context->set_deadline(std::chrono::system_clock::now() + timeout);
     return context;
   }
-
-  TestRouteGuideService test_service_;
-  std::unique_ptr<grpc::Server> server_;
-  std::shared_ptr<grpc::Channel> channel_;
-  std::unique_ptr<routeguide::RouteGuide::Stub> stub_;
 };
 
 // =============================================================================
@@ -267,9 +228,9 @@ TEST_F(ActiveBidiReactorTest, RouteChat_SendReceive_MatchesNotes) {
 
   // Send 3 notes to the same location
   std::vector<routeguide::RouteNote> sent_notes;
-  sent_notes.push_back(MakeRouteNote(100, 200, "First note"));
-  sent_notes.push_back(MakeRouteNote(100, 200, "Second note"));
-  sent_notes.push_back(MakeRouteNote(100, 200, "Third note"));
+  sent_notes.push_back(rg_utils::MakeRouteNote("First note", 100, 200));
+  sent_notes.push_back(rg_utils::MakeRouteNote("Second note", 100, 200));
+  sent_notes.push_back(rg_utils::MakeRouteNote("Third note", 100, 200));
 
   for (auto& note : sent_notes) {
     {
@@ -361,10 +322,10 @@ TEST_F(ActiveBidiReactorTest, RouteChat_InterleavedMessages_AllReceived) {
   // Total: 2 responses
 
   std::vector<routeguide::RouteNote> notes;
-  notes.push_back(MakeRouteNote(100, 200, "A1"));  // Location A, first
-  notes.push_back(MakeRouteNote(300, 400, "B1"));  // Location B, first
-  notes.push_back(MakeRouteNote(100, 200, "A2"));  // Location A, second (gets A1)
-  notes.push_back(MakeRouteNote(300, 400, "B2"));  // Location B, second (gets B1)
+  notes.push_back(rg_utils::MakeRouteNote("A1", 100, 200));  // Location A, first
+  notes.push_back(rg_utils::MakeRouteNote("B1", 300, 400));  // Location B, first
+  notes.push_back(rg_utils::MakeRouteNote("A2", 100, 200));  // Location A, second (gets A1)
+  notes.push_back(rg_utils::MakeRouteNote("B2", 300, 400));  // Location B, second (gets B1)
 
   for (auto& note : notes) {
     {
@@ -389,7 +350,18 @@ TEST_F(ActiveBidiReactorTest, RouteChat_InterleavedMessages_AllReceived) {
   RouteChatResult result = result_future.get();
 
   EXPECT_TRUE(result.status.ok()) << "Status: " << result.status.error_message();
-  EXPECT_EQ(received_count.load(), 2);  // A2 gets A1, B2 gets B1
+  ASSERT_EQ(received_count.load(), 2);  // A2 gets A1, B2 gets B1
+
+  // The stream delivers messages in send order (A1, B1, A2, B2), so the server's two echoed
+  // responses arrive in a fixed, non-racy order: A1's note first (echoed once A2 arrives at
+  // location A), then B1's note (echoed once B2 arrives at location B). Checking their content
+  // catches a server that got the per-location bucketing wrong but still echoed the right count.
+  EXPECT_EQ(result.received_notes[0].message(), "A1");
+  EXPECT_EQ(result.received_notes[0].location().latitude(), 100);
+  EXPECT_EQ(result.received_notes[0].location().longitude(), 200);
+  EXPECT_EQ(result.received_notes[1].message(), "B1");
+  EXPECT_EQ(result.received_notes[1].location().latitude(), 300);
+  EXPECT_EQ(result.received_notes[1].location().longitude(), 400);
 }
 
 /// @test Validates client closes first, server continues sending.
@@ -447,14 +419,14 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ClientClosesFirst_ServerContinues) {
     write_cv.wait(lock, [&write_ready] { return write_ready; });
     write_ready = false;
   }
-  reactor->SendRequest(MakeRouteNote(100, 200, "Note 1"));
+  reactor->SendRequest(rg_utils::MakeRouteNote("Note 1", 100, 200));
 
   {
     std::unique_lock<std::mutex> lock(write_mutex);
     write_cv.wait_for(lock, std::chrono::seconds(1), [&write_ready] { return write_ready; });
     write_ready = false;
   }
-  reactor->SendRequest(MakeRouteNote(100, 200, "Note 2"));
+  reactor->SendRequest(rg_utils::MakeRouteNote("Note 2", 100, 200));
 
   {
     std::unique_lock<std::mutex> lock(write_mutex);
@@ -522,13 +494,13 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ServerClosesFirst_ClientContinues) {
       *stub_, CreateClientContext(), std::move(cbs));
 
   // Send messages - server will close after 2
-  reactor->SendRequest(MakeRouteNote(100, 200, "Note 1"));
+  reactor->SendRequest(rg_utils::MakeRouteNote("Note 1", 100, 200));
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  reactor->SendRequest(MakeRouteNote(100, 200, "Note 2"));
+  reactor->SendRequest(rg_utils::MakeRouteNote("Note 2", 100, 200));
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
   // This might fail since server closed
-  reactor->SendRequest(MakeRouteNote(100, 200, "Note 3"));
+  reactor->SendRequest(rg_utils::MakeRouteNote("Note 3", 100, 200));
 
   auto wait_result = result_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
@@ -569,7 +541,7 @@ TEST_F(ActiveBidiReactorTest, TryCancel_BidiStreaming_TriggersOnDone) {
       *stub_, CreateClientContext(), std::move(cbs));
 
   // Send a note then cancel
-  reactor->SendRequest(MakeRouteNote(100, 200, "Note before cancel"));
+  reactor->SendRequest(rg_utils::MakeRouteNote("Note before cancel", 100, 200));
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
   reactor->TryCancel();
 
@@ -615,9 +587,9 @@ TEST_F(ActiveBidiReactorTest, ContextDeadline_BidiStreaming_PropagatesStatus) {
       *stub_, CreateClientContextWithDeadline(std::chrono::milliseconds(50)), std::move(cbs));
 
   // Send notes to trigger activity
-  reactor->SendRequest(MakeRouteNote(100, 200, "Note 1"));
-  reactor->SendRequest(MakeRouteNote(100, 200, "Note 2"));
-  reactor->SendRequest(MakeRouteNote(100, 200, "Note 3"));
+  reactor->SendRequest(rg_utils::MakeRouteNote("Note 1", 100, 200));
+  reactor->SendRequest(rg_utils::MakeRouteNote("Note 2", 100, 200));
+  reactor->SendRequest(rg_utils::MakeRouteNote("Note 3", 100, 200));
 
   auto wait_result = done_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
@@ -698,14 +670,14 @@ TEST_F(ActiveBidiReactorTest, MultipleConcurrentRouteChat_AllComplete) {
       write_cvs[i].wait(lock, [&write_readies, i] { return write_readies[i]; });
       write_readies[i] = false;
     }
-    reactors[i]->SendRequest(MakeRouteNote(i * 100, i * 100, "Note 1"));
+    reactors[i]->SendRequest(rg_utils::MakeRouteNote("Note 1", i * 100, i * 100));
 
     {
       std::unique_lock<std::mutex> lock(write_mutexes[i]);
       write_cvs[i].wait_for(lock, std::chrono::seconds(1), [&write_readies, i] { return write_readies[i]; });
       write_readies[i] = false;
     }
-    reactors[i]->SendRequest(MakeRouteNote(i * 100, i * 100, "Note 2"));
+    reactors[i]->SendRequest(rg_utils::MakeRouteNote("Note 2", i * 100, i * 100));
   }
 
   // Give time for processing
@@ -739,8 +711,3 @@ TEST_F(ActiveBidiReactorTest, MultipleConcurrentRouteChat_AllComplete) {
 }
 
 }  // namespace
-
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

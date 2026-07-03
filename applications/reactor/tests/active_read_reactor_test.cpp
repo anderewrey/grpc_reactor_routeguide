@@ -17,12 +17,6 @@
 #include <gtest/gtest.h>
 
 #include <grpc/grpc.h>
-#include <grpcpp/channel.h>
-#include <grpcpp/client_context.h>
-#include <grpcpp/create_channel.h>
-#include <grpcpp/security/server_credentials.h>
-#include <grpcpp/server.h>
-#include <grpcpp/server_builder.h>
 
 #include <atomic>
 #include <chrono>
@@ -35,6 +29,7 @@
 #include "rg_service/route_guide_service.h"
 #include "rg_service/rg_utils.h"
 #include "applications/reactor/reactor_client_routeguide.h"
+#include "applications/reactor/tests/route_guide_test_fixture.h"
 
 namespace {
 
@@ -115,44 +110,7 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
 };
 
 /// Test fixture with in-process server
-class ActiveReadReactorTest : public ::testing::Test {
- protected:
-  void SetUp() override {
-    // Build in-process server
-    grpc::ServerBuilder builder;
-    builder.RegisterService(&test_service_);
-    int selected_port = 0;
-    builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(), &selected_port);
-    server_ = builder.BuildAndStart();
-    ASSERT_NE(server_, nullptr) << "Failed to start in-process server";
-    ASSERT_GT(selected_port, 0) << "Failed to get dynamic port";
-
-    // Create channel to in-process server
-    std::string server_address = "localhost:" + std::to_string(selected_port);
-    channel_ = grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
-    stub_ = routeguide::RouteGuide::NewStub(channel_);
-  }
-
-  void TearDown() override {
-    if (server_) {
-      server_->Shutdown();
-    }
-  }
-
-  std::unique_ptr<grpc::ClientContext> CreateClientContext() {
-    return std::make_unique<grpc::ClientContext>();
-  }
-
-  /// Create a test feature with given name and coordinates
-  static routeguide::Feature MakeTestFeature(const std::string& name, int32_t lat, int32_t lon) {
-    return rg_utils::MakeFeature(name, lat, lon);
-  }
-
-  TestRouteGuideService test_service_;
-  std::unique_ptr<grpc::Server> server_;
-  std::shared_ptr<grpc::Channel> channel_;
-  std::unique_ptr<routeguide::RouteGuide::Stub> stub_;
-};
+class ActiveReadReactorTest : public RouteGuideTestFixtureBase<TestRouteGuideService> {};
 
 // =============================================================================
 // ListFeatures Server-Side Streaming Tests
@@ -175,9 +133,8 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleResponses_ReceivesAll) {
   // Configure server to return multiple features
   std::vector<routeguide::Feature> expected_features;
   for (int i = 0; i < 5; ++i) {
-    expected_features.push_back(MakeTestFeature("Feature " + std::to_string(i),
-                                                 400000000 + i * 1000000,
-                                                 -740000000 + i * 1000000));
+    expected_features.push_back(
+        rg_utils::MakeFeature("Feature " + std::to_string(i), 400000000 + i * 1000000, -740000000 + i * 1000000));
   }
   test_service_.SetListFeaturesResponse(expected_features);
 
@@ -187,11 +144,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleResponses_ReceivesAll) {
   std::future<grpc::Status> done_future = done_promise.get_future();
 
   // Create request (bounding rectangle)
-  routeguide::Rectangle request;
-  request.mutable_lo()->set_latitude(0);
-  request.mutable_lo()->set_longitude(-800000000);
-  request.mutable_hi()->set_latitude(500000000);
-  request.mutable_hi()->set_longitude(0);
+  routeguide::Rectangle request = rg_utils::MakeRectangle(0, -800000000, 500000000, 0);
 
   // Create callbacks - use false to let reactor auto-continue reads
   routeguide::ListFeatures::Callbacks cbs;
@@ -246,11 +199,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_EmptyStream_CompletesSuccessfully) {
   std::future<grpc::Status> done_future = done_promise.get_future();
   int read_count = 0;
 
-  routeguide::Rectangle request;
-  request.mutable_lo()->set_latitude(0);
-  request.mutable_lo()->set_longitude(0);
-  request.mutable_hi()->set_latitude(0);
-  request.mutable_hi()->set_longitude(0);
+  routeguide::Rectangle request = rg_utils::MakeRectangle(0, 0, 0, 0);
 
   routeguide::ListFeatures::Callbacks cbs;
   cbs.ok = [&read_count](grpc::ClientReadReactor<routeguide::Feature>*,
@@ -287,7 +236,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_EmptyStream_CompletesSuccessfully) {
 /// 4. OnDone fires with OK status
 TEST_F(ActiveReadReactorTest, ListFeatures_SingleFeature_ReceivesOne) {
   std::vector<routeguide::Feature> features;
-  features.push_back(MakeTestFeature("Single Feature", 407128000, -740060000));
+  features.push_back(rg_utils::MakeFeature("Single Feature", 407128000, -740060000));
   test_service_.SetListFeaturesResponse(features);
 
   std::vector<routeguide::Feature> received_features;
@@ -337,7 +286,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ServerErrorMidStream_PropagatesStatus
   // Configure server to return 2 features then error
   std::vector<routeguide::Feature> features;
   for (int i = 0; i < 5; ++i) {
-    features.push_back(MakeTestFeature("Feature " + std::to_string(i), i * 100, i * -100));
+    features.push_back(rg_utils::MakeFeature("Feature " + std::to_string(i), i * 100, i * -100));
   }
   test_service_.SetListFeaturesResponse(features);
   test_service_.SetListFeaturesErrorAfter(2, grpc::StatusCode::INTERNAL, "Mid-stream error");
@@ -383,7 +332,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ServerErrorMidStream_PropagatesStatus
 /// 3. OnDone fires with error status
 TEST_F(ActiveReadReactorTest, ListFeatures_ImmediateError_PropagatesStatus) {
   std::vector<routeguide::Feature> features;
-  features.push_back(MakeTestFeature("Feature 0", 100, -100));
+  features.push_back(rg_utils::MakeFeature("Feature 0", 100, -100));
   test_service_.SetListFeaturesResponse(features);
   test_service_.SetListFeaturesErrorAfter(0, grpc::StatusCode::UNAVAILABLE, "Service unavailable");
 
@@ -429,7 +378,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_TryCancel_TerminatesStream) {
   // Configure server to return many features
   std::vector<routeguide::Feature> features;
   for (int i = 0; i < 100; ++i) {
-    features.push_back(MakeTestFeature("Feature " + std::to_string(i), i * 100, i * -100));
+    features.push_back(rg_utils::MakeFeature("Feature " + std::to_string(i), i * 100, i * -100));
   }
   test_service_.SetListFeaturesResponse(features);
 
@@ -463,10 +412,17 @@ TEST_F(ActiveReadReactorTest, ListFeatures_TryCancel_TerminatesStream) {
 
   grpc::Status status = done_future.get();
 
-  // Should have received fewer than all features due to cancellation
   EXPECT_TRUE(status.error_code() == grpc::StatusCode::CANCELLED ||
               status.error_code() == grpc::StatusCode::OK)
       << "Expected CANCELLED or OK, got: " << status.error_code();
+
+  if (status.error_code() == grpc::StatusCode::CANCELLED) {
+    // Cancel arrived before the stream finished: only part of it should have been received.
+    EXPECT_LT(read_count.load(), 100);
+  } else {
+    // Cancel lost the race: the stream had already delivered everything.
+    EXPECT_EQ(read_count.load(), 100);
+  }
 }
 
 /// @test Validates deadline exceeded during streaming.
@@ -476,7 +432,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_TryCancel_TerminatesStream) {
 /// 2. OnDone fires with DEADLINE_EXCEEDED status
 TEST_F(ActiveReadReactorTest, ListFeatures_DeadlineExceeded_PropagatesStatus) {
   std::vector<routeguide::Feature> features;
-  features.push_back(MakeTestFeature("Feature", 100, -100));
+  features.push_back(rg_utils::MakeFeature("Feature", 100, -100));
   test_service_.SetListFeaturesResponse(features);
 
   std::promise<grpc::Status> done_promise;
@@ -519,7 +475,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleConcurrent_AllComplete) {
   // Configure server with features
   std::vector<routeguide::Feature> features;
   for (int i = 0; i < 10; ++i) {
-    features.push_back(MakeTestFeature("Feature " + std::to_string(i), i * 100, i * -100));
+    features.push_back(rg_utils::MakeFeature("Feature " + std::to_string(i), i * 100, i * -100));
   }
   test_service_.SetListFeaturesResponse(features);
 
@@ -573,8 +529,8 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleConcurrent_AllComplete) {
 /// 3. Then OnDone fires
 TEST_F(ActiveReadReactorTest, ListFeatures_NokCallback_FiresOnStreamEnd) {
   std::vector<routeguide::Feature> features;
-  features.push_back(MakeTestFeature("Feature 1", 100, -100));
-  features.push_back(MakeTestFeature("Feature 2", 200, -200));
+  features.push_back(rg_utils::MakeFeature("Feature 1", 100, -100));
+  features.push_back(rg_utils::MakeFeature("Feature 2", 200, -200));
   test_service_.SetListFeaturesResponse(features);
 
   bool nok_called = false;
@@ -612,8 +568,3 @@ TEST_F(ActiveReadReactorTest, ListFeatures_NokCallback_FiresOnStreamEnd) {
 }
 
 }  // namespace
-
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

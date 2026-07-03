@@ -17,17 +17,12 @@
 #include <gtest/gtest.h>
 
 #include <grpc/grpc.h>
-#include <grpcpp/channel.h>
-#include <grpcpp/client_context.h>
-#include <grpcpp/create_channel.h>
-#include <grpcpp/security/server_credentials.h>
-#include <grpcpp/server.h>
-#include <grpcpp/server_builder.h>
 
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstring>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -38,6 +33,7 @@
 #include "rg_service/route_guide_service.h"
 #include "rg_service/rg_utils.h"
 #include "applications/reactor/reactor_client_routeguide.h"
+#include "applications/reactor/tests/route_guide_test_fixture.h"
 
 namespace {
 
@@ -146,9 +142,11 @@ struct RecordRouteResult {
 };
 
 /// Test fixture with in-process server and pre-configured features
-class ActiveWriteReactorTest : public ::testing::Test {
+class ActiveWriteReactorTest : public RouteGuideTestFixtureBase<TestRouteGuideService> {
  protected:
   void SetUp() override {
+    RouteGuideTestFixtureBase::SetUp();
+
     // Create test features at known coordinates
     // Using RouteGuide format: degrees × 10,000,000
     // Feature 1: New York City area (40.7128° N, 74.0060° W)
@@ -159,30 +157,6 @@ class ActiveWriteReactorTest : public ::testing::Test {
     test_features_.push_back(rg_utils::MakeFeature("Far North", 410000000, -740000000));
 
     test_service_.SetFeatureList(test_features_);
-
-    // Build in-process server
-    grpc::ServerBuilder builder;
-    builder.RegisterService(&test_service_);
-    int selected_port = 0;
-    builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(), &selected_port);
-    server_ = builder.BuildAndStart();
-    ASSERT_NE(server_, nullptr) << "Failed to start in-process server";
-    ASSERT_GT(selected_port, 0) << "Failed to get dynamic port";
-
-    // Create channel to in-process server
-    std::string server_address = "localhost:" + std::to_string(selected_port);
-    channel_ = grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
-    stub_ = routeguide::RouteGuide::NewStub(channel_);
-  }
-
-  void TearDown() override {
-    if (server_) {
-      server_->Shutdown();
-    }
-  }
-
-  std::unique_ptr<grpc::ClientContext> CreateClientContext() {
-    return std::make_unique<grpc::ClientContext>();
   }
 
   /// Calculate expected distance between test points using rg_utils
@@ -194,11 +168,7 @@ class ActiveWriteReactorTest : public ::testing::Test {
     return total;
   }
 
-  TestRouteGuideService test_service_;
   FeatureList test_features_;
-  std::unique_ptr<grpc::Server> server_;
-  std::shared_ptr<grpc::Channel> channel_;
-  std::unique_ptr<routeguide::RouteGuide::Stub> stub_;
 };
 
 // =============================================================================
@@ -618,8 +588,3 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_ServerError_PropagatesStatus) {
 }
 
 }  // namespace
-
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

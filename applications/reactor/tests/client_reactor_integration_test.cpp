@@ -19,12 +19,6 @@
 #include <gtest/gtest.h>
 
 #include <grpc/grpc.h>
-#include <grpcpp/channel.h>
-#include <grpcpp/client_context.h>
-#include <grpcpp/create_channel.h>
-#include <grpcpp/security/server_credentials.h>
-#include <grpcpp/server.h>
-#include <grpcpp/server_builder.h>
 
 #include <Event.h>
 #include <EventLoop.h>
@@ -37,8 +31,10 @@
 #include <vector>
 
 #include "rg_service/route_guide_service.h"
+#include "rg_service/rg_utils.h"
 #include "applications/reactor/reactor_eventloop.h"
 #include "applications/reactor/reactor_client_routeguide.h"
+#include "applications/reactor/tests/route_guide_test_fixture.h"
 
 namespace {
 
@@ -118,43 +114,15 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
 };
 
 /// Test fixture with in-process server and EventLoop integration
-class ClientReactorIntegrationTest : public ::testing::Test {
+class ClientReactorIntegrationTest : public RouteGuideTestFixtureBase<TestRouteGuideService> {
  protected:
   void SetUp() override {
-    // Build in-process server
-    grpc::ServerBuilder builder;
-    builder.RegisterService(&test_service_);
-    int selected_port = 0;
-    builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(), &selected_port);
-    server_ = builder.BuildAndStart();
-    ASSERT_NE(server_, nullptr) << "Failed to start in-process server";
-    ASSERT_GT(selected_port, 0) << "Failed to get dynamic port";
-
-    // Create channel to in-process server
-    std::string server_address = "localhost:" + std::to_string(selected_port);
-    channel_ = grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
-    stub_ = routeguide::RouteGuide::NewStub(channel_);
-
+    RouteGuideTestFixtureBase::SetUp();
     // Store main thread ID for assertions
     main_thread_id_ = std::this_thread::get_id();
-
     // EventLoop is managed by EventLoopEnvironment (started once for all tests)
   }
 
-  void TearDown() override {
-    if (server_) {
-      server_->Shutdown();
-    }
-  }
-
-  std::unique_ptr<grpc::ClientContext> CreateClientContext() {
-    return std::make_unique<grpc::ClientContext>();
-  }
-
-  TestRouteGuideService test_service_;
-  std::unique_ptr<grpc::Server> server_;
-  std::shared_ptr<grpc::Channel> channel_;
-  std::unique_ptr<routeguide::RouteGuide::Stub> stub_;
   std::thread::id main_thread_id_;
 };
 
@@ -199,9 +167,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_ReturnsFeature) {
   });
 
   // Create request
-  routeguide::Point request;
-  request.set_latitude(123456789);
-  request.set_longitude(-987654321);
+  routeguide::Point request = rg_utils::MakePoint(123456789, -987654321);
 
   // Create callbacks (triggered on gRPC thread)
   routeguide::GetFeature::Callbacks cbs;
@@ -360,8 +326,7 @@ TEST_F(ClientReactorIntegrationTest, TryCancel_UnaryRpc_DispatchesToEventLoop) {
     done = true;
   });
 
-  routeguide::Point request;
-  request.set_latitude(123);
+  routeguide::Point request = rg_utils::MakePoint(123, 0);
 
   routeguide::GetFeature::Callbacks cbs;
   cbs.done = [](grpc::ClientUnaryReactor* r, const grpc::Status&, const routeguide::Feature&) {
