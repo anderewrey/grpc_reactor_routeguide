@@ -1,19 +1,21 @@
 # Reactor implementation of gRPC clients
 
-## Design Overview
+## Design overview
 
-A gRPC thread invokes the reactor callbacks and the application thread is notified to process the response event. To
-avoid race conditions, the hold mechanism prevents the RPC from completing while the application thread processes the
-response. This approach eliminates the need for locks when accessing application state.
+A gRPC thread invokes the reactor callbacks and the application thread is notified to process the response event.
+The hold mechanism (`AddHold()`/`RemoveHold()`) prevents a concurrent `OnDone()` from destroying the reactor while
+the application thread is still mid-`StartRead()`, which would otherwise segfault. The elimination of locks on
+application state comes from the single-threaded event dispatch described below, not from the hold mechanism
+itself.
 
-### The Problem
+### The problem
 
 The gRPC reactor callbacks (e.g. `OnDone`, `OnReadDone`) are executed on threads from the gRPC internal thread pool, but
 the application cannot control which thread executes the callback. Client applications that use a single main thread or
 event loop require response processing to occur on a thread which is managed by the application to maintain thread-safe
 access with the software components of the main application.
 
-### Comparison with Direct Callbacks
+### Comparison with direct callbacks
 
 A direct callback implementation processes responses immediately within the gRPC thread callback and requires
 synchronization mechanisms when accessing shared application state. The synchronization requirement propagates throughout
@@ -21,7 +23,7 @@ the application codebase, and all mutable state must be protected at every acces
 single-threaded execution guarantees and must handle concurrent access everywhere. Long processing times block threads
 from the gRPC thread pool and reduce available concurrency.
 
-### The Solution: Active Object Pattern
+### The solution: Active Object pattern
 
 This implementation uses the [Active Object pattern][active-object-pattern] to address the threading problem. The
 result is single-threaded response processing without synchronization primitives. The pattern defers response
@@ -33,24 +35,24 @@ In this implementation, the main application thread serves as the Active Object'
 enqueue events, and the response handlers process responses on the main application thread. This ensures all application
 logic executes on a single thread without synchronization primitives.
 
-### Library Architecture
+### Library architecture
 
 This reactor library implements the Active Object pattern infrastructure, designed for use by applications that provide
 their own business logic.
 
-**What the Library Provides:**
+**What the library provides:**
 
 - **Method Request encapsulation**: `ActiveUnaryReactor` and `ActiveReadReactor` classes
 - **Scheduler integration**: Callbacks trigger `EventLoop::TriggerEvent()`
 - **Guard mechanism**: `AddHold()`/`RemoveHold()` prevents concurrent access during response processing
 - **Future-like access**: `GetResponse()` and `Status()` for deferred result retrieval
 
-**What Applications Provide:**
+**What applications provide:**
 
 - **Servant (business logic)**: Implemented in `EventLoop::RegisterEvent()` handlers
 - **Domain-specific processing**: Transform RPC responses into application state changes
 
-**Demo vs Production:**
+**Demo vs production:**
 
 The demo application (`route_guide_active_reactor_client.cpp`) uses simple logging as Servant logic:
 
@@ -66,16 +68,18 @@ Production applications implement actual business logic:
 ```cpp
 // Production: Real Servant logic
 EventLoop::RegisterEvent(kGetFeatureOnDone, [&app_state](const Event* event) {
-  auto response = reactor->GetResponse();
-  app_state.UpdateFeatureCache(response);     // Business logic
-  ui_controller.NotifyFeatureLoaded(response); // State changes
-  metrics.RecordFeatureQuery(response);        // Application concerns
+  routeguide::Feature response;
+  if (reactor->GetResponse(response)) {
+    app_state.UpdateFeatureCache(response);      // Business logic
+    ui_controller.NotifyFeatureLoaded(response); // State changes
+    metrics.RecordFeatureQuery(response);        // Application concerns
+  }
 });
 ```
 
 This separation is intentional: the library handles the concurrency complexity, applications handle the domain logic.
 
-### Pattern Components
+### Pattern components
 
 This implementation follows the Active Object pattern, combining it with the Reactor pattern for event-driven
 processing.
@@ -92,7 +96,7 @@ processing.
 | Future                  | `GetResponse()`, `Status()`               | Deferred result access                       |
 | Guards                  | `AddHold()`/`RemoveHold()`                | Prevents concurrent access during processing |
 
-**Library vs Application Responsibilities:**
+**Library vs application responsibilities:**
 
 | Aspect  | Definition                                         | This Implementation                                   |
 |---------|----------------------------------------------------|-------------------------------------------------------|
@@ -111,44 +115,46 @@ Reactor Pattern (Event-driven concurrency):
 - Events are handled asynchronously without blocking
 - Event detection is separated from event handling
 
-## API Naming Conventions
+## API naming conventions
 
 The reactor library exposes a high-level application API that abstracts gRPC's internal terminology. The naming
 reflects client/server semantics rather than gRPC implementation details.
 
-### Client vs Server Message Semantics
+### Client vs server message semantics
 
 | Role       | Sends     | Receives  |
 |------------|-----------|-----------|
 | **Client** | Requests  | Responses |
 | **Server** | Responses | Requests  |
 
-### gRPC Internal API (Hidden from Application)
+### gRPC internal API (hidden from application)
 
 These gRPC functions are called internally by the reactor classes and are not exposed to application code:
 
 | gRPC Function           | Purpose                          | Called by                                         |
 |-------------------------|----------------------------------|---------------------------------------------------|
-| `StartCall()`           | Initiates the RPC                | Adapter constructor                               |
-| `StartRead(&response_)` | Begins async read operation      | Base constructor, `GetResponse()`, `OnReadDone()` |
+| `StartCall()`           | Initiates the RPC                | Specialized constructor                           |
+| `StartRead(&response_)` | Begins async read operation      | Constructor, `GetResponse()`, `OnReadDone()`      |
 | `StartWrite()`          | Begins async write operation     | Inside `SendRequest()`                            |
 | `StartWriteLast()`      | Write + implied close, one op    | Inside `SendLastRequest()`                        |
 | `StartWritesDone()`     | Signals end of client writes     | Inside `CloseRequestStream()`                     |
 | `AddHold()`             | Prevents OnDone until RemoveHold | Inside `OnReadDone()`                             |
 | `RemoveHold()`          | Releases hold, allows OnDone     | Inside `GetResponse()`                            |
 
-### gRPC Callbacks (Protected Overrides)
+### gRPC callbacks (protected overrides)
 
 These callbacks are invoked by gRPC and handled internally by the reactor classes:
 
 | gRPC Callback               | When it fires                        | Invokes user callback             |
 |-----------------------------|--------------------------------------|-----------------------------------|
-| `OnReadDone(bool ok)`       | Read operation completed             | `cbs_.read_ok` or `cbs_.read_nok` |
+| `OnReadDone(bool ok)`       | Read operation completed             | `cbs_.ok`/`cbs_.nok`               |
 | `OnWriteDone(bool ok)`      | Write operation completed            | `cbs_.write_done`                 |
 | `OnWritesDoneDone(bool ok)` | Explicit StartWritesDone() completed | none (internal only)              |
 | `OnDone(Status)`            | RPC terminated                       | `cbs_.done`                       |
 
-### Stream Completion Tracking
+`ActiveBidiReactor` uses `cbs_.read_ok`/`cbs_.read_nok` instead of `cbs_.ok`/`cbs_.nok` for `OnReadDone`.
+
+### Stream completion tracking
 
 Each of `ActiveReadReactor`, `ActiveWriteReactor`, and `ActiveBidiReactor` tracks whether further read/write
 operations are still valid via an internal `stream_no_more_` flag:
@@ -160,27 +166,26 @@ operations are still valid via an internal `stream_no_more_` flag:
   contract (`grpcpp/support/client_callback.h`), a failure on either read or write means no new read/write
   operation will succeed, so tracking the two directions separately would not add information.
 - `OnWritesDoneDone()` fires only for an explicit `StartWritesDone()` (i.e. `CloseRequestStream()`), not for a
-  close implied via `StartWriteLast()` (i.e. `SendLastRequest()`) - per gRPC's own documented distinction.
+  close implied via `StartWriteLast()` (i.e. `SendLastRequest()`). This is per gRPC's own documented distinction.
 - This narrows, but does not fully close, a race with a concurrent `OnDone()`: the flag can flip to true right
   after a call already checked it. Closing that race fully would need the same `AddHold()`/`RemoveHold()`
   protection `OnReadDone()` already uses for the read side.
 
-### Hold Semantics: Per-RPC, Not Per-Direction
+### Hold semantics per RPC, not per direction
 
 gRPC's hold count (`AddHold()`/`RemoveHold()`) is a single counter shared by the entire RPC, not one counter per
-read/write direction - confirmed from the `ClientCallbackReaderWriterImpl` implementation
-(`grpcpp/support/client_callback.h`), where `Read()`, `Write()`, `WritesDone()`, and `AddHold()`/`AddMultipleHolds()`
-all increment the same `callbacks_outstanding_` member. This has a direct consequence for `ActiveBidiReactor`:
+read/write direction, per gRPC's documented public contract (`grpcpp/support/client_callback.h`, not vendored in
+this repository). This has a direct consequence for `ActiveBidiReactor`:
 
 - A hold added in `OnReadDone()` (protecting a response held for later `GetResponse()`) does not block other,
-  independent reactions from firing - in particular, `OnWriteDone(false)` on an unrelated in-flight write can
+  independent reactions from firing. In particular, `OnWriteDone(false)` on an unrelated in-flight write can
   still fire and set `stream_no_more_` while that hold is outstanding. The hold only gates `OnDone()`, not other
   callbacks.
 - Consequently, `GetResponse()` must call `RemoveHold()` unconditionally, whether or not it restarts reading -
   only the restart is conditional on `stream_no_more_`. Skipping `RemoveHold()` when `stream_no_more_` happens to
   already be true would leak the hold and stall the RPC (`OnDone()` would never fire) rather than fail loudly.
 
-### Application-Facing API
+### Application-facing API
 
 These methods are exposed to application code with naming that reflects application-level semantics:
 
@@ -194,10 +199,10 @@ These methods are exposed to application code with naming that reflects applicat
 | `Status()`             | Get final RPC status                         | Valid after `OnDone`                         |
 
 `CloseRequestStream()` returns `false` (does nothing) if already closed, if a write is still in flight, or if the
-RPC has already failed/finished - callers should wait for `OnWriteDone()` and retry, or use `SendLastRequest()`
+RPC has already failed/finished. Callers should wait for `OnWriteDone()` and retry, or use `SendLastRequest()`
 instead when the last message is known in advance.
 
-### Future Server-Side API
+### Future server-side API
 
 For server-side reactors, the naming will mirror client-side with role reversal:
 
@@ -208,9 +213,9 @@ For server-side reactors, the naming will mirror client-side with role reversal:
 | `GetRequest()`          | Extract a received request via swap   | Server receives requests         |
 | `Finish(status)`        | Complete the RPC with status          | Server-initiated termination     |
 
-### Complete API Matrix
+### Complete API matrix
 
-#### Client-Side Reactors
+#### Client-side reactors
 
 | RPC Type          | Send             | Close Stream           | Receive          | Cancel         | Status     |
 |-------------------|------------------|------------------------|------------------|----------------|------------|
@@ -219,7 +224,7 @@ For server-side reactors, the naming will mirror client-side with role reversal:
 | **Client-Stream** | `SendRequest()`  | `CloseRequestStream()` | `GetResponse()`  | `TryCancel()`  | `Status()` |
 | **Bidi**          | `SendRequest()`  | `CloseRequestStream()` | `GetResponse()`  | `TryCancel()`  | `Status()` |
 
-#### Server-Side Reactors (Future)
+#### Server-side reactors (future)
 
 | RPC Type          | Receive        | Send               | Close Stream            | Finish           |
 |-------------------|----------------|--------------------|-------------------------|------------------|
@@ -228,7 +233,7 @@ For server-side reactors, the naming will mirror client-side with role reversal:
 | **Client-Stream** | `GetRequest()` | (via `Finish()`)   | N/A                     | `Finish(status)` |
 | **Bidi**          | `GetRequest()` | `SendResponse()`   | `CloseResponseStream()` | `Finish(status)` |
 
-### Bidirectional Stream Message Flow
+### Bidirectional stream message flow
 
 ```text
 Client                              Server
@@ -245,7 +250,7 @@ Client                              Server
   |  (read stream ends)               |
 ```
 
-## Component Implementation
+## Component implementation
 
 The implementation is organized across three architectural layers, mapping Active Object concepts to concrete code.
 
@@ -266,7 +271,7 @@ The implementation is organized across three architectural layers, mapping Activ
 | Future             | Reactor handle for retrieving results          | `GetResponse()`, `Status()`                    |
 | Guards             | Prevents concurrent access during processing   | `AddHold()`, `RemoveHold()`                    |
 
-### Proxy Component
+### Proxy component
 
 The Proxy component provides the client-facing interface that applications call to initiate RPC operations. Proxy
 methods run on the client application thread and create reactor instances (Method Requests) without blocking.
@@ -279,7 +284,7 @@ methods run on the client application thread and create reactor instances (Metho
 The Proxy method constructs the reactor, configures callbacks to notify the Scheduler (EventLoop), and returns control
 immediately to the caller.
 
-### Scheduler & Activation Queue Components
+### Scheduler & Activation Queue components
 
 The Scheduler dispatches queued events to the application thread, and the Activation Queue is the internal queue holding
 pending notifications. These components are provided by the [EventLoop library][eventloop-lib].
@@ -288,13 +293,13 @@ The Scheduler bridges gRPC threads to the application thread. gRPC callbacks inv
 notifications in the Activation Queue. The Scheduler dequeues and dispatches them to response handlers on the
 application thread, maintaining single-threaded execution.
 
-### Method Request Component
+### Method Request component
 
 The Method Request component encapsulates an RPC invocation with all necessary state: `ClientContext`, request message,
 response message, and callbacks. The reactor instances (e.g. `ActiveUnaryReactor`, `ActiveReadReactor`) implement this
 component.
 
-### Servant Component
+### Servant component
 
 The Servant component contains application-provided business logic. In this client-side implementation, the Servant is
 implemented via `EventLoop::RegisterEvent()` handlers that process RPC results on the application thread.
@@ -309,7 +314,7 @@ The response handling provides two execution strategies:
 The demo application uses simple logging as placeholder Servant logic. Production applications implement actual
 business logic (state updates, UI notifications, domain processing) in these handlers.
 
-### Future Component
+### Future component
 
 The Future component provides asynchronous access to RPC results. The reactor instance acts as the Future, exposing
 `GetResponse()` to retrieve response data and `Status()` to check operation success or failure.
@@ -396,7 +401,7 @@ From the PlantUML sequence diagram, the corresponding points are:
 - 3.4 : the `cbs.done = [](auto* reactor, const grpc::Status&, const ResponseT&) {...}` lines
 
 ````cpp
-#include "api_routeguide.h"
+#include "applications/reactor/reactor_client_routeguide.h"
 void GetFeature(routeguide::Point point) {
   using routeguide::GetFeature::ClientReactor;
   using routeguide::GetFeature::Callbacks;
@@ -621,7 +626,7 @@ From the PlantUML sequence diagram, the corresponding points are:
 - 4.6 : the `cbs.done = [](auto* reactor, const grpc::Status&) {...}` lines
 
 ````cpp
-#include "api_routeguide.h"
+#include "applications/reactor/reactor_client_routeguide.h"
 void ListFeatures(routeguide::Rectangle rect) {
   using routeguide::ListFeatures::ClientReactor;
   using routeguide::ListFeatures::Callbacks;

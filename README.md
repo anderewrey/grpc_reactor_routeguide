@@ -1,4 +1,4 @@
-# gRPC Reactor Callbacks, client-side implementation
+# gRPC reactor callbacks, client-side implementation
 
 Complete redesign of the [gRPC route_guide][grpc-route-guide] example.
 

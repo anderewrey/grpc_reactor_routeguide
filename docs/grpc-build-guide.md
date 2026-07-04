@@ -1,4 +1,4 @@
-# gRPC Build and Optimization Guide
+# gRPC build and optimization guide
 
 ## Overview
 
@@ -9,7 +9,7 @@ guide exists for anyone building the stack manually, on this project or elsewher
 
 **Last verified with**: gRPC v1.73.1, Protobuf v31.0, Abseil 20250127
 
-### The gRPC Bundle
+### The gRPC bundle
 
 **Key principle**: gRPC, Protobuf, Abseil, c-ares, and RE2 should be treated as a **single bundle**:
 
@@ -17,16 +17,16 @@ guide exists for anyone building the stack manually, on this project or elsewher
 - All must be built from gRPC's git repository (using submodules), not installed separately.
 - All must be built with the same compiler and optimization flags.
 
-### Two Ways to Get gRPC
+### Two ways to get gRPC
 
 1. **System package manager** (`apt`/`dnf`): easiest, but compiler and optimization flags are out of your control,
    and versions may not match across the bundle.
 2. **Manual build from source** (this guide): full control over compiler and optimization, at the cost of a
    15-30 minute build.
 
-## Quick Start
+## Quick start
 
-### System Dependencies
+### System dependencies
 
 Only two system packages are required (everything else builds from gRPC's submodules): OpenSSL and zlib
 development headers, installed with your distribution's package manager.
@@ -39,7 +39,7 @@ development headers, installed with your distribution's package manager.
 Do **not** install `c-ares-devel`, `re2-devel`, `abseil-cpp-devel`, or `protobuf-devel` from the system: gRPC needs
 these built from its own submodules so that versions and compiler flags match across the bundle.
 
-### Build Command
+### Build command
 
 ```bash
 cd ~/git
@@ -49,8 +49,8 @@ git submodule update --init
 
 cmake -B build-shared-speed \
   -GNinja \
-  -DCMAKE_C_COMPILER=clang \
-  -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_C_COMPILER=gcc \
+  -DCMAKE_CXX_COMPILER=g++ \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_CXX_STANDARD=20 \
   -DBUILD_SHARED_LIBS=ON \
@@ -83,11 +83,11 @@ sudo ldconfig
 ```
 
 This builds C++-only, Release, with shared libraries and speed optimizations. See the options reference below for
-what each flag controls, and the "Build Variations" section for a debug build or a portable (non-`native`) build.
+what each flag controls, and the "Build variations" section for a debug build or a portable (non-`native`) build.
 
-## CMake Options Reference
+## CMake options reference
 
-### Core Build Configuration
+### Core build configuration
 
 | Option | Default | Recommended | Purpose |
 | ------ | ------- | ------------ | ------- |
@@ -98,7 +98,7 @@ what each flag controls, and the "Build Variations" section for a debug build or
 | `CMAKE_C_COMPILER` | system default | `/usr/bin/gcc` | C compiler to use |
 | `CMAKE_CXX_COMPILER` | system default | `/usr/bin/g++` | C++ compiler to use |
 
-### Optimization Flags
+### Optimization flags
 
 | Flag | Purpose | Recommended |
 | ------ | --------- | ------------- |
@@ -108,7 +108,7 @@ what each flag controls, and the "Build Variations" section for a debug build or
 | `-DNDEBUG` | Remove assert() checks | **YES** for Release |
 | `-g0` | No debug symbols | **YES** for Release |
 
-### gRPC Language Plugin Options
+### gRPC language plugin options
 
 Only build what you need; each plugin adds build time.
 
@@ -122,7 +122,7 @@ Only build what you need; each plugin adds build time.
 | `gRPC_BUILD_GRPC_PYTHON_PLUGIN` | `ON` | `OFF` | `ON` |
 | `gRPC_BUILD_GRPC_RUBY_PLUGIN` | `ON` | `OFF` | `ON` |
 
-### gRPC Core Options
+### gRPC core options
 
 | Option | Default | Recommended | Purpose |
 | -------- | --------- | ------------- | --------- |
@@ -132,7 +132,7 @@ Only build what you need; each plugin adds build time.
 | `gRPC_BUILD_GRPCPP_OTEL_PLUGIN` | `OFF` | `OFF` | OpenTelemetry plugin (rarely needed) |
 | `gRPC_DOWNLOAD_ARCHIVES` | `ON` | `ON` | Auto-download dependencies |
 
-### Dependency Provider Options
+### Dependency provider options
 
 `module` builds from gRPC's own submodules (self-contained, version-matched); `package` uses system-installed
 packages.
@@ -148,9 +148,9 @@ packages.
 
 Only OpenSSL and zlib use `package`: they are universal dependencies with stable ABIs. Everything else in the bundle
 must come from gRPC's submodules together, or template instantiation mismatches will cause linker errors (see
-"Compiler Compatibility" below).
+"Compiler compatibility" below).
 
-### Protobuf-Specific Options
+### Protobuf-specific options
 
 | Option | Recommended | Purpose |
 | -------- | ------------- | --------- |
@@ -162,7 +162,7 @@ must come from gRPC's submodules together, or template instantiation mismatches 
 | `protobuf_WITH_ZLIB` | `ON` | Enable zlib compression |
 | `protobuf_ALLOW_CCACHE` | `ON` if ccache installed | Speed up rebuilds |
 
-### Advanced Options
+### Advanced options
 
 - `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` enables Link-Time Optimization (LTO): faster runtime and better dead code
   elimination, at the cost of a substantially longer build. Use it for production builds where the extra build time
@@ -170,7 +170,7 @@ must come from gRPC's submodules together, or template instantiation mismatches 
 - `CMAKE_C_COMPILER_LAUNCHER=ccache` / `CMAKE_CXX_COMPILER_LAUNCHER=ccache` route compilation through ccache for much
   faster rebuilds. Requires the `ccache` package installed; pair with `-Dprotobuf_ALLOW_CCACHE=ON`.
 
-## Build Variations
+## Build variations
 
 ### Portable (different CPU architectures)
 
@@ -188,7 +188,7 @@ Drop the CPU-specific flags from the build command above:
 
 This works on any x86-64 CPU instead of only the machine it was built on. Useful when distributing binaries.
 
-### Debug Build
+### Debug build
 
 ```bash
 cmake -B build-debug \
@@ -221,7 +221,7 @@ sudo ninja -C build-debug install
 
 Produces a fully debuggable, unoptimized build: no `-O3`, no `-march=native`, full debug symbols.
 
-## Rebuild Your Project
+## Rebuild your project
 
 After gRPC/Protobuf are installed system-wide:
 
@@ -230,8 +230,8 @@ cd /path/to/your/project
 
 cmake -B build \
       -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_C_COMPILER=clang \
-      -DCMAKE_CXX_COMPILER=clang++ \
+      -DCMAKE_C_COMPILER=gcc \
+      -DCMAKE_CXX_COMPILER=g++ \
       -GNinja
 
 cmake --build build
@@ -245,7 +245,7 @@ ldd build/your_binary | grep -E "libprotobuf|libgrpc"
 
 Should show paths under `/usr/local/lib` (or wherever `CMAKE_INSTALL_PREFIX` pointed).
 
-## Reducing Binary Size
+## Reducing binary size
 
 Two independent techniques combine to shrink application binaries:
 
@@ -269,7 +269,7 @@ be updated without recompiling the application.
 **Why not `-Os`**: this project prioritizes runtime speed over binary size, so it keeps `-O3` and relies on shared
 linking to keep binaries small instead of trading away optimization.
 
-## Library Linking Strategy
+## Library linking strategy
 
 | Library Category | Type | Rationale |
 | ------------------ | ------ | ----------- |
@@ -285,9 +285,9 @@ you're not debugging:
 target_compile_options(spdlog PRIVATE -O3 -DNDEBUG -march=native -mtune=native -g0)
 ```
 
-## Compiler Compatibility (Critical!)
+## Compiler compatibility (critical!)
 
-### The Problem: Template Instantiation Incompatibility
+### The problem: template instantiation incompatibility
 
 **Rule**: gRPC, Protobuf, Abseil, and your application **must all use the same compiler** (all GCC or all Clang).
 
@@ -298,7 +298,7 @@ template code, causing linker errors like:
 undefined reference to `absl::lts_20250127::log_internal::LogMessage::operator<<(unsigned long)'
 ```
 
-### Manual Verification
+### Manual verification
 
 Check which compiler built your libraries and confirm they all agree:
 
@@ -310,7 +310,7 @@ readelf -p .comment /usr/local/lib64/libabsl_base.so | grep -i "gcc\|clang"
 
 All three should show the same compiler and (ideally) the same major version.
 
-### If They Mismatch
+### If they mismatch
 
 Either rebuild your application with the compiler the libraries were built with:
 
@@ -319,28 +319,28 @@ cmake -B build -DCMAKE_CXX_COMPILER=g++      # if libraries are GCC-built
 cmake -B build -DCMAKE_CXX_COMPILER=clang++  # if libraries are Clang-built
 ```
 
-or rebuild the whole gRPC stack with your preferred compiler (see Quick Start above).
+or rebuild the whole gRPC stack with your preferred compiler (see "Quick start" above).
 
-## Deployment Considerations
+## Deployment considerations
 
-### Shared Libraries to Deploy
+### Shared libraries to deploy
 
 From `/usr/local/lib`: `libgrpc++.so.1.73`, `libgrpc.so.48`, `libabsl_*.so`, `libaddress_sorting.so`, `libgpr.so`,
 `libre2.so`, `libupb.so`.
 
 From `/usr/local/lib64`: `libprotobuf.so.31`, `libc-ares.so`.
 
-### Deployment Methods
+### Deployment methods
 
 1. **System installation** (what this guide does): `sudo ninja install && sudo ldconfig`.
 2. **`LD_LIBRARY_PATH`**: `export LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib64:$LD_LIBRARY_PATH`.
 3. **RPATH baked into the binary** at configure time:
    `set(CMAKE_INSTALL_RPATH "${GRPC_PREFIX}/lib64;${GRPC_PREFIX}/lib")`.
 
-### Docker/Container Deployment
+### Docker/container deployment
 
 ```dockerfile
-FROM <base-image>  # e.g. almalinux:9 or ubuntu:24.04
+FROM <base-image>  # your distribution's base image
 RUN dnf install -y openssl-libs zlib  # or: apt install -y openssl libz1
 COPY --from=builder /usr/local/lib/libgrpc*.so* /usr/local/lib/
 COPY --from=builder /usr/local/lib/libabsl*.so* /usr/local/lib/
@@ -351,7 +351,7 @@ COPY --from=builder /app/build/applications/*/* /app/
 CMD ["/app/route_guide_callback_server"]
 ```
 
-## Alternative: System Package Manager
+## Alternative: system package manager
 
 Using system packages loses the guarantees the bundle approach gives you: no version-matching across gRPC,
 Protobuf, Abseil, c-ares, and RE2, and no control over which compiler or optimization flags built them. For
@@ -389,11 +389,11 @@ sudo ldconfig
 ldd /usr/local/bin/grpc_cpp_plugin | grep "not found"  # should return nothing
 ```
 
-**Version mismatch between gRPC and Protobuf**: rebuild both together from the same gRPC checkout (see Quick Start).
+**Version mismatch between gRPC and Protobuf**: rebuild both together from the same gRPC checkout (see "Quick start").
 
-**Compiler mismatch**: see "Compiler Compatibility" above.
+**Compiler mismatch**: see "Compiler compatibility" above.
 
-## Multi-Compiler Setup
+## Multi-compiler setup
 
 To keep multiple compiler-built copies side by side, install each to its own prefix:
 
@@ -452,7 +452,7 @@ libraries rather than any stale system copies.
 4. Use `-O3 -march=native -mtune=native` for speed; drop `-march=native -mtune=native` only if the binary needs to
    run on a different CPU.
 
-See "Quick Start" above for the full build command.
+See "Quick start" above for the full build command.
 
 **Next Steps:**
 

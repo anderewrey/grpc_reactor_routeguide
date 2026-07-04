@@ -1,4 +1,4 @@
-# Architecture Documentation
+# Architecture documentation
 
 This repository is an educational sandbox for mastering gRPC's asynchronous callback API and, more broadly, for
 working out how to structure an application around it. This document is the design rationale: which patterns this
@@ -7,7 +7,7 @@ For the implementation mechanics (class-by-class API, race conditions, sequence 
 [reactor_client.md](/applications/reactor/reactor_client.md). For building and testing, see
 [developing.md](/docs/developing.md) and [testing.md](/docs/testing.md).
 
-## Active Object Pattern
+## Active Object pattern
 
 This implementation follows the Active Object pattern, combining it with the Reactor pattern for event-driven
 processing. The reactor library provides the pattern infrastructure; applications provide business logic in the
@@ -64,18 +64,18 @@ Queue); the corresponding Response Handler then runs on the application thread.
 > an application of the GoF Proxy design pattern. The demo application uses simple logging as Servant
 > logic; production applications implement actual business logic in the event handlers.
 
-### Why Two Threads?
+### Why two threads?
 
 | Thread | Operations |
 | ------------------- | ------------------------------------------------------- |
 | Application (main) | Create reactors, process responses, application logic |
 | gRPC Thread Pool | Execute callbacks (OnDone, OnReadDone, OnWriteDone) |
 
-See "Why Active Object Pattern?" below for why this split exists and what problem it solves. The exact race
+See "Why Active Object pattern?" below for why this split exists and what problem it solves. The exact race
 conditions the hold mechanism protects against, and where that protection is incomplete, are documented in
 [reactor_client.md](/applications/reactor/reactor_client.md#hold-semantics-per-rpc-not-per-direction).
 
-## Technology Stack
+## Technology stack
 
 gRPC and Protobuf aren't listed here as "choices." Using them is the point of this project, not a decision made
 among alternatives. What follows are the choices made *around* them.
@@ -89,9 +89,9 @@ among alternatives. What follows are the choices made *around* them.
 | Build | CMake + Ninja | Build orchestration |
 | Dependencies | vcpkg | Multi-compiler package management |
 
-## Design Decisions
+## Design decisions
 
-### Why Active Object Pattern?
+### Why Active Object pattern?
 
 The gRPC reactor callbacks (`OnDone`, `OnReadDone`) execute on threads from gRPC's internal thread pool, and the
 application cannot control which thread executes a given callback. A direct callback implementation processes
@@ -116,20 +116,20 @@ The reactor library provides the Active Object infrastructure; applications prov
 logic. This separation enables reusable async RPC handling across different applications, instead of every
 application re-deriving its own synchronization around gRPC's callbacks.
 
-### Why vcpkg with Custom Triplets?
+### Why vcpkg with custom triplets?
 
 1. **Multi-compiler Support**: Same project builds across multiple GCC and Clang versions
 2. **ABI Compatibility**: Dependencies built with matching compiler
 3. **Reproducibility**: Consistent builds across environments
 4. **Debug + Release Mix**: Debug app can link Release libraries on Linux
 
-### Why EventLoop Library?
+### Why EventLoop library?
 
 1. **Simple API**: `TriggerEvent()` / `RegisterEvent()` / `Run()`
 2. **Thread-safe**: Safe cross-thread event dispatching
 3. **Replaceable**: Interface allows swapping with other event systems
 
-## Component Structure
+## Component structure
 
 ### Libraries
 
@@ -139,7 +139,7 @@ application re-deriving its own synchronization around gRPC's callbacks.
 | `rg_proto` | Object | Generated protobuf/gRPC code |
 | `rg_service` | Static | RouteGuide business logic |
 
-### Dependency Graph
+### Dependency graph
 
 ```text
 route_guide_active_reactor_client
@@ -155,11 +155,11 @@ route_guide_active_reactor_client
     └── EventLoop::EventLoop
 ```
 
-## Extending the Reactor Library
+## Extending the reactor library
 
 This section defines patterns for consistent implementation across contributors.
 
-### Style Guide Reference
+### Style guide reference
 
 All code follows the [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html) with these
 project-specific settings:
@@ -168,7 +168,7 @@ project-specific settings:
 - C++ standard: C++20
 - Pre-commit hooks enforce cpplint and clang-format
 
-### Reactor Class Hierarchy
+### Reactor class hierarchy
 
 **Generic Base Classes** (`applications/reactor/reactor_client.h`):
 
@@ -188,7 +188,7 @@ project-specific settings:
 | `ActiveWriteReactor<Point>` | `routeguide::RecordRoute::ClientReactor` | `RecordRoute` |
 | `ActiveBidiReactor<RouteNote, RouteNote>` | `routeguide::RouteChat::ClientReactor` | `RouteChat` |
 
-### Callback Struct Patterns
+### Callback struct patterns
 
 Each reactor type has a corresponding callback struct:
 
@@ -214,7 +214,7 @@ Each reactor type has a corresponding callback struct:
 - `write_done`: called after each write completes
 - `done`: called on RPC completion
 
-### File Organization
+### File organization
 
 **New reactor implementations:**
 
@@ -229,7 +229,7 @@ Each reactor type has a corresponding callback struct:
 - `active_write_reactor_test.cpp`: client-streaming reactor tests
 - `active_bidi_reactor_test.cpp`: bidirectional reactor tests
 
-### Error Handling Pattern
+### Error handling pattern
 
 Use `grpc::Status` passthrough instead of custom exceptions:
 
@@ -256,7 +256,7 @@ if (reactor->Status().ok()) {
 matches gRPC's native pattern, and works cleanly with the async callback model where exceptions cannot cross
 thread boundaries.
 
-### Thread Safety Patterns
+### Thread safety patterns
 
 **Atomic flags for cross-thread state:**
 
@@ -276,7 +276,7 @@ this->StartRead(&response_);
 this->RemoveHold();
 ```
 
-### Feature to Component Mapping
+### Feature to component mapping
 
 | Feature | Component | File |
 | ------------- | ----------- | ------ |
