@@ -71,8 +71,8 @@ target_link_libraries(rg_service
         protobuf_utils
         gflags::gflags
         common
-    PRIVATE
         spdlog::spdlog
+    PRIVATE
         glaze::glaze
         protobuf::libprotobuf
         gRPC::grpc++

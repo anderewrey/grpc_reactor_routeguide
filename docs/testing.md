@@ -27,10 +27,10 @@ The reactor client tests use two complementary approaches, matching the reactor 
 Four test binaries validate reactor callback logic directly, one per reactor type, using
 `std::promise`/`std::future` for synchronization instead of an EventLoop:
 
-- [active_unary_reactor_test.cpp][unary-test] - `ActiveUnaryReactor` via `GetFeature`
-- [active_read_reactor_test.cpp][read-test] - `ActiveReadReactor` via `ListFeatures`
-- [active_write_reactor_test.cpp][write-test] - `ActiveWriteReactor` via `RecordRoute`
-- [active_bidi_reactor_test.cpp][bidi-test] - `ActiveBidiReactor` via `RouteChat`
+- [active_unary_reactor_test.cpp][unary-test]: `ActiveUnaryReactor` via `GetFeature`
+- [active_read_reactor_test.cpp][read-test]: `ActiveReadReactor` via `ListFeatures`
+- [active_write_reactor_test.cpp][write-test]: `ActiveWriteReactor` via `RecordRoute`
+- [active_bidi_reactor_test.cpp][bidi-test]: `ActiveBidiReactor` via `RouteChat`
 
 Each test file runs an in-process gRPC server with a fake `TestRouteGuideService` implementation
 configured per scenario, and completes a promise directly from the reactor's callbacks. This

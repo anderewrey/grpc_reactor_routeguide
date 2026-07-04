@@ -12,7 +12,7 @@ spdlog, gflags, glaze, EventLoop, GoogleTest).
 
 | Tool | Purpose | Minimum |
 | ---- | ------- | ------- |
-| C++ compiler | Build the applications (GCC or Clang) | GCC 11+ or Clang |
+| C++ compiler | Build the applications (GCC or Clang) | C++20 support |
 | CMake | Configure and drive the build | 3.25 |
 | Ninja | Build generator used by all presets | recent |
 | Git | Clone the repository and vcpkg | recent |
@@ -22,11 +22,11 @@ spdlog, gflags, glaze, EventLoop, GoogleTest).
 
 Install these with the system package manager. Package names vary by distribution; common names are given.
 
-- C++ compiler — `gcc-c++` (or `g++`); use `clang` for a Clang build
-- CMake — `cmake`
-- Ninja — `ninja-build` (or `ninja`)
-- Git — `git`
-- Node.js providing `npx` — `nodejs` (used only to run markdownlint)
+- C++ compiler: `gcc-c++` (or `g++`); use `clang` for a Clang build
+- CMake: `cmake`
+- Ninja: `ninja-build` (or `ninja`)
+- Git: `git`
+- Node.js providing `npx`: `nodejs` (used only to run markdownlint)
 
 ### From-source build dependencies (OpenSSL)
 
@@ -34,10 +34,10 @@ vcpkg builds OpenSSL (a gRPC dependency) from source, and OpenSSL's `Configure` 
 several core Perl modules. On distributions that ship a minimal Perl, these are packaged separately and must be
 installed:
 
-- `IPC::Cmd` — `perl-IPC-Cmd`
-- `File::Copy` — `perl-File-Copy`
-- `File::Compare` — `perl-File-Compare`
-- `FindBin` — `perl-FindBin`
+- `IPC::Cmd`: `perl-IPC-Cmd`
+- `File::Copy`: `perl-File-Copy`
+- `File::Compare`: `perl-File-Compare`
+- `FindBin`: `perl-FindBin`
 
 Some distributions bundle these modules in the base `perl` package instead.
 
@@ -178,17 +178,17 @@ pre-commit run --all-files
 ## Troubleshooting
 
 - First-time dependency builds download sources from GitHub. A transient DNS failure can abort one download with
-  `curl operation failed with error code 6 (Could not resolve hostname)`. vcpkg reports it as non-retryable, but it
-  is usually transient — re-run the configure and vcpkg resumes from the cached, already-built packages.
+  `curl operation failed with error code 6 (Could not resolve hostname)`. vcpkg reports this error as non-retryable.
+  The failure is usually transient. Re-run the configure; vcpkg resumes from the cached, already-built packages.
 - An OpenSSL build failure mentioning `IPC::Cmd` (or another Perl module) means the Perl modules listed in
   [From-source build dependencies](#from-source-build-dependencies-openssl) are not installed.
 - See [vcpkg-usage.md](/docs/vcpkg-usage.md) for compiler-mismatch and other vcpkg-specific issues.
 
 ## See also
 
-- [vcpkg-usage.md](/docs/vcpkg-usage.md) - vcpkg setup, custom triplets, multi-compiler support
-- [grpc-build-guide.md](/docs/grpc-build-guide.md) - gRPC build options and optimization
-- [reactor_client.md](/applications/reactor/reactor_client.md) - reactor pattern implementation
+- [vcpkg-usage.md](/docs/vcpkg-usage.md): vcpkg setup, custom triplets, multi-compiler support
+- [grpc-build-guide.md](/docs/grpc-build-guide.md): gRPC build options and optimization
+- [reactor_client.md](/applications/reactor/reactor_client.md): reactor pattern implementation
 
 <!-- Reference links -->
 [vcpkg]: https://vcpkg.io/

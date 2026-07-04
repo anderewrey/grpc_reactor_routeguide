@@ -2,68 +2,44 @@
 
 ## Overview
 
-This comprehensive guide covers building, optimizing, and deploying gRPC + Protobuf for this project. It includes:
+This project builds its gRPC/Protobuf dependency stack through vcpkg (see [vcpkg-usage.md](/docs/vcpkg-usage.md)).
+This guide documents the underlying manual build approach instead: how to build gRPC, Protobuf, and Abseil directly
+from source with CMake, independent of any package manager. gRPC's own documentation covers this poorly, so this
+guide exists for anyone building the stack manually, on this project or elsewhere.
 
-- **Quick start** commands for common scenarios
-- **Complete CMake options reference** for customization
-- **Binary size optimization** strategies and results
-- **Library linking** decisions and rationale
-- **Compiler compatibility** requirements
-- **Deployment** considerations
-
-**Last Updated**: 2025-10-22 (gRPC v1.73.1, Protobuf v31.0, Abseil 20250127)
+**Last verified with**: gRPC v1.73.1, Protobuf v31.0, Abseil 20250127
 
 ### The gRPC Bundle
 
-**Key Principle**: gRPC, Protobuf, Abseil, c-ares, and RE2 should be treated as a **single bundle**:
+**Key principle**: gRPC, Protobuf, Abseil, c-ares, and RE2 should be treated as a **single bundle**:
 
-- All five libraries are tightly coupled (must match versions)
-- All built from gRPC's git repository (includes submodules)
-- All built with same compiler and optimization flags
-- All deployed as shared libraries for optimal performance
+- All five libraries are tightly coupled and must match versions.
+- All must be built from gRPC's git repository (using submodules), not installed separately.
+- All must be built with the same compiler and optimization flags.
 
-### Build Strategies
+### Two Ways to Get gRPC
 
-Two approaches to get gRPC:
-
-1. **System Package Manager** (Ubuntu/AlmaLinux)
-   - Easiest but least control
-   - Compiler/optimization flags unknown
-   - May have version mismatches
-
-2. **Manual Build from Source** (Recommended)
-   - Full control over compiler and optimization
-   - Speed-optimized (`-O3 -march=native -mtune=native`)
-   - Documented in this guide
+1. **System package manager** (`apt`/`dnf`): easiest, but compiler and optimization flags are out of your control,
+   and versions may not match across the bundle.
+2. **Manual build from source** (this guide): full control over compiler and optimization, at the cost of a
+   15-30 minute build.
 
 ## Quick Start
 
-### System Dependencies (Required)
+### System Dependencies
 
-**Only two system packages required:**
+Only two system packages are required (everything else builds from gRPC's submodules): OpenSSL and zlib
+development headers, installed with your distribution's package manager.
 
-```bash
-# AlmaLinux 9 / RHEL 9
-sudo dnf install -y openssl-devel zlib-devel
+| Package | dnf-based | apt-based |
+| ------- | --------- | --------- |
+| OpenSSL headers | `openssl-devel` | `libssl-dev` |
+| zlib headers | `zlib-devel` | `zlib1g-dev` |
 
-# Ubuntu/Debian
-sudo apt install -y libssl-dev zlib1g-dev
-```
+Do **not** install `c-ares-devel`, `re2-devel`, `abseil-cpp-devel`, or `protobuf-devel` from the system: gRPC needs
+these built from its own submodules so that versions and compiler flags match across the bundle.
 
-**These are NOT needed** (built with gRPC from submodules):
-
-- `c-ares-devel` / `libc-ares-dev`
-- `re2-devel` / `libre2-dev`
-- `abseil-cpp-devel` / `libabsl-dev`
-- `protobuf-devel` / `libprotobuf-dev`
-
-**Why this matters:**
-
-- **Version compatibility**: gRPC bundles tested versions of all dependencies
-- **Compiler consistency**: All built with same flags to avoid template instantiation issues
-- **Self-contained**: No conflicts with system versions
-
-### Recommended Build Command (C++ Only, Speed-Optimized)
+### Build Command
 
 ```bash
 cd ~/git
@@ -101,56 +77,40 @@ cmake -B build-shared-speed \
   -Dprotobuf_WITH_ZLIB=ON \
   -DCMAKE_INSTALL_PREFIX=/usr/local
 
-# Build (15-30 minutes)
 ninja -C build-shared-speed -j$(nproc)
-
-# Install
 sudo ninja -C build-shared-speed install
 sudo ldconfig
 ```
 
-**Result**:
+This builds C++-only, Release, with shared libraries and speed optimizations. See the options reference below for
+what each flag controls, and the "Build Variations" section for a debug build or a portable (non-`native`) build.
 
-- Build time: ~15-30 minutes
-- Your app binaries: ~500-600 KB (vs 3.1 MB before optimization)
-- Runtime: 30-60% faster than defaults
-
-## Complete CMake Options Reference
+## CMake Options Reference
 
 ### Core Build Configuration
 
-| Option                 | Default        | Recommended    | Purpose                                        |
-|------------------------|----------------|----------------|------------------------------------------------|
-| `CMAKE_BUILD_TYPE`     | -              | `Release`      | Sets optimization level and defines            |
-| `CMAKE_INSTALL_PREFIX` | `/usr/local`   | `/usr/local`   | Where to install libraries/headers             |
-| `CMAKE_CXX_STANDARD`   | `14`           | `20`           | C++ standard version (match your project)      |
-| `BUILD_SHARED_LIBS`    | `OFF`          | `ON`           | Build .so instead of .a (smaller app binaries) |
-| `CMAKE_C_COMPILER`     | system default | `/usr/bin/gcc` | C compiler to use                              |
-| `CMAKE_CXX_COMPILER`   | system default | `/usr/bin/g++` | C++ compiler to use                            |
+| Option | Default | Recommended | Purpose |
+| ------ | ------- | ------------ | ------- |
+| `CMAKE_BUILD_TYPE` | N/A | `Release` | Sets optimization level and defines |
+| `CMAKE_INSTALL_PREFIX` | `/usr/local` | `/usr/local` | Where to install libraries/headers |
+| `CMAKE_CXX_STANDARD` | `14` | `20` | C++ standard version (match your project) |
+| `BUILD_SHARED_LIBS` | `OFF` | `ON` | Build .so instead of .a (smaller app binaries) |
+| `CMAKE_C_COMPILER` | system default | `/usr/bin/gcc` | C compiler to use |
+| `CMAKE_CXX_COMPILER` | system default | `/usr/bin/g++` | C++ compiler to use |
 
 ### Optimization Flags
 
-| Flag | Purpose | Recommended | Impact |
-| ------ | --------- | ------------- | -------- |
-| `-O3` | Maximum optimization | **YES** | 10-20% faster, slightly larger code |
-| `-march=native` | Use CPU-specific instructions | **YES** | 5-10% faster, not portable |
-| `-mtune=native` | Tune for specific CPU | **YES** | Small improvement, not portable |
-| `-DNDEBUG` | Remove assert() checks | **YES** | 2-5% faster, smaller code |
-| `-g0` | No debug symbols | **YES** | Much smaller binaries, can't debug |
-
-**Combined in CMake**:
-
-```cmake
--DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -march=native -mtune=native -g0"
--DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -march=native -mtune=native -g0"
-```
-
-**Portability Note**: `-march=native -mtune=native` creates binaries optimized for your specific CPU. Remove these
-flags if deploying to different CPU architectures.
+| Flag | Purpose | Recommended |
+| ------ | --------- | ------------- |
+| `-O3` | Maximum optimization | **YES** |
+| `-march=native` | Use CPU-specific instructions | **YES**, unless the binary must run on other CPUs |
+| `-mtune=native` | Tune for specific CPU | **YES**, unless the binary must run on other CPUs |
+| `-DNDEBUG` | Remove assert() checks | **YES** for Release |
+| `-g0` | No debug symbols | **YES** for Release |
 
 ### gRPC Language Plugin Options
 
-**Only build what you need** - each plugin adds ~500 KB and build time.
+Only build what you need; each plugin adds build time.
 
 | Option | Default | C++ Only | All Languages |
 | -------- | --------- | ---------- | --------------- |
@@ -162,102 +122,59 @@ flags if deploying to different CPU architectures.
 | `gRPC_BUILD_GRPC_PYTHON_PLUGIN` | `ON` | `OFF` | `ON` |
 | `gRPC_BUILD_GRPC_RUBY_PLUGIN` | `ON` | `OFF` | `ON` |
 
-**Savings**: Disabling 6 unused plugins saves ~3 MB build artifacts + faster build time.
-
 ### gRPC Core Options
 
 | Option | Default | Recommended | Purpose |
 | -------- | --------- | ------------- | --------- |
 | `gRPC_INSTALL` | `ON` | `ON` | Install to CMAKE_INSTALL_PREFIX |
-| `gRPC_BUILD_TESTS` | `OFF` | `OFF` | Don't build gRPC tests (saves time) |
+| `gRPC_BUILD_TESTS` | `OFF` | `OFF` | Don't build gRPC's own tests |
 | `gRPC_BUILD_CODEGEN` | `ON` | `ON` | Build protoc and grpc_cpp_plugin |
 | `gRPC_BUILD_GRPCPP_OTEL_PLUGIN` | `OFF` | `OFF` | OpenTelemetry plugin (rarely needed) |
 | `gRPC_DOWNLOAD_ARCHIVES` | `ON` | `ON` | Auto-download dependencies |
 
 ### Dependency Provider Options
 
-**Provider types**:
+`module` builds from gRPC's own submodules (self-contained, version-matched); `package` uses system-installed
+packages.
 
-- `module` = Build from gRPC's submodules (slower, self-contained)
-- `package` = Use system-installed packages (faster, requires system libs)
+| Dependency | Recommended | Reason |
+| ------------ | ------------- | -------- |
+| `gRPC_SSL_PROVIDER` | `package` | Use system OpenSSL (gets security updates) |
+| `gRPC_ZLIB_PROVIDER` | `package` | System zlib is already optimized |
+| `gRPC_CARES_PROVIDER` | `module` | Must be version-matched to the bundle |
+| `gRPC_RE2_PROVIDER` | `module` | Must be version-matched to the bundle |
+| `gRPC_ABSL_PROVIDER` | `module` | Must match Protobuf's Abseil version |
+| `gRPC_PROTOBUF_PROVIDER` | `module` | Must be version-matched to the bundle |
 
-| Dependency | Default | Recommended | Reason |
-| ------------ | --------- | ------------- | -------- |
-| `gRPC_SSL_PROVIDER` | `module` | `package` | Use system OpenSSL (security updates) |
-| `gRPC_ZLIB_PROVIDER` | `module` | `package` | System zlib already optimized |
-| `gRPC_CARES_PROVIDER` | `module` | `module` | Build from gRPC submodule (version-matched) |
-| `gRPC_RE2_PROVIDER` | `module` | `module` | Build from gRPC submodule (version-matched) |
-| `gRPC_ABSL_PROVIDER` | `module` | `module` | **Must match Protobuf!** See note below |
-| `gRPC_PROTOBUF_PROVIDER` | `module` | `module` | Build from submodule (version match!) |
-
-**IMPORTANT - The gRPC Bundle Concept**:
-
-- **gRPC, Protobuf, Abseil, c-ares, and RE2 are tightly coupled** and should all be built together from gRPC's
-  submodules
-- **Why `module` for all five**:
-  - Version compatibility: gRPC bundles tested versions of all dependencies
-  - Compiler consistency: All built with same flags to avoid template instantiation issues
-  - Self-contained: No conflicts with potentially outdated or mismatched system versions
-- **Only OpenSSL and zlib use `package`**: These are universal dependencies with stable ABIs
+Only OpenSSL and zlib use `package`: they are universal dependencies with stable ABIs. Everything else in the bundle
+must come from gRPC's submodules together, or template instantiation mismatches will cause linker errors (see
+"Compiler Compatibility" below).
 
 ### Protobuf-Specific Options
 
-| Option | Default | Recommended | Purpose |
-| -------- | --------- | ------------- | --------- |
-| `protobuf_BUILD_TESTS` | `ON` | `OFF` | Skip protobuf tests |
-| `protobuf_BUILD_EXAMPLES` | `OFF` | `OFF` | Skip examples |
-| `protobuf_BUILD_CONFORMANCE` | `OFF` | `OFF` | Skip conformance tests |
-| `protobuf_BUILD_PROTOC_BINARIES` | `ON` | `ON` | Build protoc compiler |
-| `protobuf_BUILD_LIBPROTOC` | `OFF` | `ON` | Build libprotoc (needed for codegen) |
-| `protobuf_WITH_ZLIB` | varies | `ON` | Enable zlib compression |
-| `protobuf_DISABLE_RTTI` | `OFF` | `OFF` | Keep RTTI (needed by some features) |
-| `protobuf_ALLOW_CCACHE` | `OFF` | `ON` if ccache | Speed up rebuilds |
+| Option | Recommended | Purpose |
+| -------- | ------------- | --------- |
+| `protobuf_BUILD_TESTS` | `OFF` | Skip protobuf's own tests |
+| `protobuf_BUILD_EXAMPLES` | `OFF` | Skip examples |
+| `protobuf_BUILD_CONFORMANCE` | `OFF` | Skip conformance tests |
+| `protobuf_BUILD_PROTOC_BINARIES` | `ON` | Build protoc compiler |
+| `protobuf_BUILD_LIBPROTOC` | `ON` | Needed for codegen |
+| `protobuf_WITH_ZLIB` | `ON` | Enable zlib compression |
+| `protobuf_ALLOW_CCACHE` | `ON` if ccache installed | Speed up rebuilds |
 
-### Advanced/Optional Options
+### Advanced Options
 
-| Option | Default | When to Use | Impact |
-| -------- | --------- | ------------- | -------- |
-| `CMAKE_INTERPROCEDURAL_OPTIMIZATION` | `OFF` | Maximum speed, have time | 5-15% faster, 2x build time |
-| `CMAKE_C_COMPILER_LAUNCHER=ccache` | - | Have ccache installed | Much faster rebuilds |
-| `CMAKE_CXX_COMPILER_LAUNCHER=ccache` | - | Have ccache installed | Much faster rebuilds |
+- `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` enables Link-Time Optimization (LTO): faster runtime and better dead code
+  elimination, at the cost of a substantially longer build. Use it for production builds where the extra build time
+  is acceptable.
+- `CMAKE_C_COMPILER_LAUNCHER=ccache` / `CMAKE_CXX_COMPILER_LAUNCHER=ccache` route compilation through ccache for much
+  faster rebuilds. Requires the `ccache` package installed; pair with `-Dprotobuf_ALLOW_CCACHE=ON`.
 
-**Link-Time Optimization (LTO)**:
+## Build Variations
 
-```cmake
--DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
-```
+### Portable (different CPU architectures)
 
-- **Pro**: faster runtime, better dead code elimination
-- **Con**: Build takes 50%-150% longer
-- **When**: Production builds where performance matters
-
-**ccache**:
-
-```cmake
--DCMAKE_C_COMPILER_LAUNCHER=ccache
--DCMAKE_CXX_COMPILER_LAUNCHER=ccache
--Dprotobuf_ALLOW_CCACHE=ON
-```
-
-- **Pro**: Dramatically faster rebuilds (minutes instead of hours)
-- **Con**: Need to install ccache first: `sudo dnf install ccache`
-- **When**: Active development with frequent rebuilds
-
-## Build Scenarios
-
-### Scenario 1: Maximum Speed (Recommended)
-
-Documented in Quick Start section above.
-
-**Result**:
-
-- Build time: ~15-30 minutes
-- Runtime: 30-60% faster than defaults
-- Your app binaries: ~500-600 KB
-
-### Scenario 2: Portable (Different CPU Architectures)
-
-Remove CPU-specific flags from Quick Start:
+Drop the CPU-specific flags from the build command above:
 
 ```cmake
 # Change from:
@@ -269,12 +186,9 @@ Remove CPU-specific flags from Quick Start:
 -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -g0"
 ```
 
-**Result**:
+This works on any x86-64 CPU instead of only the machine it was built on. Useful when distributing binaries.
 
-- Slightly slower (5-10% loss) but works on any x86-64 CPU
-- Good for distributing binaries
-
-### Scenario 3: Debug Build (Development)
+### Debug Build
 
 ```bash
 cmake -B build-debug \
@@ -305,222 +219,71 @@ ninja -C build-debug -j$(nproc)
 sudo ninja -C build-debug install
 ```
 
-**Result**:
-
-- Full debug symbols for debugging
-- No optimizations (easier to step through)
-- Larger binaries (~11 MB)
+Produces a fully debuggable, unoptimized build: no `-O3`, no `-march=native`, full debug symbols.
 
 ## Rebuild Your Project
 
-After gRPC/Protobuf are installed:
+After gRPC/Protobuf are installed system-wide:
 
 ```bash
-cd /mnt/c/Users/ajcote/git/anderewrey/grpc_reactor_routeguide
+cd /path/to/your/project
 
-# Clean previous build
-rm -rf cmake-build-release-wsl-almalinux9-clang
-
-# Configure
-cmake -B cmake-build-release-wsl-almalinux9-clang \
+cmake -B build \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_C_COMPILER=clang \
       -DCMAKE_CXX_COMPILER=clang++ \
       -GNinja
 
-# Build
-cmake --build cmake-build-release-wsl-almalinux9-clang
-
-# Check results
-ls -lh cmake-build-release-wsl-almalinux9-clang/applications/*/route_guide_*
+cmake --build build
 ```
 
-### Verify Shared Library Dependencies
+Verify the binary links against the libraries you just built, not stale system ones:
 
 ```bash
-cd cmake-build-release-wsl-almalinux9-clang
-ldd applications/reactor/route_guide_active_reactor_client | grep -E "libprotobuf|libgrpc"
+ldd build/your_binary | grep -E "libprotobuf|libgrpc"
 ```
 
-Should show:
+Should show paths under `/usr/local/lib` (or wherever `CMAKE_INSTALL_PREFIX` pointed).
 
-```text
-libgrpc++.so.1.73 => /usr/local/lib/libgrpc++.so.1.73
-libprotobuf.so.31 => /usr/local/lib64/libprotobuf.so.31
-libgrpc.so.48 => /usr/local/lib/libgrpc.so.48
-```
+## Reducing Binary Size
 
-## Binary Size Optimization
+Two independent techniques combine to shrink application binaries:
 
-### Achieved Results
-
-| Configuration | Binary Size | Reduction | Status |
-| --------------- | ------------- | ----------- | -------- |
-| Original Release | 3.1 MB | Baseline | — |
-| **Phase 1** (symbol stripping + dead code) | **2.1 MB** | **32%** | Active |
-| **Phase 2** (shared gRPC/Protobuf) | **500-600 KB** | **80-84%** | Active |
-
-### Phase 1: CMake-Level Optimizations (Active)
-
-**Implemented in CMakeLists.txt:148-156:**
+**1. Compiler/linker flags** (applied to your application's own CMakeLists.txt):
 
 ```cmake
-# Binary Size Optimizations for Release/MinSizeRel builds
 if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
-    # Enable function/data sections for dead code elimination
     add_compile_options(-ffunction-sections -fdata-sections)
-
-    # Enable linker garbage collection and strip symbols
     add_link_options(-Wl,--gc-sections -s)
-
-    message(STATUS "Binary size optimizations enabled")
 endif()
 ```
 
-**What this does:**
+`-ffunction-sections`/`-fdata-sections` put each function/variable in its own linker section; `--gc-sections` then
+lets the linker discard unreferenced ones, and `-s` strips symbols from the final binary.
 
-1. **Symbol stripping** (`-s`): Removes debug symbols → ~29% reduction
-2. **Function sections** (`-ffunction-sections`): Each function in own section
-3. **Dead code elimination** (`-Wl,--gc-sections`): Linker removes unreferenced sections → ~5-10% reduction
+**2. Shared linking against gRPC/Protobuf** (`-DBUILD_SHARED_LIBS=ON` in the build command above): instead of
+statically embedding gRPC/Protobuf/Abseil in every binary, link against the shared `.so` files installed by this
+guide. This is the larger win of the two, and also means the libraries are shared in memory across processes and can
+be updated without recompiling the application.
 
-**Result**: 3.1 MB → 2.1 MB (32% reduction)
-
-### Phase 2: Shared gRPC/Protobuf Bundle (Active)
-
-**Key change**: Rebuild gRPC with `-DBUILD_SHARED_LIBS=ON` (see Quick Start section above)
-
-**Before**: Protobuf was static (6.2 MB libprotobuf.a embedded in each binary)
-**After**: All gRPC components are shared libraries
-
-**Benefits:**
-
-- Binaries: 2.1 MB → 500-600 KB (71% additional reduction)
-- Memory: Single copy in RAM across all processes
-- Updates: Can update libraries without recompiling app
-- Deployment: Modern container-friendly approach
-
-**Result**: 3.1 MB → 500-600 KB (80-84% total reduction)
-
-### Library Composition Analysis
-
-**Debug Build Example** (route_guide_active_reactor_client: 3.9 MB):
-
-```text
-Text section:    ~1.0 MB  (executable code)
-  - Application code (debuggable): ~400 KB
-  - spdlog (speed-optimized): ~300 KB
-  - gflags (speed-optimized): ~50 KB
-  - Other static libs: ~250 KB
-
-Debug symbols:   ~2.8 MB  (application code only)
-```
-
-Shared libraries (not in binary, one copy in memory):
-
-- gRPC + Protobuf + Abseil + c-ares + RE2: ~30 MB total
-- OpenSSL + zlib: System libraries
-
-### Why NOT Use `-Os` (Size Optimization)
-
-This project prioritizes **speed over size**:
-
-- `-Os` reduces performance by 5-10%
-- `-O3` maintains maximum speed
-- Shared libraries already give us small binaries (~600 KB)
-
-**Current approach (recommended)**:
-
-- Use `-O3 -march=native -mtune=native` for maximum speed
-- Reduce size via proper linking (shared gRPC bundle)
-- Result: Fast binaries at reasonable size
+**Why not `-Os`**: this project prioritizes runtime speed over binary size, so it keeps `-O3` and relies on shared
+linking to keep binaries small instead of trading away optimization.
 
 ## Library Linking Strategy
 
-### 1. Heavy Infrastructure (Shared Libraries)
-
-**Libraries**: gRPC, Protobuf, Abseil, c-ares, RE2
-
-**Strategy**: Build together as shared libraries from gRPC source
-
-**Rationale**:
-
-- **Size**: 6+ MB per binary if static
-- **Version coupling**: Must match versions
-- **Memory efficiency**: Single copy in RAM
-- **Updates**: Can update without recompiling
-- **Compiler consistency**: All built with same compiler
-
-**Result**:
-
-- Release binaries: ~500-600 KB each
-- Debug binaries: ~3.6-4.3 MB each
-
-### 2. Light Utilities (Static, Speed-Optimized)
-
-**Libraries**: spdlog, gflags, glaze
-
-**Strategy**: Static libraries, but **always compile with optimization**
-
-**Special handling** (common/CMakeLists.txt:30-43):
-
-```cmake
-# Optimize third-party FetchContent dependencies even in Debug builds
-target_compile_options(spdlog PRIVATE -O3 -DNDEBUG -march=native -mtune=native -g0)
-target_compile_options(gflags_nothreads_static PRIVATE -O3 -DNDEBUG -march=native -mtune=native -g0)
-```
-
-**Rationale**:
-
-- Small size: ~1.5 MB total when optimized
-- Simple deployment: No .so files
-- Fast performance: Same optimization as gRPC
-- Your app code stays debuggable
-
-**Result**:
-
-- Debug builds: 55% smaller (8.5 MB → 3.6 MB)
-- Release builds: Minimal impact
-
-### 3. Project Libraries (Static, OBJECT)
-
-**Libraries**: rg_proto, rg_service, protobuf_utils, common
-
-**Strategy**: Static libraries, with rg_proto as OBJECT library
-
-**Structure** (rg_service/CMakeLists.txt):
-
-```cmake
-add_library(rg_proto OBJECT
-    ${PROTO_IMPORT_DIRS}/route_guide.proto)
-
-add_library(rg_service
-    rg_utils.cpp
-    rg_db.cpp
-    rg_logger.cpp
-    route_guide_service.h
-    rg_logger.h)
-target_link_libraries(rg_service PUBLIC rg_proto protobuf_utils common)
-```
-
-**Rationale**:
-
-- Prevents duplication: rg_proto included once as OBJECT library
-- Build organization: Separate service code, generic utilities, and C++ compat code
-- Link-time optimization: Better dead code elimination
-
-**Result**:
-
-- librg_service.a: ~15 MB (includes service logic, utils, db, logger)
-
-### Summary Table
-
 | Library Category | Type | Rationale |
 | ------------------ | ------ | ----------- |
-| gRPC + Protobuf + Abseil + c-ares + RE2 | Shared | Heavy infrastructure bundle |
-| OpenSSL + zlib | System | Security updates, universal |
-| spdlog + gflags + glaze | Static (optimized) | Small utilities, speed-optimized |
-| rg_proto + rg_service + protobuf_utils + common | Static | Project code, OBJECT lib prevents duplication |
-| EventLoop | Shared | External library |
+| gRPC + Protobuf + Abseil + c-ares + RE2 | Shared | Version-coupled; one copy in memory, updatable without rebuild |
+| OpenSSL + zlib | System | Security updates, universal ABI |
+| Light utilities (e.g. spdlog, gflags) | Static, optimized | Small, simple to deploy, no extra `.so` files |
+| Your own project libraries | Static (OBJECT for shared code) | Avoids duplicating object code into multiple binaries |
+
+For "light utilities", force optimization even in Debug builds of your own application, since it's third-party code
+you're not debugging:
+
+```cmake
+target_compile_options(spdlog PRIVATE -O3 -DNDEBUG -march=native -mtune=native -g0)
+```
 
 ## Compiler Compatibility (Critical!)
 
@@ -528,248 +291,111 @@ target_link_libraries(rg_service PUBLIC rg_proto protobuf_utils common)
 
 **Rule**: gRPC, Protobuf, Abseil, and your application **must all use the same compiler** (all GCC or all Clang).
 
-**Why**: These libraries are extremely template-heavy. Different compilers generate different symbols for the same
+**Why**: these libraries are extremely template-heavy. Different compilers generate different symbols for the same
 template code, causing linker errors like:
 
 ```text
 undefined reference to `absl::lts_20250127::log_internal::LogMessage::operator<<(unsigned long)'
 ```
 
-### Automatic Compiler Checking
-
-**This project includes automatic checking** (CMakeLists.txt:25-124):
-
-- Inspects `/usr/local/lib/libgrpc++.so`, `libprotobuf.so`, `libabsl_base.so`
-- Extracts compiler info using `readelf -p .comment`
-- Compares library compiler with your current compiler
-- **Fatal error** if compiler type mismatch (GCC vs Clang)
-- **Warning** if version mismatch (GCC 11 vs GCC 13)
-
 ### Manual Verification
 
-Check which compiler built your libraries:
+Check which compiler built your libraries and confirm they all agree:
 
 ```bash
-# Check gRPC
 readelf -p .comment /usr/local/lib/libgrpc++.so | grep -i "gcc\|clang"
-
-# Check Protobuf
 readelf -p .comment /usr/local/lib64/libprotobuf.so | grep -i "gcc\|clang"
-
-# Check Abseil
 readelf -p .comment /usr/local/lib64/libabsl_base.so | grep -i "gcc\|clang"
 ```
 
-**All three should show the SAME compiler version.**
+All three should show the same compiler and (ideally) the same major version.
 
-### Solutions if Mismatch
+### If They Mismatch
 
-#### Option 1: Match System Library Compiler
-
-```bash
-# Use compiler that matches system libraries
-cmake -B build -DCMAKE_CXX_COMPILER=g++  # If libraries are GCC-built
-# or
-cmake -B build -DCMAKE_CXX_COMPILER=clang++  # If libraries are Clang-built
-```
-
-#### Option 2: Rebuild gRPC Stack
-
-Rebuild gRPC, Protobuf, and Abseil with your preferred compiler (see Quick Start section).
-
-### Bypass Check (NOT RECOMMENDED)
-
-Only if you're certain about compatibility:
+Either rebuild your application with the compiler the libraries were built with:
 
 ```bash
-cmake -B build -DSKIP_COMPILER_CHECK=ON
+cmake -B build -DCMAKE_CXX_COMPILER=g++      # if libraries are GCC-built
+cmake -B build -DCMAKE_CXX_COMPILER=clang++  # if libraries are Clang-built
 ```
+
+or rebuild the whole gRPC stack with your preferred compiler (see Quick Start above).
 
 ## Deployment Considerations
 
 ### Shared Libraries to Deploy
 
-When deploying, you need these shared libraries:
+From `/usr/local/lib`: `libgrpc++.so.1.73`, `libgrpc.so.48`, `libabsl_*.so`, `libaddress_sorting.so`, `libgpr.so`,
+`libre2.so`, `libupb.so`.
 
-**From /usr/local/lib:**
+From `/usr/local/lib64`: `libprotobuf.so.31`, `libc-ares.so`.
 
-- libgrpc++.so.1.73
-- libgrpc.so.48
-- libabsl_*.so (many Abseil components)
-- libaddress_sorting.so
-- libgpr.so
-- libre2.so
-- libupb.so
+### Deployment Methods
 
-**From /usr/local/lib64:**
-
-- libprotobuf.so.31
-- libc-ares.so
-
-**Deployment Methods:**
-
-1. **System Installation** (current setup):
-
-   ```bash
-   sudo ninja install  # Installs to /usr/local
-   sudo ldconfig       # Updates library cache
-   ```
-
-2. **LD_LIBRARY_PATH**:
-
-   ```bash
-   export LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib64:$LD_LIBRARY_PATH
-   ```
-
-3. **RPATH in Binary** (set during CMake):
-
-   ```cmake
-   set(CMAKE_BUILD_RPATH "${GRPC_PREFIX}/lib64;${GRPC_PREFIX}/lib")
-   set(CMAKE_INSTALL_RPATH "${GRPC_PREFIX}/lib64;${GRPC_PREFIX}/lib")
-   ```
-
-   Already configured in CMakeLists.txt:132-141
+1. **System installation** (what this guide does): `sudo ninja install && sudo ldconfig`.
+2. **`LD_LIBRARY_PATH`**: `export LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib64:$LD_LIBRARY_PATH`.
+3. **RPATH baked into the binary** at configure time:
+   `set(CMAKE_INSTALL_RPATH "${GRPC_PREFIX}/lib64;${GRPC_PREFIX}/lib")`.
 
 ### Docker/Container Deployment
 
 ```dockerfile
-FROM almalinux:9
-
-# Install runtime dependencies
-RUN dnf install -y openssl-libs zlib
-
-# Copy shared libraries from build container
+FROM <base-image>  # e.g. almalinux:9 or ubuntu:24.04
+RUN dnf install -y openssl-libs zlib  # or: apt install -y openssl libz1
 COPY --from=builder /usr/local/lib/libgrpc*.so* /usr/local/lib/
 COPY --from=builder /usr/local/lib/libabsl*.so* /usr/local/lib/
 COPY --from=builder /usr/local/lib64/libprotobuf*.so* /usr/local/lib64/
 COPY --from=builder /usr/local/lib64/libc-ares*.so* /usr/local/lib64/
-
-# Update library cache
 RUN ldconfig
-
-# Copy your binaries
 COPY --from=builder /app/build/applications/*/* /app/
-
 CMD ["/app/route_guide_callback_server"]
 ```
 
 ## Alternative: System Package Manager
 
-**WARNING**: When using system packages, you **lose the gRPC bundle benefits**:
+Using system packages loses the guarantees the bundle approach gives you: no version-matching across gRPC,
+Protobuf, Abseil, c-ares, and RE2, and no control over which compiler or optimization flags built them. For
+production or performance-critical applications, building from source as documented above is recommended instead.
 
-- **No version guarantees**: System gRPC, Protobuf, Abseil, c-ares, and RE2 may not be version-matched
-- **Unknown compiler**: System packages may be built with different compiler than your application
-- **Unknown optimizations**: You don't control the optimization flags used
-- **Potential conflicts**: System packages may have mismatched dependencies
+| Component | dnf-based | apt-based |
+| --------- | --------- | --------- |
+| gRPC | `grpc-devel` | `libgrpc++-dev` |
+| gRPC plugins | `grpc-plugins` | `protobuf-compiler-grpc` |
+| Protobuf | `protobuf-devel` | `libprotobuf-dev` |
+| Abseil | `abseil-cpp-devel` | `libabsl-dev` |
+| c-ares | `c-ares-devel` | `libc-ares-dev` |
+| RE2 | `re2-devel` | `libre2-dev` |
 
-**For production or performance-critical applications, building from source (as documented above) is strongly
-recommended.**
-
-### Ubuntu 24.04+
-
-```bash
-sudo apt update
-sudo apt install -y \
-    libgrpc++-dev \
-    libprotobuf-dev \
-    protobuf-compiler-grpc \
-    libabsl-dev \
-    libc-ares-dev \
-    libre2-dev
-```
-
-### AlmaLinux 9 / RHEL 9
-
-```bash
-# Enable EPEL and CodeReady repos
-sudo dnf install -y epel-release
-sudo dnf config-manager --set-enabled crb
-
-# Install gRPC and all dependencies
-sudo dnf install -y \
-    grpc-devel \
-    grpc-plugins \
-    protobuf-devel \
-    abseil-cpp-devel \
-    c-ares-devel \
-    re2-devel
-```
+On dnf-based distributions, these packages typically live behind the EPEL and CRB/PowerTools repositories.
 
 ## Troubleshooting
 
-### CMake Errors
+**`Could not find package OpenSSL` / `Could not find package ZLIB`**: install the system dev packages from
+"System Dependencies" above.
 
-**Error**: `Could not find package OpenSSL` or `Could not find package ZLIB`
+**Missing c-ares, RE2, Abseil, or Protobuf packages during configure**: ensure `gRPC_*_PROVIDER=module` for these
+dependencies; they must not be resolved from system packages.
 
-```bash
-# AlmaLinux/RHEL
-sudo dnf install -y openssl-devel zlib-devel
+**`ninja: build stopped: subcommand failed`**: check the actual error above this message. Common causes are running
+out of memory (reduce parallelism with `ninja -j4`) or a compiler too old to support C++20 concepts and ranges.
 
-# Ubuntu/Debian
-sudo apt install -y libssl-dev zlib1g-dev
-```
+**LTO/IPO errors**: remove `-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` and rebuild.
 
-**Note**: If you see errors about missing c-ares, RE2, Abseil, or Protobuf packages, ensure you're using
-`gRPC_*_PROVIDER=module` for these dependencies as documented above. They should **NOT** be installed from system
-packages.
-
-### Build Errors
-
-**Error**: `ninja: build stopped: subcommand failed`
-
-Check the actual error above this message. Common issues:
-
-- Out of memory: Reduce parallel jobs `ninja -j4` instead of `-j$(nproc)`
-- Compiler version: GCC 11+ or Clang 14+ required for C++20
-
-**Error**: LTO/IPO errors
-
-Disable LTO:
-
-```cmake
-# Remove this flag
--DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
-```
-
-### Runtime Errors
-
-**Error**: `libprotobuf.so not found` at runtime or `grpc_cpp_plugin: error while loading shared libraries`
-
-Update library cache:
+**`libprotobuf.so not found` at runtime, or `grpc_cpp_plugin: error while loading shared libraries`**:
 
 ```bash
-# Create ldconfig configuration
 echo -e "/usr/local/lib\n/usr/local/lib64" | sudo tee /etc/ld.so.conf.d/usr-local.conf
-
-# Update library cache
 sudo ldconfig
-
-# Verify fix
-ldd /usr/local/bin/grpc_cpp_plugin | grep "not found"  # Should return nothing
-ldconfig -p | grep libprotobuf
+ldd /usr/local/bin/grpc_cpp_plugin | grep "not found"  # should return nothing
 ```
 
-**Error**: Version mismatch
+**Version mismatch between gRPC and Protobuf**: rebuild both together from the same gRPC checkout (see Quick Start).
 
-Ensure gRPC and Protobuf were built together. Rebuild both:
-
-```bash
-cd ~/git/grpc/build-shared-speed
-ninja clean
-ninja -j$(nproc)
-sudo ninja install
-sudo ldconfig
-```
-
-### Compiler Mismatch Errors
-
-See "Compiler Compatibility" section above. CMakeLists.txt will detect and prevent mismatches automatically.
+**Compiler mismatch**: see "Compiler Compatibility" above.
 
 ## Multi-Compiler Setup
 
-If you need multiple compilers (GCC 11, GCC 13, Clang), install to separate prefixes:
-
-### Compiler-Specific Prefixes
+To keep multiple compiler-built copies side by side, install each to its own prefix:
 
 ```bash
 # GCC 11
@@ -788,221 +414,47 @@ If you need multiple compilers (GCC 11, GCC 13, Clang), install to separate pref
 -DCMAKE_CXX_COMPILER=/usr/bin/clang++
 ```
 
-### Update ldconfig for all prefixes
+Then register each prefix with `ldconfig` so the right `.so` files can be found at runtime:
 
 ```bash
 echo "/usr/local/gcc11/lib
 /usr/local/gcc11/lib64" | sudo tee /etc/ld.so.conf.d/gcc11-local.conf
-
-echo "/usr/local/gcc13/lib
-/usr/local/gcc13/lib64" | sudo tee /etc/ld.so.conf.d/gcc13-local.conf
-
-echo "/usr/local/clang/lib
-/usr/local/clang/lib64" | sudo tee /etc/ld.so.conf.d/clang-local.conf
-
 sudo ldconfig
 ```
 
-## Performance Characteristics
-
-### Speed Optimizations Applied
-
-| Optimization | Impact | Trade-off |
-| -------------- | -------- | ----------- |
-| `-O3` | Maximum speed (inlining, vectorization) | Larger code (mitigated by shared libs) |
-| `-march=native -mtune=native` | CPU-specific instructions (AVX, AVX2) | Not portable to different CPUs |
-| LTO (`-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON`) | Cross-module optimization | Slower build time (~2x) |
-| Shared libraries | Slightly faster startup | Need to deploy .so files |
-| Static utilities (optimized) | No dynamic linking overhead | None (small size) |
-
-### Runtime Performance Improvement
-
-| Optimization | Improvement | Notes |
-| -------------- | ------------- | ------- |
-| `-O3` vs `-O0` | +20-40% | Biggest impact |
-| `-march=native -mtune=native` | +5-15% | CPU-specific instructions |
-| LTO | +5-15% | Cross-module inlining |
-| **Combined** | **+30-60%** | Varies by workload |
-
-**Note**: Actual performance depends on your specific workload. Run benchmarks to measure.
-
-### Portability vs Speed
-
-**Maximum Speed** (This Build):
-
-```text
--O3 -march=native -mtune=native + LTO
-```
-
-- Optimized for your specific CPU
-- Only works on your CPU architecture
-
-**Portable Speed**:
-
-```text
--O3 + LTO  (remove -march=native -mtune=native)
-```
-
-- Works on any x86-64 CPU
-- Still highly optimized
+Repeat for each prefix, then select which one to link against per-build via `CMAKE_CXX_COMPILER` and, if using
+vcpkg, the matching triplet (see [vcpkg-usage.md](/docs/vcpkg-usage.md)).
 
 ## Verification
 
-### Check Installation
-
 ```bash
-# Verify shared libraries
+# Shared libraries are installed
 ls -lh /usr/local/lib/libgrpc++.so*
 ls -lh /usr/local/lib64/libprotobuf.so*
 
-# Check versions
+# Tool versions
 /usr/local/bin/protoc --version
 /usr/local/bin/grpc_cpp_plugin --version
 
-# Verify library cache
+# Library cache picked them up
 ldconfig -p | grep -E "libgrpc|libprotobuf|libabsl"
 ```
 
-Expected output:
-
-```text
-/usr/local/lib/libgrpc++.so -> libgrpc++.so.1.73
-/usr/local/lib/libgrpc++.so.1.73 -> libgrpc++.so.1.73.1
-/usr/local/lib64/libprotobuf.so -> libprotobuf.so.31.0.0
-
-libprotoc 31.0
-```
-
-### Test Your Application
-
-```bash
-cd /your/project
-rm -rf build
-cmake -B build -DCMAKE_BUILD_TYPE=Release -GNinja
-ninja -C build
-
-# Check binary size
-ls -lh build/your_binary
-
-# Verify it links to correct libraries
-ldd build/your_binary | grep -E "libgrpc|libprotobuf"
-```
-
-Should show:
-
-```text
-libgrpc++.so.1.73 => /usr/local/lib/libgrpc++.so.1.73
-libprotobuf.so.31 => /usr/local/lib64/libprotobuf.so.31
-libgrpc.so.48 => /usr/local/lib/libgrpc.so.48
-```
-
-### Monitoring Binary Size
-
-```bash
-# Section sizes
-size <binary>
-
-# Largest symbols (if not stripped)
-nm --print-size --size-sort --radix=d <binary> | tail -50
-
-# Library dependencies
-ldd <binary>
-
-# Compare builds
-ls -lh <binary1> <binary2>
-```
-
-### Verify Optimization
-
-```bash
-# Check shared library dependencies
-ldd applications/reactor/route_guide_active_reactor_client | grep -E "libprotobuf|libgrpc"
-
-# Check static library sizes
-ls -lh cmake-build-release-wsl-almalinux9-clang/rg_service/librg_service.a
-
-# Verify symbols are stripped
-file applications/reactor/route_guide_active_reactor_client
-# Should show: "stripped" in output
-```
-
-## Expected Results
-
-### Build Times
-
-| Configuration | Time | Reason |
-| --------------- | ------ | -------- |
-| Default (all plugins, all providers=module) | 60-90 min | Builds everything from source |
-| Recommended (C++ only, system OpenSSL/zlib) | 15-30 min | Reuses system libs, skips unused plugins |
-| With LTO | 30-60 min | Cross-module optimization takes time |
-| With ccache (rebuilds) | 2-5 min | Cached compilation units |
-
-### Binary Sizes (Your Application)
-
-| Configuration | Binary Size | Explanation |
-| --------------- | ------------- | ------------- |
-| Static protobuf, no optimization | ~3.1 MB | Baseline |
-| Static protobuf, optimized (-O3, strip) | ~2.1 MB | Phase 1 optimization |
-| **Shared protobuf, optimized** | **~500-600 KB** | **This build** |
-| Shared + LTO | ~500-600 KB | LTO doesn't affect binary size much |
-
-## Comparison Table
-
-| Configuration | Binary Size | Runtime Perf | Debug Info | Status |
-| --------------- | ------------- | -------------- | ------------ | -------- |
-| Debug (old) | 11 MB | Slow | Full | Baseline |
-| Debug (optimized deps) | **3.7-4.3 MB** | Medium | App only | **Active** |
-| Release (old) | 3.1 MB | Fast | Symbols | Baseline |
-| Release (Phase 1) | 2.1 MB | Faster | None | Achieved |
-| **Release (Phase 2)** | **500-600 KB** | **Fastest** | None | **Active** |
+Then build your project (see "Rebuild Your Project" above) and confirm with `ldd` that it links against these
+libraries rather than any stale system copies.
 
 ## Summary
 
-**Key Principles:**
+1. Treat gRPC, Protobuf, Abseil, c-ares, and RE2 as one version-matched bundle, built together from gRPC's
+   submodules.
+2. Build your application and the entire bundle with the same compiler.
+3. Prefer shared libraries for the bundle (`-DBUILD_SHARED_LIBS=ON`) and static libraries for small utilities.
+4. Use `-O3 -march=native -mtune=native` for speed; drop `-march=native -mtune=native` only if the binary needs to
+   run on a different CPU.
 
-1. **Speed First**: Always use `-O3 -march=native -mtune=native`, never `-Os`
-2. **Eliminate Duplication**: Shared libs for heavy infrastructure (gRPC bundle)
-3. **Smart Linking**: Static libs for light utilities with optimization
-4. **Compiler Consistency**: All gRPC components built with same compiler
-
-**Achieved Results:**
-
-- **Release builds**: 3.1 MB → 500-600 KB (80-84% reduction)
-- **Debug builds**: 11 MB → 3.7-4.3 MB (58-66% reduction)
-- **Fastest possible runtime performance**: 30-60% improvement
-
-**Quick Reference Commands:**
-
-```cmake
-# Always Include (Core recommendations)
--DCMAKE_BUILD_TYPE=Release
--DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -march=native -mtune=native -g0"
--DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -march=native -mtune=native -g0"
--DBUILD_SHARED_LIBS=ON
--DgRPC_BUILD_GRPC_CPP_PLUGIN=ON
--DgRPC_BUILD_GRPC_CSHARP_PLUGIN=OFF
--DgRPC_BUILD_GRPC_NODE_PLUGIN=OFF
--DgRPC_BUILD_GRPC_OBJECTIVE_C_PLUGIN=OFF
--DgRPC_BUILD_GRPC_PHP_PLUGIN=OFF
--DgRPC_BUILD_GRPC_PYTHON_PLUGIN=OFF
--DgRPC_BUILD_GRPC_RUBY_PLUGIN=OFF
--DgRPC_BUILD_TESTS=OFF
--DgRPC_SSL_PROVIDER=package
--DgRPC_ZLIB_PROVIDER=package
--DgRPC_CARES_PROVIDER=module
--DgRPC_RE2_PROVIDER=module
--DgRPC_ABSL_PROVIDER=module
--DgRPC_PROTOBUF_PROVIDER=module
--Dprotobuf_BUILD_TESTS=OFF
-
-# Optional (Add if needed)
--DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON  # For maximum speed (2x build time)
--DCMAKE_C_COMPILER_LAUNCHER=ccache       # For faster rebuilds (requires ccache)
--DCMAKE_CXX_COMPILER_LAUNCHER=ccache
--Dprotobuf_ALLOW_CCACHE=ON
-```
+See "Quick Start" above for the full build command.
 
 **Next Steps:**
 
 - For reactor pattern documentation, see [reactor_client.md](/applications/reactor/reactor_client.md)
-- For multi-compiler setup, see "Multi-Compiler Setup" section above
+- For vcpkg's automated version of this same build, see [vcpkg-usage.md](/docs/vcpkg-usage.md)

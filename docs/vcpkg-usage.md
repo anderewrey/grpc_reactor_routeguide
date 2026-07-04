@@ -20,7 +20,7 @@ grpc_reactor_routeguide/
 ├── CMakePresets.json               # CLion/CMake presets for easy configuration
 ├── vcpkg/
 │   ├── triplets/                   # Custom compiler-specific triplets
-│   │   ├── x64-linux-gcc-release.cmake     # System GCC (11.5.0 on AlmaLinux 9)
+│   │   ├── x64-linux-gcc-release.cmake     # Distribution's default GCC
 │   │   ├── x64-linux-gcc11-release.cmake   # GCC 11 (requires gcc-11 binary)
 │   │   ├── x64-linux-gcc13-release.cmake   # GCC 13 from Red Hat toolset
 │   │   └── x64-linux-clang19-release.cmake # Clang 19
@@ -37,8 +37,8 @@ grpc_reactor_routeguide/
 
 This project has been successfully tested with:
 
-- **Clang 19.1.7** (AlmaLinux 9 system package)
-- **GCC 11.5.0** (AlmaLinux 9 default)
+- **Clang 19.1.7**
+- **GCC 11.5.0** (distribution default)
 - **GCC 13.3.1** (Red Hat toolset)
 
 All combinations successfully:
@@ -138,8 +138,8 @@ cmake -B cmake-build-vcpkg-debug-gcc \
 cmake --build cmake-build-vcpkg-debug-gcc
 ```
 
-**Note:** The `x64-linux-gcc-release` triplet uses the system default GCC (version 11.5.0 on AlmaLinux 9).
-Replace `gcc`/`g++` with `gcc-11`/`g++-11` if you have version-specific compiler binaries installed.
+**Note:** The `x64-linux-gcc-release` triplet uses your distribution's default GCC. Replace `gcc`/`g++` with
+`gcc-11`/`g++-11` if you have version-specific compiler binaries installed.
 
 #### GCC 13 (from Red Hat toolset)
 
@@ -381,9 +381,10 @@ The custom port at `vcpkg/ports/grpc/portfile.cmake` uses direct git clone with 
 undefined reference to `absl::lts_20250127::log_internal::LogMessage::operator<<(unsigned long)'
 ```
 
-**Cause:** gRPC, Protobuf, and Abseil are template-heavy and must all be compiled with the **same compiler**.
+**Cause:** the application compiler doesn't match the compiler the triplet built gRPC/Protobuf/Abseil with. See
+"Compiler Compatibility" in [grpc-build-guide.md](/docs/grpc-build-guide.md) for why this matters.
 
-**Solution:** Always use matching triplet for your application compiler:
+**Solution:** always use the triplet matching your application compiler:
 
 ```bash
 # Building with Clang 19
