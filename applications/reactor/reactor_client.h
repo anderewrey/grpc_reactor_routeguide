@@ -245,19 +245,9 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
     }
     // (Point 2.3) OnReadDone: true
     if (cbs_.ok && cbs_.ok(this, response_)) {
-      // The next StartRead() is taking place outside of this gRPC event (see GetResponse above),
-      // and so the RPC must be put on hold until the application thread took care of
-      // the response and requested a new reading.
-      // If that hold is not enforced, a concurrent OnDone event may be received
-      // while the application is exactly on the point to call StartRead(). Prior
-      // OnDone is got, the underlying bound callback (raw pointer) is already
-      // destroyed by gRPC, so any operation request will segfault. IMO, gRPC
-      // can protect itself easily against that situation, but it doesn't (gRPC 1.51.1)
-      // and instead introduced that Hold mechanism: https://github.com/grpc/grpc/pull/18072
-      // So the solution is to call AddHold() here and when the application thread
-      // proceeded the response, calling StartRead() and then RemoveHold()
-      // does the needed protection to ensure the underlying callback is still
-      // living.
+      // Hold the RPC until the application thread calls StartRead() again from GetResponse().
+      // See "Why OnReadDone holds before returning" in reactor_client.md for why this hold
+      // exists: https://github.com/grpc/grpc/pull/18072
       // (Point 2.5) Holding the RPC
       this->AddHold();
       return;
@@ -704,19 +694,9 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
       return;
     }
     if (cbs_.read_ok && cbs_.read_ok(this, response_)) {
-      // The next StartRead() is taking place outside of this gRPC event (see GetResponse above),
-      // and so the RPC must be put on hold until the application thread took care of
-      // the response and requested a new reading.
-      // If that hold is not enforced, a concurrent OnDone event may be received
-      // while the application is exactly on the point to call StartRead(). Prior
-      // OnDone is got, the underlying bound callback (raw pointer) is already
-      // destroyed by gRPC, so any operation request will segfault. IMO, gRPC
-      // can protect itself easily against that situation, but it doesn't (gRPC 1.51.1)
-      // and instead introduced that Hold mechanism: https://github.com/grpc/grpc/pull/18072
-      // So the solution is to call AddHold() here and when the application thread
-      // proceeded the response, calling StartRead() and then RemoveHold()
-      // does the needed protection to ensure the underlying callback is still
-      // living.
+      // Hold the RPC until the application thread calls StartRead() again from GetResponse().
+      // See "Why OnReadDone holds before returning" in reactor_client.md for why this hold
+      // exists: https://github.com/grpc/grpc/pull/18072
       this->AddHold();
       return;
     }

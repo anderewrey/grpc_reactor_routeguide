@@ -5,7 +5,7 @@
 /// ActiveUnaryReactor Test Suite
 ///
 /// Tests the unary RPC reactor pattern using GetFeature RPC.
-/// Uses std::promise/future for synchronization (Option B pattern - no EventLoop).
+/// Uses std::promise/future for synchronization.
 ///
 /// The test fixture creates:
 /// - An in-process gRPC server with controllable GetFeature responses
