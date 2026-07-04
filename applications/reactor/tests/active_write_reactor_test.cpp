@@ -5,7 +5,7 @@
 /// ActiveWriteReactor Test Suite
 ///
 /// Tests the client-streaming (write) reactor pattern using RecordRoute RPC.
-/// Uses std::promise/future for synchronization (Option B pattern - no EventLoop).
+/// Uses std::promise/future for synchronization.
 ///
 /// The test fixture creates:
 /// - An in-process gRPC server with RecordRoute implementation using rg_utils

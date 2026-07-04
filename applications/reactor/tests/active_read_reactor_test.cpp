@@ -5,7 +5,7 @@
 /// ActiveReadReactor Test Suite
 ///
 /// Tests the server-side streaming (read) reactor pattern using ListFeatures RPC.
-/// Uses std::promise/future for synchronization (Option B pattern - no EventLoop).
+/// Uses std::promise/future for synchronization.
 ///
 /// The test fixture creates:
 /// - An in-process gRPC server with controllable ListFeatures responses

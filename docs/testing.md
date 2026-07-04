@@ -1,8 +1,8 @@
-# Testing Guide
+# Testing guide
 
 This document describes the test architecture, coverage, and how to run and extend the test suite.
 
-## Quick Start
+## Quick start
 
 ```bash
 # Run all tests
@@ -18,7 +18,7 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc -R "ListFeatures"
 ctest --test-dir cmake-build-vcpkg-debug-gcc --output-on-failure
 ```
 
-## Test Architecture
+## Test architecture
 
 The reactor client tests use two complementary approaches, matching the reactor type under test.
 
@@ -27,10 +27,10 @@ The reactor client tests use two complementary approaches, matching the reactor 
 Four test binaries validate reactor callback logic directly, one per reactor type, using
 `std::promise`/`std::future` for synchronization instead of an EventLoop:
 
-- [active_unary_reactor_test.cpp][unary-test] - `ActiveUnaryReactor` via `GetFeature`
-- [active_read_reactor_test.cpp][read-test] - `ActiveReadReactor` via `ListFeatures`
-- [active_write_reactor_test.cpp][write-test] - `ActiveWriteReactor` via `RecordRoute`
-- [active_bidi_reactor_test.cpp][bidi-test] - `ActiveBidiReactor` via `RouteChat`
+- [active_unary_reactor_test.cpp][unary-test]: `ActiveUnaryReactor` via `GetFeature`
+- [active_read_reactor_test.cpp][read-test]: `ActiveReadReactor` via `ListFeatures`
+- [active_write_reactor_test.cpp][write-test]: `ActiveWriteReactor` via `RecordRoute`
+- [active_bidi_reactor_test.cpp][bidi-test]: `ActiveBidiReactor` via `RouteChat`
 
 Each test file runs an in-process gRPC server with a fake `TestRouteGuideService` implementation
 configured per scenario, and completes a promise directly from the reactor's callbacks. This
@@ -41,10 +41,11 @@ a background dispatch thread.
 ### EventLoop integration test
 
 [client_reactor_integration_test.cpp][integration-test] validates the full production dispatch
-path: gRPC reactor callback → `EventLoop::TriggerEvent()` → application thread. It runs a real
-EventLoop in `NON_BLOCK` mode on a background thread and asserts that reactor callbacks execute
-off the main thread while `EventLoop` handlers execute the deferred processing, including the
-hold/resume pattern for streaming responses (`GetResponse()` called from an `EventLoop` handler).
+path: a gRPC reactor callback triggers `EventLoop::TriggerEvent()`, and the application thread
+executes the deferred handler. It runs a real EventLoop in `NON_BLOCK` mode on a background
+thread and asserts that reactor callbacks execute off the main thread while `EventLoop` handlers
+execute the deferred processing, including the hold/resume pattern for streaming responses
+(`GetResponse()` called from an `EventLoop` handler).
 
 ### When to use each approach
 
@@ -55,7 +56,7 @@ hold/resume pattern for streaming responses (`GetResponse()` called from an `Eve
 | Hold/resume pattern for streaming responses | Integration test |
 | New reactor type | Both: one synchronous unit test file plus one integration test |
 
-## Test Coverage
+## Test coverage
 
 ### Coverage by RPC type
 
@@ -69,7 +70,7 @@ See the file list above for which file covers which RPC type.
 | Bidirectional (`RouteChat`) | `ActiveBidiReactor` | Send/receive, interleaved, either side closes first, cancel |
 | EventLoop dispatch | N/A | `GetFeature`/`ListFeatures`/cancel dispatched through a real `EventLoop` |
 
-## Test Infrastructure
+## Test infrastructure
 
 ### Shared fixture
 
@@ -85,7 +86,7 @@ under test with configurable responses and error injection, so scenarios are det
 not depend on the real RouteGuide feature database. The server binds to `localhost:0` (dynamic
 port) to avoid conflicts between parallel test runs.
 
-## Adding New Tests
+## Adding new tests
 
 ### 1. Choose the test file
 

@@ -1,4 +1,4 @@
-# gRPC Reactor Callbacks, client-side implementation
+# gRPC reactor callbacks, client-side implementation
 
 Complete redesign of the [gRPC route_guide][grpc-route-guide] example.
 
@@ -24,7 +24,7 @@ For details about the compilers: [C++20 compiler support][cpp20-support]
 
 ### Build tools
 
-- C++ compiler (GCC 11 or above, or Clang)
+- C++ compiler with C++20 support (GCC or Clang)
 - CMake 3.25 or above
 - Ninja
 - Git
@@ -44,6 +44,11 @@ All dependencies are managed through [vcpkg][vcpkg] and declared in [vcpkg.json]
 
 See [developing.md](/docs/developing.md) for prerequisites, build, run, test, and lint instructions.
 For vcpkg setup and multi-compiler support, see [vcpkg-usage.md](/docs/vcpkg-usage.md).
+
+## Design rationale
+
+See [architecture.md](/docs/architecture.md) for why this project is built on the Active Object and Reactor
+patterns, the technology choices, and how to extend the reactor library.
 
 ## Implementation details about the client-side reactors
 

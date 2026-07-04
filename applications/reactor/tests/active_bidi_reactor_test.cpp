@@ -5,7 +5,7 @@
 /// ActiveBidiReactor Test Suite
 ///
 /// Tests the bidirectional streaming reactor pattern using RouteChat RPC.
-/// Uses std::promise/future for synchronization (Option B pattern - no EventLoop).
+/// Uses std::promise/future for synchronization.
 ///
 /// The test fixture creates:
 /// - An in-process gRPC server with RouteChat implementation
