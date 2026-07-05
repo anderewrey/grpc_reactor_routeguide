@@ -1,5 +1,7 @@
-# Étape 0 : preuve que le codegen protobuf/gRPC fonctionne avec les paquets
-# natifs Alpine (pas de vcpkg). Build depuis la racine du repo :
+# Outil de diagnostic isolé, non utilisé par la CI (voir docker/Dockerfile.alpine-dev
+# et .github/workflows/ci.yml pour le build complet). Utile pour vérifier rapidement
+# le codegen protobuf/gRPC seul si la CI échoue et que la cause n'est pas évidente.
+# Build depuis la racine du repo :
 #   docker build -f docker/Dockerfile.alpine-smoketest -t rg-smoke .
 #   docker run --rm rg-smoke
 
