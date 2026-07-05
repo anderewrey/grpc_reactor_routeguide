@@ -1,4 +1,4 @@
-name: CI (container: field exploration)
+name: "CI (container: field exploration)"
 
 on:
   push:
