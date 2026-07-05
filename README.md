@@ -1,5 +1,7 @@
 # gRPC reactor callbacks, client-side implementation
 
+[![CI](https://github.com/anderewrey/grpc_reactor_routeguide/actions/workflows/ci.yml/badge.svg)](https://github.com/anderewrey/grpc_reactor_routeguide/actions/workflows/ci.yml)
+
 Complete redesign of the [gRPC route_guide][grpc-route-guide] example.
 
 To learn more about:
@@ -46,8 +48,8 @@ See [developing.md](/docs/developing.md) for prerequisites, build, run, test, an
 For vcpkg setup and multi-compiler support, see [vcpkg-usage.md](/docs/vcpkg-usage.md).
 
 GitHub Actions CI builds and tests the project against Alpine's native gRPC and Protobuf packages instead of
-vcpkg. This is CI-only and doesn't change local development. See [ci.yml](/.github/workflows/ci.yml) and
-[Dockerfile.alpine-dev](/docker/Dockerfile.alpine-dev) for the recipe.
+vcpkg. This is CI-only and doesn't change local development. See [ci.yml](/.github/workflows/ci.yml) for the
+recipe.
 
 ## Design rationale
 

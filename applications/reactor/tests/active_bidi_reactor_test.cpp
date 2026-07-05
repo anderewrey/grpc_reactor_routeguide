@@ -519,7 +519,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ServerClosesFirst_ClientContinues) {
 /// - Start stream and send some notes
 /// - Call TryCancel() mid-stream
 /// - Verify OnDone fires with CANCELLED status
-TEST_F(ActiveBidiReactorTest, TryCancel_BidiStreaming_TriggersOnDone) {
+TEST_F(ActiveBidiReactorTest, RouteChat_TryCancel_TriggersOnDone) {
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
@@ -562,7 +562,7 @@ TEST_F(ActiveBidiReactorTest, TryCancel_BidiStreaming_TriggersOnDone) {
 /// - Set short deadline on context
 /// - Server takes time to respond
 /// - OnDone fires with DEADLINE_EXCEEDED status
-TEST_F(ActiveBidiReactorTest, ContextDeadline_BidiStreaming_PropagatesStatus) {
+TEST_F(ActiveBidiReactorTest, RouteChat_DeadlineExceeded_PropagatesStatus) {
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
@@ -610,7 +610,7 @@ TEST_F(ActiveBidiReactorTest, ContextDeadline_BidiStreaming_PropagatesStatus) {
 /// - Each exchanges different messages
 /// - Wait for all OnDone callbacks
 /// - Verify all complete successfully
-TEST_F(ActiveBidiReactorTest, MultipleConcurrentRouteChat_AllComplete) {
+TEST_F(ActiveBidiReactorTest, RouteChat_MultipleConcurrent_AllComplete) {
   const int kNumStreams = 3;
 
   std::vector<std::promise<RouteChatResult>> promises(kNumStreams);

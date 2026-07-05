@@ -135,7 +135,7 @@ class ClientReactorIntegrationTest : public RouteGuideTestFixtureBase<TestRouteG
 /// 4. Response data is correctly extracted via GetResponse()
 ///
 /// Thread assertions confirm callbacks do NOT run on the main thread.
-TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_ReturnsFeature) {
+TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop) {
   // Configure expected response
   routeguide::Feature expected_feature;
   expected_feature.set_name("Test Feature");
@@ -309,7 +309,7 @@ TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesTo
 /// - OK: Server response arrived before cancel signal took effect
 ///
 /// Thread assertions confirm the EventLoop dispatch path is exercised.
-TEST_F(ClientReactorIntegrationTest, TryCancel_UnaryRpc_DispatchesToEventLoop) {
+TEST_F(ClientReactorIntegrationTest, GetFeature_TryCancel_DispatchesToEventLoop) {
   routeguide::Feature feature;
   feature.set_name("Should not receive");
   test_service_.SetGetFeatureResponse(feature);

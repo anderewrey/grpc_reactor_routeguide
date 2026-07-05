@@ -33,19 +33,23 @@ Four test binaries validate reactor callback logic directly, one per reactor typ
 - [active_bidi_reactor_test.cpp][bidi-test]: `ActiveBidiReactor` via `RouteChat`
 
 Each test file runs an in-process gRPC server with a fake `TestRouteGuideService` implementation
-configured per scenario, and completes a promise directly from the reactor's callbacks. This
-approach has no EventLoop lifecycle to manage, so it is faster to write and exercises reactor
-callback logic, error paths, cancellation, and deadline handling without the added complexity of
-a background dispatch thread.
+configured per scenario. It completes a promise directly from the reactor's callbacks, so there
+is no EventLoop lifecycle to manage. This makes the approach faster to write. It still exercises
+reactor callback logic, error paths, cancellation, and deadline handling, without the added
+complexity of a background dispatch thread.
 
 ### EventLoop integration test
 
 [client_reactor_integration_test.cpp][integration-test] validates the full production dispatch
 path: a gRPC reactor callback triggers `EventLoop::TriggerEvent()`, and the application thread
 executes the deferred handler. It runs a real EventLoop in `NON_BLOCK` mode on a background
-thread and asserts that reactor callbacks execute off the main thread while `EventLoop` handlers
-execute the deferred processing, including the hold/resume pattern for streaming responses
-(`GetResponse()` called from an `EventLoop` handler).
+thread. It asserts that reactor callbacks execute off the main thread, while `EventLoop` handlers
+execute the deferred processing. This includes the hold/resume pattern for streaming responses,
+where `GetResponse()` is called from an `EventLoop` handler.
+
+Unlike the four unit test files, this single fixture accumulates one case per reactor type
+instead of splitting into one file per type. Every case exercises the same dispatch path and
+differs only in RPC shape.
 
 ### When to use each approach
 
@@ -70,12 +74,29 @@ See the file list above for which file covers which RPC type.
 | Bidirectional (`RouteChat`) | `ActiveBidiReactor` | Send/receive, interleaved, either side closes first, cancel |
 | EventLoop dispatch | N/A | `GetFeature`/`ListFeatures`/cancel dispatched through a real `EventLoop` |
 
+### Naming convention
+
+Test names have three underscore-separated segments: `RpcMethod_Scenario_Result`. The first and
+third segments identify something different in each suite, because each level exercises a
+different class.
+
+| Suite | Exercises | `RpcMethod` segment | `Result` segment |
+| ------- | ----------- | ---------------------- | ------------------- |
+| Unit (`Active*ReactorTest`) | The generic, shape-templated reactors in [reactor_client.h][reactor-client] | A vehicle RPC method. The file and fixture name already identify the shape under test. | The behavior asserted (`ReturnsFeature`, `TerminatesStream`, ...). Varies freely per test. |
+| Integration (`ClientReactorIntegrationTest`) | The concrete per-RPC specializations in [reactor_client_routeguide.h][reactor-client-routeguide] | The real identifier. One fixture mixes several RPC methods. | Always `DispatchesToEventLoop`. |
+
+The integration suite only verifies that dispatch happened. The RPC's business outcome is
+already covered by the unit suites.
+
+Example: the unit suite uses `GetFeature_ValidPoint_ReturnsFeature`. The integration suite uses
+`GetFeature_ValidPoint_DispatchesToEventLoop`.
+
 ## Test infrastructure
 
 ### Shared fixture
 
 [route_guide_test_fixture.h][test-fixture] provides `RouteGuideTestFixtureBase<ServiceT>`, a
-template test fixture that starts an in-process gRPC server on a dynamic port, and creates a
+template test fixture. It starts an in-process gRPC server on a dynamic port, and creates a
 channel and stub connected to it. `ServiceT` is the fake `routeguide::RouteGuide::CallbackService`
 implementation each test suite supplies, since each exercises a different RPC method.
 
@@ -94,6 +115,8 @@ Add the test to the file matching the reactor type under test. For a new reactor
 synchronous unit test file and a case in the EventLoop integration test.
 
 ### 2. Follow existing patterns
+
+Name the test per the [naming convention](#naming-convention) above.
 
 ```cpp
 TEST_F(ActiveUnaryReactorTest, NewTest_Scenario_ExpectedBehavior) {
@@ -119,7 +142,7 @@ TEST_F(ActiveUnaryReactorTest, NewTest_Scenario_ExpectedBehavior) {
 }
 ```
 
-Always set a timeout on futures (`wait_for(std::chrono::seconds(5))`); a reactor bug that never
+Always set a timeout on futures (`wait_for(std::chrono::seconds(5))`). A reactor bug that never
 completes the promise would otherwise hang the test indefinitely.
 
 ### 3. Extend the test service if needed
@@ -159,6 +182,8 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 ```
 
 <!-- Reference links -->
+[reactor-client]: /applications/reactor/reactor_client.h
+[reactor-client-routeguide]: /applications/reactor/reactor_client_routeguide.h
 [unary-test]: /applications/reactor/tests/active_unary_reactor_test.cpp
 [read-test]: /applications/reactor/tests/active_read_reactor_test.cpp
 [write-test]: /applications/reactor/tests/active_write_reactor_test.cpp

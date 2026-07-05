@@ -21,6 +21,14 @@ foreach(test_name IN LISTS REACTOR_TESTS)
             ${CMAKE_SOURCE_DIR}
     )
 
+    # Strip the absolute source path from __FILE__ so GoogleTest's JUnit XML
+    # (and any report built from it) shows a short relative path instead of
+    # wherever the repo happened to be checked out.
+    target_compile_options(${test_name}
+        PRIVATE
+            -fmacro-prefix-map=${CMAKE_SOURCE_DIR}/=
+    )
+
     target_link_libraries(${test_name}
         PRIVATE
             GTest::gtest
@@ -37,5 +45,7 @@ target_link_libraries(client_reactor_integration_test
 
 include(GoogleTest)
 foreach(test_name IN LISTS REACTOR_TESTS)
-    gtest_discover_tests(${test_name})
+    gtest_discover_tests(${test_name}
+        XML_OUTPUT_DIR ${CMAKE_BINARY_DIR}/test-results
+    )
 endforeach()

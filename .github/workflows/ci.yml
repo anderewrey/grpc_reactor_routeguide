@@ -2,13 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, anderewrey/client-stream-recordroute]
   pull_request:
-    branches: [master]
+    branches: [master, anderewrey/client-stream-recordroute]
   workflow_dispatch:
 
 permissions:
   contents: read
+  checks: write
+  pull-requests: write
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -17,10 +19,76 @@ concurrency:
 jobs:
   build-and-test:
     name: build-and-test (alpine)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.24
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          apk add --no-cache \
+            cmake ninja g++ git \
+            protobuf-dev \
+            grpc-dev \
+            abseil-cpp-dev \
+            c-ares-dev \
+            re2-dev \
+            openssl-dev \
+            zlib-dev \
+            spdlog-dev \
+            gflags-dev \
+            gtest-dev \
+            glaze
 
-      - name: Build and test (Alpine native packages, no vcpkg)
-        run: docker build -f docker/Dockerfile.alpine-dev -t rg-alpine-dev .
+      - uses: actions/checkout@v5
+
+      # EventLoop isn't packaged and has no install rules upstream, so add
+      # them (same pinned commit as the vcpkg overlay port) and install
+      # manually.
+      - name: Build and install EventLoop
+        run: |
+          git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop
+          cd /tmp/EventLoop
+          git checkout e16fa52aae1d58a994fd93808c62fde14adb62f1
+          cat >> CMakeLists.txt <<'EOF'
+
+          install(TARGETS ${PROJECT_NAME}
+              EXPORT EventLoopTargets
+              LIBRARY DESTINATION lib
+              ARCHIVE DESTINATION lib
+              RUNTIME DESTINATION bin
+              INCLUDES DESTINATION include
+          )
+          install(FILES ${INCLUDES}
+              DESTINATION include
+          )
+          install(EXPORT EventLoopTargets
+              FILE EventLoopConfig.cmake
+              NAMESPACE EventLoop::
+              DESTINATION lib/cmake/EventLoop
+          )
+          EOF
+          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          cmake --build build
+          cmake --install build
+          rm -rf /tmp/EventLoop
+
+      - name: Configure
+        run: cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Publish test report
+        if: always()
+        uses: mikepenz/action-junit-report@v6
+        with:
+          report_paths: build/test-results/*.xml
+          include_passed: true
+          detailed_summary: true
+          group_suite: false
+          include_time_in_summary: true
+          check_title_template: '{{SUITE_NAME}}.{{TEST_NAME}}'
