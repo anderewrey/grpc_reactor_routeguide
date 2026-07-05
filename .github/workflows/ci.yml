@@ -80,10 +80,7 @@ jobs:
         run: cmake --build build
 
       - name: Test
-        run: |
-          ctest --test-dir build --output-on-failure --output-junit build/ctest-junit.xml
-          echo "--- diagnostic: looking for the JUnit XML ---"
-          find . -name '*.xml' 2>/dev/null
+        run: ctest --test-dir build --output-on-failure --output-junit ctest-junit.xml
 
       - name: Publish test report
         if: always()
