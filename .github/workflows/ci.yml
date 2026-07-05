@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [anderewrey/client-stream-recordroute]
+    branches: [anderewrey/client-stream-recordroute, claude/github-test-compilation-05mlww]
   pull_request:
     branches: [anderewrey/client-stream-recordroute]
   workflow_dispatch:
@@ -91,3 +91,4 @@ jobs:
           detailed_summary: true
           group_suite: true
           include_time_in_summary: true
+          check_title_template: '{{TEST_NAME}}'
