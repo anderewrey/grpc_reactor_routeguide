@@ -76,17 +76,22 @@ See the file list above for which file covers which RPC type.
 
 ### Naming convention
 
-Test names have three underscore-separated segments. The first segment differs by suite, since
-the two suites verify different things:
+Test names have three underscore-separated segments: `RpcMethod_Scenario_Result` in both suites,
+e.g. `GetFeature_ValidPoint_ReturnsFeature`. What the first segment actually identifies differs
+by suite, because each level exercises a different class:
 
-- Unit suites (`Active*ReactorTest`): `RpcMethod_Scenario_Result`, e.g.
-  `GetFeature_ValidPoint_ReturnsFeature`. `Result` is the actual outcome being asserted, so it
-  varies freely per test.
-- Integration suite (`ClientReactorIntegrationTest`): `Shape_Scenario_DispatchesToEventLoop`,
-  e.g. `Unary_ValidPoint_DispatchesToEventLoop`. `Shape` is one of `Unary`/`Read`/`Write`/`Bidi`
-  (the RPC method itself is redundant here, since this fixture mixes multiple RPC methods in one
-  file). `Result` is always `DispatchesToEventLoop`: this suite only ever verifies that dispatch
-  happened, never the RPC's business outcome, which the unit suites already cover.
+- Unit suites (`Active*ReactorTest`) exercise the generic, shape-templated reactors in
+  [reactor_client.h][reactor-client] (`ActiveUnaryReactor<ResponseT>`, `ActiveReadReactor<ResponseT>`, ...). The
+  RPC method is just the vehicle used to instantiate the template - the suite/file split
+  (unary/read/write/bidi) already identifies the shape under test, so `Result` is the actual
+  behavior being asserted (`ReturnsFeature`, `TerminatesStream`, ...) and varies freely per test.
+- The integration suite (`ClientReactorIntegrationTest`) exercises the concrete, per-RPC
+  specializations in [reactor_client_routeguide.h][reactor-client-routeguide]
+  (`routeguide::GetFeature::ClientReactor`, `routeguide::ListFeatures::ClientReactor`, ...) end to
+  end, with a real `EventLoop` and real threads. This fixture mixes multiple RPC methods, so
+  `RpcMethod` is the real identifier here (not a substitutable vehicle), and `Result` is always
+  `DispatchesToEventLoop`: this suite only ever verifies that dispatch happened, never the RPC's
+  business outcome, which the unit suites already cover.
 
 ## Test infrastructure
 
@@ -179,6 +184,8 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 ```
 
 <!-- Reference links -->
+[reactor-client]: /applications/reactor/reactor_client.h
+[reactor-client-routeguide]: /applications/reactor/reactor_client_routeguide.h
 [unary-test]: /applications/reactor/tests/active_unary_reactor_test.cpp
 [read-test]: /applications/reactor/tests/active_read_reactor_test.cpp
 [write-test]: /applications/reactor/tests/active_write_reactor_test.cpp
