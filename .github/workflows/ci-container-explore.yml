@@ -10,7 +10,7 @@ permissions:
 jobs:
   build-and-test:
     name: build-and-test (alpine, container field)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     container:
       image: alpine:3.24
     timeout-minutes: 10
