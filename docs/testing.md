@@ -33,19 +33,19 @@ Four test binaries validate reactor callback logic directly, one per reactor typ
 - [active_bidi_reactor_test.cpp][bidi-test]: `ActiveBidiReactor` via `RouteChat`
 
 Each test file runs an in-process gRPC server with a fake `TestRouteGuideService` implementation
-configured per scenario, and completes a promise directly from the reactor's callbacks. This
-approach has no EventLoop lifecycle to manage, so it is faster to write and exercises reactor
-callback logic, error paths, cancellation, and deadline handling without the added complexity of
-a background dispatch thread.
+configured per scenario. It completes a promise directly from the reactor's callbacks, so there
+is no EventLoop lifecycle to manage. This makes the approach faster to write. It still exercises
+reactor callback logic, error paths, cancellation, and deadline handling, without the added
+complexity of a background dispatch thread.
 
 ### EventLoop integration test
 
 [client_reactor_integration_test.cpp][integration-test] validates the full production dispatch
 path: a gRPC reactor callback triggers `EventLoop::TriggerEvent()`, and the application thread
 executes the deferred handler. It runs a real EventLoop in `NON_BLOCK` mode on a background
-thread and asserts that reactor callbacks execute off the main thread while `EventLoop` handlers
-execute the deferred processing, including the hold/resume pattern for streaming responses
-(`GetResponse()` called from an `EventLoop` handler).
+thread. It asserts that reactor callbacks execute off the main thread, while `EventLoop` handlers
+execute the deferred processing. This includes the hold/resume pattern for streaming responses,
+where `GetResponse()` is called from an `EventLoop` handler.
 
 Unlike the four unit test files, this single fixture accumulates one case per reactor type
 instead of splitting into one file per type. Every case exercises the same dispatch path and
@@ -96,7 +96,7 @@ Example: the unit suite uses `GetFeature_ValidPoint_ReturnsFeature`. The integra
 ### Shared fixture
 
 [route_guide_test_fixture.h][test-fixture] provides `RouteGuideTestFixtureBase<ServiceT>`, a
-template test fixture that starts an in-process gRPC server on a dynamic port, and creates a
+template test fixture. It starts an in-process gRPC server on a dynamic port, and creates a
 channel and stub connected to it. `ServiceT` is the fake `routeguide::RouteGuide::CallbackService`
 implementation each test suite supplies, since each exercises a different RPC method.
 
@@ -142,7 +142,7 @@ TEST_F(ActiveUnaryReactorTest, NewTest_Scenario_ExpectedBehavior) {
 }
 ```
 
-Always set a timeout on futures (`wait_for(std::chrono::seconds(5))`); a reactor bug that never
+Always set a timeout on futures (`wait_for(std::chrono::seconds(5))`). A reactor bug that never
 completes the promise would otherwise hang the test indefinitely.
 
 ### 3. Extend the test service if needed
