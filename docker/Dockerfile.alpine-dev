@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
-# Build complet du projet avec les paquets Alpine natifs (pas de vcpkg).
-# Build depuis la racine du repo :
+# Full project build using Alpine's native packages (no vcpkg).
+# Build from the repo root:
 #   docker build -f docker/Dockerfile.alpine-dev -t rg-alpine-dev .
 #   docker run --rm rg-alpine-dev
 
@@ -20,10 +20,10 @@ RUN apk add --no-cache \
     gtest-dev \
     glaze
 
-# EventLoop n'est packagé nulle part. On reproduit ce que fait le port vcpkg
-# custom (même commit pinné, mêmes règles d'installation CMake ajoutées par
-# son patch) mais en ajoutant les règles directement plutôt que via `git apply`,
-# qui échoue avec une erreur de contexte trop stricte sur ce commit.
+# EventLoop isn't packaged anywhere. This reproduces what the custom vcpkg
+# port does (same pinned commit, same CMake install rules added by its patch)
+# but appends the rules directly instead of using `git apply`, which fails
+# with an overly strict context-match error on this commit.
 RUN <<'EOF'
 git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop
 cd /tmp/EventLoop
