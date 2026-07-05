@@ -80,18 +80,13 @@ jobs:
         run: cmake --build build
 
       - name: Test
-        run: |
-          ctest --test-dir build --output-on-failure --output-junit ctest-junit.xml
-          # CTest sets classname to the full "Suite.Test" name (same as name),
-          # so group_suite in the report step groups nothing. Trim classname
-          # down to the suite part so tests group correctly.
-          sed -i -E 's/classname="([A-Za-z_][A-Za-z0-9_]*)\.[^"]*"/classname="\1"/' build/ctest-junit.xml
+        run: ctest --test-dir build --output-on-failure
 
       - name: Publish test report
         if: always()
         uses: mikepenz/action-junit-report@v6
         with:
-          report_paths: build/ctest-junit.xml
+          report_paths: build/test-results/*.xml
           include_passed: true
           detailed_summary: true
           group_suite: true

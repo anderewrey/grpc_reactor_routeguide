@@ -37,5 +37,7 @@ target_link_libraries(client_reactor_integration_test
 
 include(GoogleTest)
 foreach(test_name IN LISTS REACTOR_TESTS)
-    gtest_discover_tests(${test_name})
+    gtest_discover_tests(${test_name}
+        XML_OUTPUT_DIR ${CMAKE_BINARY_DIR}/test-results
+    )
 endforeach()
