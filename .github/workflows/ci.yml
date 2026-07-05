@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [anderewrey/client-stream-recordroute]
   pull_request:
-    branches: [master]
+    branches: [anderewrey/client-stream-recordroute]
   workflow_dispatch:
 
 permissions:
