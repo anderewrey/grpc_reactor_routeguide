@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [anderewrey/client-stream-recordroute]
+    branches: [anderewrey/client-stream-recordroute, claude/github-test-compilation-05mlww]
   pull_request:
     branches: [anderewrey/client-stream-recordroute]
   workflow_dispatch:
@@ -80,7 +80,10 @@ jobs:
         run: cmake --build build
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure --output-junit ctest-junit.xml
+        run: |
+          ctest --test-dir build --output-on-failure --output-junit ctest-junit.xml
+          echo "--- diagnostic: raw JUnit XML ---"
+          cat build/ctest-junit.xml
 
       - name: Publish test report
         if: always()
