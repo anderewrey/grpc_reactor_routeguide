@@ -45,6 +45,10 @@ All dependencies are managed through [vcpkg][vcpkg] and declared in [vcpkg.json]
 See [developing.md](/docs/developing.md) for prerequisites, build, run, test, and lint instructions.
 For vcpkg setup and multi-compiler support, see [vcpkg-usage.md](/docs/vcpkg-usage.md).
 
+GitHub Actions CI builds and tests the project against Alpine's native gRPC and Protobuf packages instead of
+vcpkg. This is CI-only and doesn't change local development. See [ci.yml](/.github/workflows/ci.yml) and
+[Dockerfile.alpine-dev](/docker/Dockerfile.alpine-dev) for the recipe.
+
 ## Design rationale
 
 See [architecture.md](/docs/architecture.md) for why this project is built on the Active Object and Reactor
