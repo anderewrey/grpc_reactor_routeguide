@@ -48,8 +48,8 @@ execute the deferred processing, including the hold/resume pattern for streaming
 (`GetResponse()` called from an `EventLoop` handler).
 
 Unlike the four unit test files, this single fixture accumulates one case per reactor type
-instead of splitting into one file per type, since every case exercises the same dispatch path
-and differs only in RPC shape.
+instead of splitting into one file per type. Every case exercises the same dispatch path and
+differs only in RPC shape.
 
 ### When to use each approach
 
@@ -76,22 +76,20 @@ See the file list above for which file covers which RPC type.
 
 ### Naming convention
 
-Test names have three underscore-separated segments: `RpcMethod_Scenario_Result` in both suites,
-e.g. `GetFeature_ValidPoint_ReturnsFeature`. What the first segment actually identifies differs
-by suite, because each level exercises a different class:
+Test names have three underscore-separated segments: `RpcMethod_Scenario_Result`. The first and
+third segments identify something different in each suite, because each level exercises a
+different class.
 
-- Unit suites (`Active*ReactorTest`) exercise the generic, shape-templated reactors in
-  [reactor_client.h][reactor-client] (`ActiveUnaryReactor<ResponseT>`, `ActiveReadReactor<ResponseT>`, ...). The
-  RPC method is just the vehicle used to instantiate the template - the suite/file split
-  (unary/read/write/bidi) already identifies the shape under test, so `Result` is the actual
-  behavior being asserted (`ReturnsFeature`, `TerminatesStream`, ...) and varies freely per test.
-- The integration suite (`ClientReactorIntegrationTest`) exercises the concrete, per-RPC
-  specializations in [reactor_client_routeguide.h][reactor-client-routeguide]
-  (`routeguide::GetFeature::ClientReactor`, `routeguide::ListFeatures::ClientReactor`, ...) end to
-  end, with a real `EventLoop` and real threads. This fixture mixes multiple RPC methods, so
-  `RpcMethod` is the real identifier here (not a substitutable vehicle), and `Result` is always
-  `DispatchesToEventLoop`: this suite only ever verifies that dispatch happened, never the RPC's
-  business outcome, which the unit suites already cover.
+| Suite | Exercises | `RpcMethod` segment | `Result` segment |
+| ------- | ----------- | ---------------------- | ------------------- |
+| Unit (`Active*ReactorTest`) | The generic, shape-templated reactors in [reactor_client.h][reactor-client] | A vehicle RPC method. The file and fixture name already identify the shape under test. | The behavior asserted (`ReturnsFeature`, `TerminatesStream`, ...). Varies freely per test. |
+| Integration (`ClientReactorIntegrationTest`) | The concrete per-RPC specializations in [reactor_client_routeguide.h][reactor-client-routeguide] | The real identifier. One fixture mixes several RPC methods. | Always `DispatchesToEventLoop`. |
+
+The integration suite only verifies that dispatch happened. The RPC's business outcome is
+already covered by the unit suites.
+
+Example: the unit suite uses `GetFeature_ValidPoint_ReturnsFeature`. The integration suite uses
+`GetFeature_ValidPoint_DispatchesToEventLoop`.
 
 ## Test infrastructure
 
