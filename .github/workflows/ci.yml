@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [anderewrey/client-stream-recordroute, claude/github-test-compilation-05mlww]
+    branches: [anderewrey/client-stream-recordroute]
   pull_request:
     branches: [anderewrey/client-stream-recordroute]
   workflow_dispatch:
