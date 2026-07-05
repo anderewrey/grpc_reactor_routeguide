@@ -1,0 +1,22 @@
+name: Alpine gRPC/Protobuf smoke test
+
+on:
+  push:
+    branches: [claude/github-test-compilation-05mlww]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build smoke test image
+        run: docker build -f docker/Dockerfile.alpine-smoketest -t rg-smoke .
+
+      - name: Run smoke test
+        run: docker run --rm rg-smoke
