@@ -47,6 +47,10 @@ thread and asserts that reactor callbacks execute off the main thread while `Eve
 execute the deferred processing, including the hold/resume pattern for streaming responses
 (`GetResponse()` called from an `EventLoop` handler).
 
+Unlike the four unit test files, this single fixture accumulates one case per reactor type
+instead of splitting into one file per type, since every case exercises the same dispatch path
+and differs only in RPC shape.
+
 ### When to use each approach
 
 | Scenario | Approach |
@@ -69,6 +73,20 @@ See the file list above for which file covers which RPC type.
 | Client stream (`RecordRoute`) | `ActiveWriteReactor` | Multiple/empty point, overlapping writes, cancel, error |
 | Bidirectional (`RouteChat`) | `ActiveBidiReactor` | Send/receive, interleaved, either side closes first, cancel |
 | EventLoop dispatch | N/A | `GetFeature`/`ListFeatures`/cancel dispatched through a real `EventLoop` |
+
+### Naming convention
+
+Test names have three underscore-separated segments. The first segment differs by suite, since
+the two suites verify different things:
+
+- Unit suites (`Active*ReactorTest`): `RpcMethod_Scenario_Result`, e.g.
+  `GetFeature_ValidPoint_ReturnsFeature`. `Result` is the actual outcome being asserted, so it
+  varies freely per test.
+- Integration suite (`ClientReactorIntegrationTest`): `Shape_Scenario_DispatchesToEventLoop`,
+  e.g. `Unary_ValidPoint_DispatchesToEventLoop`. `Shape` is one of `Unary`/`Read`/`Write`/`Bidi`
+  (the RPC method itself is redundant here, since this fixture mixes multiple RPC methods in one
+  file). `Result` is always `DispatchesToEventLoop`: this suite only ever verifies that dispatch
+  happened, never the RPC's business outcome, which the unit suites already cover.
 
 ## Test infrastructure
 
@@ -94,6 +112,8 @@ Add the test to the file matching the reactor type under test. For a new reactor
 synchronous unit test file and a case in the EventLoop integration test.
 
 ### 2. Follow existing patterns
+
+Name the test per the [naming convention](#naming-convention) above.
 
 ```cpp
 TEST_F(ActiveUnaryReactorTest, NewTest_Scenario_ExpectedBehavior) {

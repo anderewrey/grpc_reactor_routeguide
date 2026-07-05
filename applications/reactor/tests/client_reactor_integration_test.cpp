@@ -135,7 +135,7 @@ class ClientReactorIntegrationTest : public RouteGuideTestFixtureBase<TestRouteG
 /// 4. Response data is correctly extracted via GetResponse()
 ///
 /// Thread assertions confirm callbacks do NOT run on the main thread.
-TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_ReturnsFeature) {
+TEST_F(ClientReactorIntegrationTest, Unary_ValidPoint_DispatchesToEventLoop) {
   // Configure expected response
   routeguide::Feature expected_feature;
   expected_feature.set_name("Test Feature");
@@ -215,7 +215,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_ReturnsFeature) {
 /// - All streamed responses are received and dispatched correctly
 /// - Thread assertions confirm gRPC → EventLoop thread transition
 /// - Response data integrity across thread boundaries
-TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesToEventLoop) {
+TEST_F(ClientReactorIntegrationTest, Read_MultipleResponses_DispatchesToEventLoop) {
   // Configure server to return multiple features
   std::vector<routeguide::Feature> expected_features;
   for (int i = 0; i < 3; ++i) {
@@ -309,7 +309,7 @@ TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesTo
 /// - OK: Server response arrived before cancel signal took effect
 ///
 /// Thread assertions confirm the EventLoop dispatch path is exercised.
-TEST_F(ClientReactorIntegrationTest, TryCancel_UnaryRpc_DispatchesToEventLoop) {
+TEST_F(ClientReactorIntegrationTest, Unary_TryCancel_DispatchesToEventLoop) {
   routeguide::Feature feature;
   feature.set_name("Should not receive");
   test_service_.SetGetFeatureResponse(feature);
