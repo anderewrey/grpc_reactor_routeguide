@@ -1,0 +1,39 @@
+# Build complet du projet avec les paquets Alpine natifs (pas de vcpkg).
+# Build depuis la racine du repo :
+#   docker build -f docker/Dockerfile.alpine-dev -t rg-alpine-dev .
+#   docker run --rm rg-alpine-dev
+
+FROM alpine:3.24
+
+RUN apk add --no-cache \
+    cmake ninja g++ git patch \
+    protobuf-dev \
+    grpc-dev \
+    abseil-cpp-dev \
+    c-ares-dev \
+    re2-dev \
+    openssl-dev \
+    zlib-dev \
+    spdlog-dev \
+    gflags-dev \
+    gtest-dev \
+    glaze
+
+# EventLoop n'est packagé nulle part. On reproduit exactement la recette du port
+# vcpkg custom : même commit pinné, même patch d'installation CMake.
+COPY vcpkg/ports/eventloop/add-install-rules.patch /tmp/eventloop.patch
+RUN git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop \
+    && cd /tmp/EventLoop \
+    && git checkout e16fa52aae1d58a994fd93808c62fde14adb62f1 \
+    && git apply /tmp/eventloop.patch \
+    && cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build \
+    && cmake --install build \
+    && rm -rf /tmp/EventLoop /tmp/eventloop.patch
+
+WORKDIR /src
+COPY . .
+
+RUN cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug \
+    && cmake --build build \
+    && ctest --test-dir build --output-on-failure

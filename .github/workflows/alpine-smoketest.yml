@@ -20,3 +20,12 @@ jobs:
 
       - name: Run smoke test
         run: docker run --rm rg-smoke
+
+  full-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build full project image (build + ctest run during docker build)
+        run: docker build -f docker/Dockerfile.alpine-dev -t rg-alpine-dev .
