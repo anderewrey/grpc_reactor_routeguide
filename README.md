@@ -1,5 +1,7 @@
 # gRPC reactor callbacks, client-side implementation
 
+[![CI](https://github.com/anderewrey/grpc_reactor_routeguide/actions/workflows/ci.yml/badge.svg)](https://github.com/anderewrey/grpc_reactor_routeguide/actions/workflows/ci.yml)
+
 Complete redesign of the [gRPC route_guide][grpc-route-guide] example.
 
 To learn more about:

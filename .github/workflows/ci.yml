@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: read
+  checks: write
+  pull-requests: write
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -78,4 +80,10 @@ jobs:
         run: cmake --build build
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --output-junit build/ctest-junit.xml
+
+      - name: Publish test report
+        if: always()
+        uses: mikepenz/action-junit-report@v6
+        with:
+          report_paths: build/ctest-junit.xml
