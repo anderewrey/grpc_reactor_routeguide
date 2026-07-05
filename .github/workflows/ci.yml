@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master, claude/github-test-compilation-05mlww]
+    branches: [master]
   pull_request:
     branches: [master]
   workflow_dispatch:
