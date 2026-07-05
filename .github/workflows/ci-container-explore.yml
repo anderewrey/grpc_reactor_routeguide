@@ -1,0 +1,71 @@
+name: CI (container: field exploration)
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: build-and-test (alpine, container field)
+    runs-on: ubuntu-24.04
+    container:
+      image: alpine:3.24
+    timeout-minutes: 10
+    steps:
+      - name: Install build dependencies
+        run: |
+          apk add --no-cache \
+            cmake ninja g++ git \
+            protobuf-dev \
+            grpc-dev \
+            abseil-cpp-dev \
+            c-ares-dev \
+            re2-dev \
+            openssl-dev \
+            zlib-dev \
+            spdlog-dev \
+            gflags-dev \
+            gtest-dev \
+            glaze
+
+      - uses: actions/checkout@v4
+
+      - name: Build and install EventLoop
+        run: |
+          git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop
+          cd /tmp/EventLoop
+          git checkout e16fa52aae1d58a994fd93808c62fde14adb62f1
+          cat >> CMakeLists.txt <<'EOF'
+
+          install(TARGETS ${PROJECT_NAME}
+              EXPORT EventLoopTargets
+              LIBRARY DESTINATION lib
+              ARCHIVE DESTINATION lib
+              RUNTIME DESTINATION bin
+              INCLUDES DESTINATION include
+          )
+          install(FILES ${INCLUDES}
+              DESTINATION include
+          )
+          install(EXPORT EventLoopTargets
+              FILE EventLoopConfig.cmake
+              NAMESPACE EventLoop::
+              DESTINATION lib/cmake/EventLoop
+          )
+          EOF
+          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          cmake --build build
+          cmake --install build
+          rm -rf /tmp/EventLoop
+
+      - name: Configure
+        run: cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
