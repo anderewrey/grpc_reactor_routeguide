@@ -20,10 +20,8 @@ RUN apk add --no-cache \
     gtest-dev \
     glaze
 
-# EventLoop isn't packaged anywhere. This reproduces what the custom vcpkg
-# port does (same pinned commit, same CMake install rules added by its patch)
-# but appends the rules directly instead of using `git apply`, which fails
-# with an overly strict context-match error on this commit.
+# EventLoop isn't packaged and has no install rules upstream, so add them
+# (same pinned commit as the vcpkg overlay port) and install manually.
 RUN <<'EOF'
 git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop
 cd /tmp/EventLoop
