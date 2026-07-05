@@ -40,7 +40,7 @@ jobs:
             gtest-dev \
             glaze
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # EventLoop isn't packaged and has no install rules upstream, so add
       # them (same pinned commit as the vcpkg overlay port) and install
