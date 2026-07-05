@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Build complet du projet avec les paquets Alpine natifs (pas de vcpkg).
 # Build depuis la racine du repo :
 #   docker build -f docker/Dockerfile.alpine-dev -t rg-alpine-dev .
@@ -6,7 +7,7 @@
 FROM alpine:3.24
 
 RUN apk add --no-cache \
-    cmake ninja g++ git patch \
+    cmake ninja g++ git \
     protobuf-dev \
     grpc-dev \
     abseil-cpp-dev \
@@ -19,17 +20,42 @@ RUN apk add --no-cache \
     gtest-dev \
     glaze
 
-# EventLoop n'est packagé nulle part. On reproduit exactement la recette du port
-# vcpkg custom : même commit pinné, même patch d'installation CMake.
-COPY vcpkg/ports/eventloop/add-install-rules.patch /tmp/eventloop.patch
-RUN git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop \
-    && cd /tmp/EventLoop \
-    && git checkout e16fa52aae1d58a994fd93808c62fde14adb62f1 \
-    && git apply /tmp/eventloop.patch \
-    && cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build build \
-    && cmake --install build \
-    && rm -rf /tmp/EventLoop /tmp/eventloop.patch
+# EventLoop n'est packagé nulle part. On reproduit ce que fait le port vcpkg
+# custom (même commit pinné, mêmes règles d'installation CMake ajoutées par
+# son patch) mais en ajoutant les règles directement plutôt que via `git apply`,
+# qui échoue avec une erreur de contexte trop stricte sur ce commit.
+RUN <<'EOF'
+git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop
+cd /tmp/EventLoop
+git checkout e16fa52aae1d58a994fd93808c62fde14adb62f1
+cat >> CMakeLists.txt <<'CMAKE_EOF'
+
+# Install library
+install(TARGETS ${PROJECT_NAME}
+    EXPORT EventLoopTargets
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+    RUNTIME DESTINATION bin
+    INCLUDES DESTINATION include
+)
+
+# Install headers
+install(FILES ${INCLUDES}
+    DESTINATION include
+)
+
+# Install CMake config files
+install(EXPORT EventLoopTargets
+    FILE EventLoopConfig.cmake
+    NAMESPACE EventLoop::
+    DESTINATION lib/cmake/EventLoop
+)
+CMAKE_EOF
+cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+cmake --install build
+rm -rf /tmp/EventLoop
+EOF
 
 WORKDIR /src
 COPY . .
