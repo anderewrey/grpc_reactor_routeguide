@@ -1,0 +1,26 @@
+# Étape 0 : preuve que le codegen protobuf/gRPC fonctionne avec les paquets
+# natifs Alpine (pas de vcpkg). Build depuis la racine du repo :
+#   docker build -f docker/Dockerfile.alpine-smoketest -t rg-smoke .
+#   docker run --rm rg-smoke
+
+FROM alpine:3.24
+
+RUN apk add --no-cache \
+    cmake ninja g++ \
+    protobuf-dev \
+    grpc-dev \
+    abseil-cpp-dev \
+    c-ares-dev \
+    re2-dev \
+    openssl-dev \
+    zlib-dev
+
+RUN protoc --version && which grpc_cpp_plugin
+
+WORKDIR /smoke
+COPY cmake/FindGrpcPlugin.cmake cmake/ProtobufGrpcGenerate.cmake cmake/
+COPY docker/smoke-test/ .
+
+RUN cmake -S . -B build -GNinja && cmake --build build
+
+CMD ["./build/smoke_test"]
