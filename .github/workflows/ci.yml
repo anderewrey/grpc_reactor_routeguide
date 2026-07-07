@@ -28,6 +28,7 @@ jobs:
         run: |
           apk add --no-cache \
             cmake ninja g++ git \
+            nodejs \
             protobuf-dev \
             grpc-dev \
             abseil-cpp-dev \
@@ -88,7 +89,82 @@ jobs:
         with:
           report_paths: build/test-results/*.xml
           include_passed: true
-          detailed_summary: true
+          job_summary: false
           group_suite: false
           include_time_in_summary: true
           check_title_template: '{{SUITE_NAME}}.{{TEST_NAME}}'
+
+      # GoogleTest writes one small JUnit XML file per TEST_F case (not one per binary), each with
+      # a single self-closing <testcase/> when it passed, or a <testcase>...<failure/></testcase>
+      # block when it failed. This groups them by <testsuite name> (the GoogleTest fixture) into
+      # collapsible <details> sections on the check run.
+      - name: Attach detailed results to the check run
+        if: always()
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const dir = 'build/test-results';
+            const files = fs.readdirSync(dir).filter(f => f.endsWith('.xml'));
+
+            const escape = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const suites = new Map(); // suite name -> test entries
+
+            for (const file of files) {
+              const xml = fs.readFileSync(path.join(dir, file), 'utf8');
+              const re = /<testcase\b([^>]*?)(\/>|>([\s\S]*?)<\/testcase>)/g;
+              let m;
+              while ((m = re.exec(xml)) !== null) {
+                const attrs = Object.fromEntries(
+                  [...m[1].matchAll(/(\w+)="([^"]*)"/g)].map(a => [a[1], a[2]])
+                );
+                const body = m[3] || '';
+                const status = body.includes('<failure') ? 'failed'
+                             : attrs.status === 'notrun' ? 'skipped'
+                             : 'passed';
+                const suite = attrs.classname || 'Unknown';
+                if (!suites.has(suite)) suites.set(suite, []);
+                suites.get(suite).push({
+                  name: attrs.name,
+                  status,
+                  timeMs: Math.round(parseFloat(attrs.time || '0') * 1000),
+                });
+              }
+            }
+
+            const icon = { passed: '✅', failed: '❌', skipped: '⏭️' };
+            let summary = '';
+            for (const suite of [...suites.keys()].sort()) {
+              const tests = suites.get(suite);
+              const failed = tests.filter(t => t.status === 'failed').length;
+              const skipped = tests.filter(t => t.status === 'skipped').length;
+              const totalMs = tests.reduce((sum, t) => sum + t.timeMs, 0);
+              summary += `<details${failed ? ' open' : ''}>\n`;
+              summary += `<summary>${escape(suite)} (${tests.length} tests, ${failed} failed, `
+                       + `${skipped} skipped, ${totalMs}ms)</summary>\n\n`;
+              summary += '| Test | Result | Time |\n| --- | --- | --- |\n';
+              for (const t of tests) {
+                summary += `| ${escape(t.name)} | ${icon[t.status]} ${t.status} | ${t.timeMs}ms |\n`;
+              }
+              summary += '\n</details>\n\n';
+            }
+
+            const { data } = await github.rest.checks.listForRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.sha,
+            });
+            const check = data.check_runs.find(c => c.name === 'JUnit Test Report');
+            if (check) {
+              await github.rest.checks.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                check_run_id: check.id,
+                output: {
+                  title: check.output.title,
+                  summary,
+                },
+              });
+            }
