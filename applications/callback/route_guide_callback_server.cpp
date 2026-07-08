@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <thread>
@@ -183,13 +184,8 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
             logger_.info("EXIT     | StartWriteAndFinish()");
             return;
           }
-          // Unlike the other example in this directory that's not using
-          // the reactor pattern, we can't grab a local lock to secure the
-          // access to the notes vector, because the reactor will most likely
-          // make us jump threads, so we'll have to use a different locking
-          // strategy. We'll grab the lock locally to build a copy of the
-          // list of nodes we're going to send, then we'll grab the lock
-          // again to append the received note to the existing vector.
+          // Unlike the non-reactor examples, locks twice instead of once around the whole exchange.
+          // See "Comparison with direct callbacks" in reactor_client.md for why.
           mu_.lock();
           logger_.info("REQUEST  | RouteNote: {}", protobuf_utils::ToString(note_));
           std::ranges::copy_if(received_notes_, std::back_inserter(to_send_notes_),

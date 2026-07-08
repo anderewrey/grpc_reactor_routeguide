@@ -1,0 +1,177 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: build-and-test (alpine)
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.24
+    timeout-minutes: 10
+    steps:
+      - name: Install build dependencies
+        run: |
+          apk add --no-cache \
+            cmake ninja g++ git \
+            nodejs \
+            protobuf-dev \
+            grpc-dev \
+            abseil-cpp-dev \
+            c-ares-dev \
+            re2-dev \
+            openssl-dev \
+            zlib-dev \
+            spdlog-dev \
+            gflags-dev \
+            gtest-dev \
+            glaze
+
+      - uses: actions/checkout@v5
+
+      # EventLoop isn't packaged and has no install rules upstream, so add
+      # them (same pinned commit as the vcpkg overlay port) and install
+      # manually.
+      - name: Build and install EventLoop
+        run: |
+          git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop
+          cd /tmp/EventLoop
+          git checkout e16fa52aae1d58a994fd93808c62fde14adb62f1
+          cat >> CMakeLists.txt <<'EOF'
+
+          install(TARGETS ${PROJECT_NAME}
+              EXPORT EventLoopTargets
+              LIBRARY DESTINATION lib
+              ARCHIVE DESTINATION lib
+              RUNTIME DESTINATION bin
+              INCLUDES DESTINATION include
+          )
+          install(FILES ${INCLUDES}
+              DESTINATION include
+          )
+          install(EXPORT EventLoopTargets
+              FILE EventLoopConfig.cmake
+              NAMESPACE EventLoop::
+              DESTINATION lib/cmake/EventLoop
+          )
+          EOF
+          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          cmake --build build
+          cmake --install build
+          rm -rf /tmp/EventLoop
+
+      - name: Configure
+        run: cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Publish test report
+        if: always()
+        uses: mikepenz/action-junit-report@v6
+        with:
+          report_paths: build/test-results/*.xml
+          include_passed: true
+          job_summary: false
+          group_suite: false
+          include_time_in_summary: true
+          check_title_template: '{{SUITE_NAME}}.{{TEST_NAME}}'
+
+      # GoogleTest writes one small JUnit XML file per TEST_F case (not one per binary), each with
+      # a single self-closing <testcase/> when it passed, or a <testcase>...<failure/></testcase>
+      # block when it failed. This groups them by <testsuite name> (the GoogleTest fixture) into
+      # collapsible <details> sections on the check run.
+      - name: Attach detailed results to the check run
+        if: always()
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const dir = 'build/test-results';
+            const files = fs.readdirSync(dir).filter(f => f.endsWith('.xml'));
+
+            const escape = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const suites = new Map(); // suite name -> test entries
+
+            for (const file of files) {
+              const xml = fs.readFileSync(path.join(dir, file), 'utf8');
+              const re = /<testcase\b([^>]*?)(\/>|>([\s\S]*?)<\/testcase>)/g;
+              let m;
+              while ((m = re.exec(xml)) !== null) {
+                const attrs = Object.fromEntries(
+                  [...m[1].matchAll(/(\w+)="([^"]*)"/g)].map(a => [a[1], a[2]])
+                );
+                const body = m[3] || '';
+                const status = body.includes('<failure') ? 'failed'
+                             : attrs.status === 'notrun' ? 'skipped'
+                             : 'passed';
+                const suite = attrs.classname || 'Unknown';
+                if (!suites.has(suite)) suites.set(suite, []);
+                suites.get(suite).push({
+                  name: attrs.name,
+                  status,
+                  timeMs: Math.round(parseFloat(attrs.time || '0') * 1000),
+                });
+              }
+            }
+
+            const icon = { passed: '✅', failed: '❌', skipped: '⏭️' };
+            let summary = '';
+            for (const suite of [...suites.keys()].sort()) {
+              const tests = suites.get(suite);
+              const failed = tests.filter(t => t.status === 'failed').length;
+              const skipped = tests.filter(t => t.status === 'skipped').length;
+              const totalMs = tests.reduce((sum, t) => sum + t.timeMs, 0);
+              summary += `<details${failed ? ' open' : ''}>\n`;
+              summary += `<summary>${escape(suite)} (${tests.length} tests, ${failed} failed, `
+                       + `${skipped} skipped, ${totalMs}ms)</summary>\n\n`;
+              summary += '| Test | Result | Time |\n| --- | --- | --- |\n';
+              for (const t of tests) {
+                summary += `| ${escape(t.name)} | ${icon[t.status]} ${t.status} | ${t.timeMs}ms |\n`;
+              }
+              summary += '\n</details>\n\n';
+            }
+
+            // context.sha is the ephemeral merge commit GitHub synthesizes for a pull_request
+            // event, not the PR's real head commit - mikepenz/action-junit-report attaches its
+            // check to the head commit instead, so looking it up by context.sha here would find
+            // nothing and silently skip the update.
+            const sha = context.eventName === 'pull_request'
+              ? context.payload.pull_request.head.sha
+              : context.sha;
+            const { data } = await github.rest.checks.listForRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: sha,
+            });
+            const check = data.check_runs.find(c => c.name === 'JUnit Test Report');
+            if (check) {
+              await github.rest.checks.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                check_run_id: check.id,
+                output: {
+                  title: check.output.title,
+                  summary,
+                },
+              });
+            }

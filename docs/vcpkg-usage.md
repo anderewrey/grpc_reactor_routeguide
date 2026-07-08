@@ -1,4 +1,4 @@
-# vcpkg Integration Guide
+# vcpkg integration guide
 
 This document describes the vcpkg-based dependency management system for the gRPC Reactor RouteGuide project.
 
@@ -6,12 +6,12 @@ This document describes the vcpkg-based dependency management system for the gRP
 
 The project uses vcpkg to manage gRPC, Protobuf, and Abseil dependencies with the following goals:
 
-- Multi-compiler support (GCC 11, GCC 13, Clang 19)
+- Multi-compiler support (GCC 11, GCC 13, Clang)
 - Release-only dependency builds for optimal performance
 - Linux ABI compatibility for mixing Debug application builds with Release libraries
 - Custom optimization flags and build configurations
 
-## Project Structure
+## Project structure
 
 ```text
 grpc_reactor_routeguide/
@@ -20,10 +20,10 @@ grpc_reactor_routeguide/
 ├── CMakePresets.json               # CLion/CMake presets for easy configuration
 ├── vcpkg/
 │   ├── triplets/                   # Custom compiler-specific triplets
-│   │   ├── x64-linux-gcc-release.cmake     # System GCC (11.5.0 on AlmaLinux 9)
+│   │   ├── x64-linux-gcc-release.cmake     # Distribution's default GCC
 │   │   ├── x64-linux-gcc11-release.cmake   # GCC 11 (requires gcc-11 binary)
 │   │   ├── x64-linux-gcc13-release.cmake   # GCC 13 from Red Hat toolset
-│   │   └── x64-linux-clang19-release.cmake # Clang 19
+│   │   └── x64-linux-clang-release.cmake  # Distribution's default Clang
 │   ├── toolchains/
 │   │   └── ccache-toolchain.cmake  # ccache integration
 │   └── ports/
@@ -33,13 +33,13 @@ grpc_reactor_routeguide/
 └── vcpkg_installed/                # Generated: installed packages (gitignored)
 ```
 
-## Verified Multi-Compiler Support
+## Verified multi-compiler support
 
 This project has been successfully tested with:
 
-- **Clang 19.1.7** (AlmaLinux 9 system package)
-- **GCC 11.5.0** (AlmaLinux 9 default)
-- **GCC 13.3.1** (Red Hat toolset)
+- **GCC 11** (distribution default, via `x64-linux-gcc11-release`)
+- **GCC 13** (Red Hat toolset, via `x64-linux-gcc13-release`)
+- **Clang** (via `x64-linux-clang-release`, unversioned)
 
 All combinations successfully:
 
@@ -48,74 +48,32 @@ All combinations successfully:
 - Link executables without undefined reference errors
 - Produce working binaries (7-8 MB Debug builds)
 
-## Quick Start
+## Quick start
 
 ### Prerequisites
 
 1. vcpkg installed on your system (set `VCPKG_ROOT` environment variable to your vcpkg installation)
-2. Compilers: GCC 11, GCC 13, or Clang 19
+2. Compilers: GCC 11, GCC 13, or Clang
 3. System packages: OpenSSL, zlib (for vcpkg builds)
 4. ccache (optional but recommended for faster rebuilds)
 5. Ninja build system (optional, recommended for parallel builds)
 
-### Install Dependencies
+### Install dependencies
 
 ```bash
-# Install gRPC and dependencies for Clang 19
-vcpkg install --triplet=x64-linux-clang19-release
-
-# Or for GCC 11
+# Install gRPC and dependencies for GCC 11
 vcpkg install --triplet=x64-linux-gcc11-release
 
 # Or for GCC 13
 vcpkg install --triplet=x64-linux-gcc13-release
+
+# Or for Clang
+vcpkg install --triplet=x64-linux-clang-release
 ```
 
 This installs to `vcpkg_installed/` in the project root (gitignored).
 
-### Build Application
-
-#### Clang 19 (Recommended)
-
-```bash
-# Configure with Clang 19 + ccache (Debug build with Release libraries)
-cmake -B cmake-build-vcpkg-debug-clang \
-  -GNinja \
-  -DCMAKE_BUILD_TYPE=Debug \
-  -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-  -DCMAKE_C_COMPILER=clang \
-  -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-  -DCMAKE_CXX_COMPILER=clang++ \
-  -DCMAKE_CXX_STANDARD=20 \
-  -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
-  -DVCPKG_TARGET_TRIPLET=x64-linux-clang19-release \
-  -DVCPKG_OVERLAY_TRIPLETS=./vcpkg/triplets \
-  -DVCPKG_OVERLAY_PORTS=./vcpkg/ports
-
-# Build (all 37 targets)
-cmake --build cmake-build-vcpkg-debug-clang
-```
-
-**Explanation of flags:**
-
-- `-GNinja`: Use Ninja generator for faster parallel builds
-- `-DCMAKE_BUILD_TYPE=Debug`: Build application in Debug mode (enables debugging symbols, no optimization)
-- `-DCMAKE_C_COMPILER_LAUNCHER=ccache`: Use ccache to cache C compilation results (speeds up rebuilds)
-- `-DCMAKE_C_COMPILER=clang`: Use Clang as the C compiler
-- `-DCMAKE_CXX_COMPILER_LAUNCHER=ccache`: Use ccache to cache C++ compilation results
-- `-DCMAKE_CXX_COMPILER=clang++`: Use Clang++ as the C++ compiler
-- `-DCMAKE_CXX_STANDARD=20`: Use C++20 standard
-- `-DCMAKE_TOOLCHAIN_FILE=...`: Path to vcpkg's CMake toolchain file (enables vcpkg integration)
-- `-DVCPKG_TARGET_TRIPLET=x64-linux-clang19-release`: Use Clang 19-compiled Release libraries
-- `-DVCPKG_OVERLAY_TRIPLETS=./vcpkg/triplets`: Path to custom triplet definitions
-- `-DVCPKG_OVERLAY_PORTS=./vcpkg/ports`: Path to custom port overlays (for gRPC submodule support)
-
-**Why this works:**
-
-- Linux ABI compatibility allows mixing Debug application with Release libraries
-- Application gets full debug info for development
-- Dependencies (gRPC/Protobuf/Abseil) are optimized with `-O3 -march=native -mtune=native`
-- ccache dramatically speeds up rebuilds (especially useful during development)
+### Build application
 
 #### GCC 11
 
@@ -138,8 +96,15 @@ cmake -B cmake-build-vcpkg-debug-gcc \
 cmake --build cmake-build-vcpkg-debug-gcc
 ```
 
-**Note:** The `x64-linux-gcc-release` triplet uses the system default GCC (version 11.5.0 on AlmaLinux 9).
-Replace `gcc`/`g++` with `gcc-11`/`g++-11` if you have version-specific compiler binaries installed.
+**Note:** The `x64-linux-gcc-release` triplet uses your distribution's default GCC. Replace `gcc`/`g++` with
+`gcc-11`/`g++-11` if you have version-specific compiler binaries installed.
+
+**Why this works:**
+
+- Linux ABI compatibility allows mixing Debug application with Release libraries
+- Application gets full debug info for development
+- Dependencies (gRPC/Protobuf/Abseil) are optimized with `-O3 -march=native -mtune=native`
+- ccache dramatically speeds up rebuilds (especially useful during development)
 
 #### GCC 13 (from Red Hat toolset)
 
@@ -164,7 +129,42 @@ cmake --build cmake-build-vcpkg-debug-gcc13
 
 **Note:** Specify full path to GCC 13 from the Red Hat toolset. The triplet expects `gcc-13`/`g++-13` binaries.
 
-### Alternative: Install to Build Directory
+#### Clang
+
+```bash
+# Configure with Clang + ccache (Debug build with Release libraries)
+cmake -B cmake-build-vcpkg-debug-clang \
+  -GNinja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+  -DCMAKE_C_COMPILER=clang \
+  -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+  -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_CXX_STANDARD=20 \
+  -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+  -DVCPKG_TARGET_TRIPLET=x64-linux-clang-release \
+  -DVCPKG_OVERLAY_TRIPLETS=./vcpkg/triplets \
+  -DVCPKG_OVERLAY_PORTS=./vcpkg/ports
+
+# Build (all 37 targets)
+cmake --build cmake-build-vcpkg-debug-clang
+```
+
+**Explanation of flags:**
+
+- `-GNinja`: Use Ninja generator for faster parallel builds
+- `-DCMAKE_BUILD_TYPE=Debug`: Build application in Debug mode (enables debugging symbols, no optimization)
+- `-DCMAKE_C_COMPILER_LAUNCHER=ccache`: Use ccache to cache C compilation results (speeds up rebuilds)
+- `-DCMAKE_C_COMPILER=clang`: Use Clang as the C compiler
+- `-DCMAKE_CXX_COMPILER_LAUNCHER=ccache`: Use ccache to cache C++ compilation results
+- `-DCMAKE_CXX_COMPILER=clang++`: Use Clang++ as the C++ compiler
+- `-DCMAKE_CXX_STANDARD=20`: Use C++20 standard
+- `-DCMAKE_TOOLCHAIN_FILE=...`: Path to vcpkg's CMake toolchain file (enables vcpkg integration)
+- `-DVCPKG_TARGET_TRIPLET=x64-linux-clang-release`: Use Clang-compiled Release libraries
+- `-DVCPKG_OVERLAY_TRIPLETS=./vcpkg/triplets`: Path to custom triplet definitions
+- `-DVCPKG_OVERLAY_PORTS=./vcpkg/ports`: Path to custom port overlays (for gRPC submodule support)
+
+### Alternative: install to build directory
 
 To keep all vcpkg artifacts inside your build directory:
 
@@ -172,7 +172,7 @@ To keep all vcpkg artifacts inside your build directory:
 cmake -B build \
   -DCMAKE_TOOLCHAIN_FILE=/home/foo/git/vcpkg/scripts/buildsystems/vcpkg.cmake \
   -DVCPKG_INSTALLED_DIR=build/vcpkg_installed \
-  -DVCPKG_TARGET_TRIPLET=x64-linux-clang19-release \
+  -DVCPKG_TARGET_TRIPLET=x64-linux-clang-release \
   -DVCPKG_OVERLAY_TRIPLETS=./vcpkg/triplets \
   -DVCPKG_OVERLAY_PORTS=./vcpkg/ports
 
@@ -181,16 +181,16 @@ cmake --build build
 
 This approach keeps everything under `build/` which is already gitignored.
 
-## Custom Triplets
+## Custom triplets
 
-### Why Custom Triplets?
+### Why custom triplets?
 
 1. **Release-only builds**: `VCPKG_BUILD_TYPE=release` builds dependencies once in Release mode
 2. **Compiler-specific**: Each triplet specifies exact compiler to ensure ABI compatibility
 3. **Optimization flags**: Custom flags for aggressive optimization
 4. **ccache integration**: Speeds up rebuilds via chainloaded toolchain
 
-### Triplet Configuration
+### Triplet configuration
 
 All triplets share the same structure:
 
@@ -209,8 +209,8 @@ set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE
 
 # Compiler-specific settings with optimizations
 set(VCPKG_CMAKE_CONFIGURE_OPTIONS
-    "-DCMAKE_C_COMPILER=clang-19"
-    "-DCMAKE_CXX_COMPILER=clang++-19"
+    "-DCMAKE_C_COMPILER=clang"
+    "-DCMAKE_CXX_COMPILER=clang++"
     "-DCMAKE_C_FLAGS_RELEASE=-O3 -DNDEBUG -march=native -mtune=native -g0"
     "-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG -march=native -mtune=native -g0"
     "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON")
@@ -220,11 +220,11 @@ The compiler paths differ for each triplet:
 
 - `x64-linux-gcc11-release.cmake`: Uses `gcc-11` and `g++-11`
 - `x64-linux-gcc13-release.cmake`: Uses `gcc-13` and `g++-13`
-- `x64-linux-clang19-release.cmake`: Uses `clang-19` and `clang++-19`
+- `x64-linux-clang-release.cmake`: Uses `clang` and `clang++`
 
-## Custom gRPC Port
+## Custom gRPC port
 
-### Why a Custom Port?
+### Why a custom port?
 
 The standard vcpkg gRPC port does not support the requirements:
 
@@ -234,7 +234,7 @@ The standard vcpkg gRPC port does not support the requirements:
    - `vcpkg_from_git`: Uses `git archive` internally (excludes submodules)
 3. **Solution**: Direct `git clone --recurse-submodules` (official vcpkg approach per issues #6886, #1036)
 
-### Port Implementation
+### Port implementation
 
 The custom port at `vcpkg/ports/grpc/portfile.cmake` implements:
 
@@ -264,9 +264,9 @@ Key configuration options:
 - C++ only (all other language plugins disabled)
 - Optimization flags applied via triplet configuration
 
-## Linux ABI Compatibility
+## Linux ABI compatibility
 
-### Key Insight
+### Key insight
 
 On Linux (unlike Windows/MSVC), mixing Debug and Release builds is safe and recommended:
 
@@ -291,29 +291,20 @@ On Linux (unlike Windows/MSVC), mixing Debug and Release builds is safe and reco
 ### Benefits
 
 | Build Type | Your Code | Dependencies | Result |
-|------------|-----------|--------------|--------|
+| ------------ | ----------- | -------------- | -------- |
 | **Debug** | `-O0 -g` | `-O3` (Release) | Fast debugging + fast execution |
 | **Release** | `-O3` | `-O3` (Release) | Full optimization everywhere |
 | **RelWithDebInfo** | `-O2 -g` | `-O3` (Release) | Balanced performance + debugging |
 
 All three build types link to the **same gRPC binaries** (built once in Release mode).
 
-## vcpkg Configuration Files
+## vcpkg configuration files
 
-### vcpkg.json (Manifest)
+### vcpkg.json (manifest)
 
-```json
-{
-  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
-  "name": "grpc-reactor-routeguide",
-  "version": "0.1.0",
-  "dependencies": [
-    "grpc"
-  ]
-}
-```
-
-Declares project dependencies. vcpkg automatically resolves transitive dependencies (OpenSSL, zlib, etc.).
+See [vcpkg.json](/vcpkg.json) for the current dependency list. vcpkg automatically resolves transitive
+dependencies (OpenSSL, zlib, etc.). The `overrides` block pins exact versions for dependencies where the
+registry baseline would otherwise pick a different one.
 
 ### vcpkg-configuration.json
 
@@ -381,15 +372,16 @@ The custom port at `vcpkg/ports/grpc/portfile.cmake` uses direct git clone with 
 undefined reference to `absl::lts_20250127::log_internal::LogMessage::operator<<(unsigned long)'
 ```
 
-**Cause:** gRPC, Protobuf, and Abseil are template-heavy and must all be compiled with the **same compiler**.
+**Cause:** the application compiler doesn't match the compiler the triplet built gRPC/Protobuf/Abseil with. See
+"Compiler compatibility" in [grpc-build-guide.md](/docs/grpc-build-guide.md) for why this matters.
 
-**Solution:** Always use matching triplet for your application compiler:
+**Solution:** always use the triplet matching your application compiler:
 
 ```bash
-# Building with Clang 19
+# Building with Clang
 cmake -B build \
-  -DCMAKE_CXX_COMPILER=clang++-19 \
-  -DVCPKG_TARGET_TRIPLET=x64-linux-clang19-release  # Match!
+  -DCMAKE_CXX_COMPILER=clang++ \
+  -DVCPKG_TARGET_TRIPLET=x64-linux-clang-release  # Match!
 
 # Building with GCC 11
 cmake -B build \
@@ -413,11 +405,11 @@ cmake -B build \
 
 This keeps everything under `build/` which is already gitignored.
 
-## Build Metrics
+## Build metrics
 
-### vcpkg Dependency Installation (First Time)
+### vcpkg dependency installation (first time)
 
-**Clang 19:**
+**Clang:**
 
 - **Total time:** 13.5 minutes
   - zlib: 6.9 seconds
@@ -439,7 +431,7 @@ This keeps everything under `build/` which is already gitignored.
   - openssl: 52 seconds
   - grpc: 12 minutes
 
-### Application Build Time
+### Application build time
 
 **With vcpkg-installed dependencies:**
 
@@ -452,15 +444,15 @@ This keeps everything under `build/` which is already gitignored.
 - **Configure:** ~5 seconds (cached vcpkg dependencies)
 - **Build:** ~10 seconds (ccache hits for unchanged files)
 
-### Disk Space
+### Disk space
 
 - **Per triplet:** ~100 MB (Release-only builds)
-- **All three triplets:** ~300 MB total (gcc-release, gcc13-release, clang19-release)
+- **All three triplets:** ~300 MB total (gcc11-release, gcc13-release, clang-release)
 - **Comparison:** Standard Debug+Release builds would use ~200 MB per triplet
 
-## Advanced Topics
+## Advanced topics
 
-### Switching Compilers
+### Switching compilers
 
 Each compiler needs its own vcpkg installation:
 
@@ -468,17 +460,17 @@ Each compiler needs its own vcpkg installation:
 # Install for all three compilers
 vcpkg install --triplet=x64-linux-gcc11-release
 vcpkg install --triplet=x64-linux-gcc13-release
-vcpkg install --triplet=x64-linux-clang19-release
+vcpkg install --triplet=x64-linux-clang-release
 
 # Switch between them in CMake
 cmake -B build-gcc11 -DCMAKE_CXX_COMPILER=g++-11 \
   -DVCPKG_TARGET_TRIPLET=x64-linux-gcc11-release ...
 
-cmake -B build-clang19 -DCMAKE_CXX_COMPILER=clang++-19 \
-  -DVCPKG_TARGET_TRIPLET=x64-linux-clang19-release ...
+cmake -B build-clang -DCMAKE_CXX_COMPILER=clang++ \
+  -DVCPKG_TARGET_TRIPLET=x64-linux-clang-release ...
 ```
 
-### Updating gRPC Version
+### Updating gRPC version
 
 To update to a newer gRPC version:
 
@@ -498,10 +490,10 @@ To update to a newer gRPC version:
 
    ```bash
    rm -rf vcpkg_installed
-   vcpkg install --triplet=x64-linux-clang19-release
+   vcpkg install --triplet=x64-linux-clang-release
    ```
 
-### Binary Caching
+### Binary caching
 
 vcpkg supports binary caching to speed up builds across machines or CI/CD:
 
@@ -515,7 +507,7 @@ export VCPKG_BINARY_SOURCES="clear;nuget,https://github.com/owner/repo,readwrite
 
 See vcpkg documentation for details.
 
-### Static Linking
+### Static linking
 
 To build static libraries instead of shared:
 
@@ -529,7 +521,7 @@ To build static libraries instead of shared:
 
    ```bash
    rm -rf vcpkg_installed
-   vcpkg install --triplet=x64-linux-clang19-release
+   vcpkg install --triplet=x64-linux-clang-release
    ```
 
 **Note:** Static linking produces larger executables but eliminates runtime library dependencies.
@@ -540,7 +532,7 @@ To build static libraries instead of shared:
 - vcpkg triplet reference: [vcpkg-triplets]
 - vcpkg binary caching: [vcpkg-binary-caching]
 - gRPC GitHub (submodule issues): [vcpkg-grpc-issue]
-- Project-specific build guide: [GRPC_BUILD_GUIDE.md](GRPC_BUILD_GUIDE.md)
+- Project-specific build guide: [grpc-build-guide.md](/docs/grpc-build-guide.md)
 
 <!-- Reference links -->
 [vcpkg-docs]: https://learn.microsoft.com/en-us/vcpkg/

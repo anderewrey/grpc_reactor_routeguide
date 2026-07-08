@@ -32,8 +32,10 @@
 *.out
 *.app
 
-# IDE config files
-.idea/
+# IDE config directories and internal/private output directories
+.*/
+!.github/
+_*/
 
 # build directories
 cmake-*/

@@ -1,4 +1,6 @@
-# gRPC Reactor Callbacks, client-side implementation
+# gRPC reactor callbacks, client-side implementation
+
+[![CI](https://github.com/anderewrey/grpc_reactor_routeguide/actions/workflows/ci.yml/badge.svg)](https://github.com/anderewrey/grpc_reactor_routeguide/actions/workflows/ci.yml)
 
 Complete redesign of the [gRPC route_guide][grpc-route-guide] example.
 
@@ -12,6 +14,8 @@ This project is based on gRPC library and provides an implementation to:
 
 - send request and receive response messages ([unary reactor][client-unary-reactor])
 - to connect to a stream and receives streamed response messages ([read reactor][client-read-reactor])
+- to send a stream of request messages and receive one final response ([write reactor][client-write-reactor])
+- to send and receive streamed messages concurrently ([bidi reactor][client-bidi-reactor])
 
 ## Requirements
 
@@ -22,7 +26,7 @@ For details about the compilers: [C++20 compiler support][cpp20-support]
 
 ### Build tools
 
-- C++ compiler (GCC 11 or above, or Clang)
+- C++ compiler with C++20 support (GCC or Clang)
 - CMake 3.25 or above
 - Ninja
 - Git
@@ -40,8 +44,17 @@ All dependencies are managed through [vcpkg][vcpkg] and declared in [vcpkg.json]
 
 ## Building
 
-See [DEVELOPING.md](/DEVELOPING.md) for prerequisites, build, run, test, and lint instructions.
-For vcpkg setup and multi-compiler support, see [VCPKG_USAGE.md](/VCPKG_USAGE.md).
+See [developing.md](/docs/developing.md) for prerequisites, build, run, test, and lint instructions.
+For vcpkg setup and multi-compiler support, see [vcpkg-usage.md](/docs/vcpkg-usage.md).
+
+GitHub Actions CI builds and tests the project against Alpine's native gRPC and Protobuf packages instead of
+vcpkg. This is CI-only and doesn't change local development. See [ci.yml](/.github/workflows/ci.yml) for the
+recipe.
+
+## Design rationale
+
+See [architecture.md](/docs/architecture.md) for why this project is built on the Active Object and Reactor
+patterns, the technology choices, and how to extend the reactor library.
 
 ## Implementation details about the client-side reactors
 
@@ -69,6 +82,8 @@ Refer to [reactor_client.md](/applications/reactor/reactor_client.md)
 [protobuf-best-practices]: https://protobuf.dev/best-practices/
 [client-unary-reactor]: https://grpc.github.io/grpc/cpp/classgrpc_1_1_client_unary_reactor.html
 [client-read-reactor]: https://grpc.github.io/grpc/cpp/classgrpc_1_1_client_read_reactor.html
+[client-write-reactor]: https://grpc.github.io/grpc/cpp/classgrpc_1_1_client_write_reactor.html
+[client-bidi-reactor]: https://grpc.github.io/grpc/cpp/classgrpc_1_1_client_bidi_reactor.html
 [cpp20-support]: https://en.cppreference.com/w/cpp/compiler_support/20
 [eventloop-lib]: https://github.com/amoldhamale1105/EventLoop
 [gflags-lib]: https://github.com/gflags/gflags

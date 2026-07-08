@@ -3,11 +3,11 @@
 /// Copyright 2024-2025 anderewrey
 ///
 ///
-/// POC Option A: Real EventLoop + In-Process Server
+/// Client Reactor Integration Tests
 ///
 /// Tests the full integration path: reactor → gRPC → EventLoop → application thread.
-/// This approach validates the production usage pattern where gRPC callbacks trigger
-/// EventLoop events that dispatch response processing to the application thread.
+/// Validates the production usage pattern where gRPC callbacks trigger EventLoop events
+/// that dispatch response processing to the application thread.
 ///
 /// The test fixture creates:
 /// - An in-process gRPC server with controllable responses (TestRouteGuideService)
@@ -19,12 +19,6 @@
 #include <gtest/gtest.h>
 
 #include <grpc/grpc.h>
-#include <grpcpp/channel.h>
-#include <grpcpp/client_context.h>
-#include <grpcpp/create_channel.h>
-#include <grpcpp/security/server_credentials.h>
-#include <grpcpp/server.h>
-#include <grpcpp/server_builder.h>
 
 #include <Event.h>
 #include <EventLoop.h>
@@ -37,9 +31,26 @@
 #include <vector>
 
 #include "rg_service/route_guide_service.h"
+#include "rg_service/rg_utils.h"
+#include "applications/reactor/reactor_eventloop.h"
 #include "applications/reactor/reactor_client_routeguide.h"
+#include "applications/reactor/tests/route_guide_test_fixture.h"
 
 namespace {
+
+/// Global test environment to manage EventLoop lifecycle.
+/// EventLoop doesn't support restart after Halt(), so we start it once for all tests.
+class EventLoopEnvironment : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    EventLoop::SetMode(EventLoop::Mode::NON_BLOCK);
+    EventLoop::Run();
+  }
+
+  void TearDown() override {
+    EventLoop::Halt();
+  }
+};
 
 /// Controllable test service - returns preconfigured responses
 class TestRouteGuideService final : public routeguide::RouteGuide::CallbackService {
@@ -103,48 +114,15 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
 };
 
 /// Test fixture with in-process server and EventLoop integration
-class ReactorIntegrationTest_OptionA : public ::testing::Test {
+class ClientReactorIntegrationTest : public RouteGuideTestFixtureBase<TestRouteGuideService> {
  protected:
   void SetUp() override {
-    // Build in-process server
-    grpc::ServerBuilder builder;
-    builder.RegisterService(&test_service_);
-    int selected_port = 0;
-    builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(), &selected_port);
-    server_ = builder.BuildAndStart();
-    ASSERT_NE(server_, nullptr) << "Failed to start in-process server";
-    ASSERT_GT(selected_port, 0) << "Failed to get dynamic port";
-
-    // Create channel to in-process server
-    std::string server_address = "localhost:" + std::to_string(selected_port);
-    channel_ = grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
-    stub_ = routeguide::RouteGuide::NewStub(channel_);
-
+    RouteGuideTestFixtureBase::SetUp();
     // Store main thread ID for assertions
     main_thread_id_ = std::this_thread::get_id();
-
-    // Start EventLoop in non-blocking mode (runs in background thread)
-    EventLoop::SetMode(EventLoop::Mode::NON_BLOCK);
-    EventLoop::Run();
+    // EventLoop is managed by EventLoopEnvironment (started once for all tests)
   }
 
-  void TearDown() override {
-    // Stop EventLoop
-    EventLoop::Halt();
-
-    if (server_) {
-      server_->Shutdown();
-    }
-  }
-
-  std::unique_ptr<grpc::ClientContext> CreateClientContext() {
-    return std::make_unique<grpc::ClientContext>();
-  }
-
-  TestRouteGuideService test_service_;
-  std::unique_ptr<grpc::Server> server_;
-  std::shared_ptr<grpc::Channel> channel_;
-  std::unique_ptr<routeguide::RouteGuide::Stub> stub_;
   std::thread::id main_thread_id_;
 };
 
@@ -157,7 +135,7 @@ class ReactorIntegrationTest_OptionA : public ::testing::Test {
 /// 4. Response data is correctly extracted via GetResponse()
 ///
 /// Thread assertions confirm callbacks do NOT run on the main thread.
-TEST_F(ReactorIntegrationTest_OptionA, GetFeature_ValidPoint_ReturnsFeature) {
+TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop) {
   // Configure expected response
   routeguide::Feature expected_feature;
   expected_feature.set_name("Test Feature");
@@ -174,7 +152,7 @@ TEST_F(ReactorIntegrationTest_OptionA, GetFeature_ValidPoint_ReturnsFeature) {
   // Register event handler (Servant role in Active Object pattern)
   // In NON_BLOCK mode, EventLoop runs in a background thread
   static constexpr auto kTestOnDone = "TestGetFeatureOnDone";
-  EventLoop::RegisterEvent(kTestOnDone, [&](const EventLoop::Event* event) {
+  RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
     // In NON_BLOCK mode, this runs on EventLoop's background thread (not main thread)
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
 
@@ -189,9 +167,7 @@ TEST_F(ReactorIntegrationTest_OptionA, GetFeature_ValidPoint_ReturnsFeature) {
   });
 
   // Create request
-  routeguide::Point request;
-  request.set_latitude(123456789);
-  request.set_longitude(-987654321);
+  routeguide::Point request = rg_utils::MakePoint(123456789, -987654321);
 
   // Create callbacks (triggered on gRPC thread)
   routeguide::GetFeature::Callbacks cbs;
@@ -239,7 +215,7 @@ TEST_F(ReactorIntegrationTest_OptionA, GetFeature_ValidPoint_ReturnsFeature) {
 /// - All streamed responses are received and dispatched correctly
 /// - Thread assertions confirm gRPC → EventLoop thread transition
 /// - Response data integrity across thread boundaries
-TEST_F(ReactorIntegrationTest_OptionA, ListFeatures_MultipleResponses_DispatchesToEventLoop) {
+TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesToEventLoop) {
   // Configure server to return multiple features
   std::vector<routeguide::Feature> expected_features;
   for (int i = 0; i < 3; ++i) {
@@ -261,7 +237,7 @@ TEST_F(ReactorIntegrationTest_OptionA, ListFeatures_MultipleResponses_Dispatches
   static constexpr auto kTestOnReadOk = "TestListFeaturesOnReadOk";
   static constexpr auto kTestOnDone = "TestListFeaturesOnDone";
 
-  EventLoop::RegisterEvent(kTestOnReadOk, [&](const EventLoop::Event* event) {
+  RpcReactor::EventConnection on_read_ok_guard(kTestOnReadOk, [&](const EventLoop::Event* event) {
     // Verify we're on EventLoop thread (not main thread)
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
 
@@ -271,7 +247,7 @@ TEST_F(ReactorIntegrationTest_OptionA, ListFeatures_MultipleResponses_Dispatches
     received_features.push_back(feature);
   });
 
-  EventLoop::RegisterEvent(kTestOnDone, [&](const EventLoop::Event* event) {
+  RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
 
     auto* r = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
@@ -333,7 +309,7 @@ TEST_F(ReactorIntegrationTest_OptionA, ListFeatures_MultipleResponses_Dispatches
 /// - OK: Server response arrived before cancel signal took effect
 ///
 /// Thread assertions confirm the EventLoop dispatch path is exercised.
-TEST_F(ReactorIntegrationTest_OptionA, TryCancel_UnaryRpc_DispatchesToEventLoop) {
+TEST_F(ClientReactorIntegrationTest, GetFeature_TryCancel_DispatchesToEventLoop) {
   routeguide::Feature feature;
   feature.set_name("Should not receive");
   test_service_.SetGetFeatureResponse(feature);
@@ -343,15 +319,14 @@ TEST_F(ReactorIntegrationTest_OptionA, TryCancel_UnaryRpc_DispatchesToEventLoop)
   std::unique_ptr<routeguide::GetFeature::ClientReactor> reactor;
 
   static constexpr auto kTestOnDone = "TestCancelOnDone";
-  EventLoop::RegisterEvent(kTestOnDone, [&](const EventLoop::Event* event) {
+  RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
     auto* r = static_cast<routeguide::GetFeature::ClientReactor*>(event->getData());
     received_status = r->Status();
     done = true;
   });
 
-  routeguide::Point request;
-  request.set_latitude(123);
+  routeguide::Point request = rg_utils::MakePoint(123, 0);
 
   routeguide::GetFeature::Callbacks cbs;
   cbs.done = [](grpc::ClientUnaryReactor* r, const grpc::Status&, const routeguide::Feature&) {
@@ -381,5 +356,7 @@ TEST_F(ReactorIntegrationTest_OptionA, TryCancel_UnaryRpc_DispatchesToEventLoop)
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
+  // Register global environment to manage EventLoop lifecycle (start once, stop once)
+  ::testing::AddGlobalTestEnvironment(new EventLoopEnvironment());
   return RUN_ALL_TESTS();
 }
