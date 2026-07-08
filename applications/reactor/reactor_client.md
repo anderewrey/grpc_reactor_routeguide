@@ -186,7 +186,7 @@ a concurrent `OnDone()` could still arrive and destroy the reactor's underlying 
 operation on the reactor after that would use a dangling pointer and segfault. `AddHold()` prevents `OnDone()`
 from firing during this window, and `RemoveHold()` in `GetResponse()` releases it once the new `StartRead()` is
 issued (or skipped, if the stream is done). This is the gap gRPC's own callback API leaves open by design, and
-why it added the hold mechanism: https://github.com/grpc/grpc/pull/18072
+why it added the [hold mechanism][grpc-hold-pr].
 
 ### Hold semantics per RPC, not per direction
 
@@ -877,3 +877,4 @@ client-streaming case above.
 [reactor-pattern]: https://www.modernescpp.com/index.php/reactor/
 [eventloop-lib]: https://github.com/amoldhamale1105/EventLoop
 [grpc-callback-tutorial]: https://grpc.io/docs/languages/cpp/callback/
+[grpc-hold-pr]: https://github.com/grpc/grpc/pull/18072
