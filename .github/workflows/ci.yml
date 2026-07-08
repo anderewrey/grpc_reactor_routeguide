@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master, anderewrey/client-stream-recordroute]
+    branches: [master]
   pull_request:
-    branches: [master, anderewrey/client-stream-recordroute]
+    branches: [master]
   workflow_dispatch:
 
 permissions:
@@ -151,10 +151,17 @@ jobs:
               summary += '\n</details>\n\n';
             }
 
+            // context.sha is the ephemeral merge commit GitHub synthesizes for a pull_request
+            // event, not the PR's real head commit - mikepenz/action-junit-report attaches its
+            // check to the head commit instead, so looking it up by context.sha here would find
+            // nothing and silently skip the update.
+            const sha = context.eventName === 'pull_request'
+              ? context.payload.pull_request.head.sha
+              : context.sha;
             const { data } = await github.rest.checks.listForRef({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              ref: context.sha,
+              ref: sha,
             });
             const check = data.check_runs.find(c => c.name === 'JUnit Test Report');
             if (check) {
