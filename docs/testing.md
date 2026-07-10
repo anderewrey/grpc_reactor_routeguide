@@ -107,6 +107,50 @@ under test with configurable responses and error injection, so scenarios are det
 not depend on the real RouteGuide feature database. The server binds to `localhost:0` (dynamic
 port) to avoid conflicts between parallel test runs.
 
+## Continuous integration
+
+[ci.yml][ci-workflow] runs the test suite in four independent jobs, each an Alpine container with a
+different compiler and sanitizer combination, plus a separate lint job. A failure in one job does
+not block the others from reporting their own result.
+
+| Job | Compiler | Sanitizers | Publishes JUnit report |
+| ----- | ---------- | ------------ | ------------------------- |
+| `build-test-gcc-debug` | GCC | None | Yes |
+| `build-test-clang-debug` | Clang | None | No |
+| `build-test-clang-asan-ubsan` | Clang | AddressSanitizer, UndefinedBehaviorSanitizer | No |
+
+`build-test-gcc-debug` is the only job that publishes a per-suite JUnit check-run report, since it
+is the baseline configuration. The other jobs are pass/fail gates: a failure needs ctest's raw
+output and stack trace, not a results table.
+
+### Why Clang for the sanitizer job, not GCC
+
+Alpine's GCC package builds with `--enable-libsanitizer`, but its libsanitizer interceptors (for
+example `sendmsg`) are written and tested against glibc's struct layouts. They crash against musl
+before this project's own code runs. Clang's `compiler-rt` is the sanitizer runtime Alpine's own
+ecosystem maintains musl support for, so the sanitizer job uses Clang exclusively.
+
+### Why no ThreadSanitizer job
+
+ThreadSanitizer was tried and dropped. Every suppression strategy attempted (`race:` entries,
+`called_from_lib:`, `ignore_noninstrumented_modules=1`) either failed to converge on a stable
+suppression list, since each run surfaced new gRPC/Abseil/c-ares-internal signatures with no
+repeats, or blinded TSan's synchronization tracking enough to produce a worse class of false
+positive: races reported between this project's own fixture and worker threads that do not
+actually race. Running gRPC, Abseil, and c-ares themselves built with TSan instrumentation would
+be required to get a clean signal, which is out of scope for this project's CI.
+
+### ASan runtime options
+
+The sanitizer job sets `ASAN_OPTIONS` on the `Test` step (see [ci.yml][ci-workflow] for the
+per-option rationale), enabling checks that are off by default upstream: invalid pointer pair
+comparisons, a larger use-after-free quarantine, strict C-string null-termination checks,
+stack-use-after-return detection, leak detection, and static initialization order checking.
+
+Stack traces from this job are symbolized via `llvm22-symbolizer`, installed alongside Clang and
+symlinked to the unversioned `llvm-symbolizer` name the sanitizer runtime expects. Neither the
+`clang` nor the `compiler-rt` Alpine package ships a symbolizer binary.
+
 ## Adding new tests
 
 ### 1. Choose the test file
@@ -182,6 +226,7 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 ```
 
 <!-- Reference links -->
+[ci-workflow]: /.github/workflows/ci.yml
 [reactor-client]: /applications/reactor/reactor_client.h
 [reactor-client-routeguide]: /applications/reactor/reactor_client_routeguide.h
 [unary-test]: /applications/reactor/tests/active_unary_reactor_test.cpp
