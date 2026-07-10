@@ -1,15 +1,15 @@
-# Custom EventLoop port pinned to specific commit with required patches
-# No release tag available for this commit (e16fa52aae1d58a994fd93808c62fde14adb62f1)
+# Pinned to a commit on the anderewrey/EventLoop fork's cmake-improvement branch, not upstream
+# amoldhamale1105/EventLoop, since that branch carries the LANGUAGES CXX restriction, install()
+# rules, and GNUInstallDirs fixes this project needs, proposed upstream but not yet merged
+# (see TODOS.md). No patches needed here - the fork commit already has the fixes applied directly.
+# Revert REPO/REF/SHA512 to upstream and drop this comment once the PR is accepted.
 
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
-    REPO amoldhamale1105/EventLoop
-    REF e16fa52aae1d58a994fd93808c62fde14adb62f1
-    SHA512 cc233c1d29162716987a6f84f491d9a9550cf789879ea85d5a33309e66b6cf65b999ce19cb68d736bfc9e2b29f96e9d78cd08227d0aba58fb9aaf0d93432c202
-    HEAD_REF main
-    PATCHES
-        restrict-languages-cxx.patch
-        add-install-rules.patch
+    REPO anderewrey/EventLoop
+    REF d5d29a0349f3159067df0c3ff2741f1e984679f0
+    SHA512 311f2d167d26c0afbb92b905622ceefb801be06ea6fe9f41569cc476d8eb6c10fccc9b13daae0bc86d6d2b2ffe877e251c0577d4fe5fe3b1c541641edae08c0c
+    HEAD_REF master
 )
 
 # Configure and install using CMake
