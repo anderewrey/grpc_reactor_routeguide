@@ -11,6 +11,7 @@ permissions:
   contents: read
   checks: write
   pull-requests: write
+  packages: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -27,67 +28,75 @@ jobs:
           python-version: '3.x'
       - uses: pre-commit/action@v3.0.1
 
+  # Builds the shared Alpine + GCC + Clang + EventLoop image the three build-and-test jobs below
+  # run in (see .github/docker/ci.Dockerfile), instead of each job installing the same apk
+  # packages and rebuilding EventLoop from scratch. The image tag is a hash of the Dockerfile plus
+  # the EventLoop patch, so an unchanged environment is pulled from GHCR instead of rebuilt.
+  prepare-image:
+    name: prepare CI image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Compute image tag
+        id: image
+        run: |
+          hash=$(cat .github/docker/ci.Dockerfile vcpkg/ports/eventloop/add-install-rules.patch | sha256sum | cut -c1-16)
+          echo "image=ghcr.io/${{ github.repository }}/ci-alpine:${hash}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Content-addressed tag: if this exact Dockerfile + EventLoop patch combination was already
+      # built and pushed by a previous run, reuse it instead of rebuilding.
+      - name: Check whether the image already exists
+        id: check
+        run: |
+          if docker buildx imagetools inspect "${{ steps.image.outputs.image }}" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push image
+        if: steps.check.outputs.exists != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: .github/docker/ci.Dockerfile
+          push: true
+          tags: ${{ steps.image.outputs.image }}
+
   # GCC, no sanitizer. Also the only job that publishes the JUnit check-run report - the other jobs
   # below are pass/fail gates where a failure needs ctest's raw output/stack trace, not a table.
   build-test-gcc-debug:
     name: build-and-test (alpine, gcc-debug)
+    needs: prepare-image
     runs-on: ubuntu-latest
     container:
-      image: alpine:3.24
+      image: ${{ needs.prepare-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 10
     steps:
-      - name: Install build dependencies
-        run: |
-          apk add --no-cache \
-            cmake ninja g++ git \
-            nodejs \
-            protobuf-dev \
-            grpc-dev \
-            abseil-cpp-dev \
-            c-ares-dev \
-            re2-dev \
-            openssl-dev \
-            zlib-dev \
-            spdlog-dev \
-            gflags-dev \
-            gtest-dev \
-            glaze
-
       - uses: actions/checkout@v5
 
-      # EventLoop isn't packaged and has no install rules upstream, so add
-      # them (same pinned commit as the vcpkg overlay port) and install
-      # manually.
-      - name: Build and install EventLoop
-        run: |
-          git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop
-          cd /tmp/EventLoop
-          git checkout e16fa52aae1d58a994fd93808c62fde14adb62f1
-          cat >> CMakeLists.txt <<'EOF'
-
-          install(TARGETS ${PROJECT_NAME}
-              EXPORT EventLoopTargets
-              LIBRARY DESTINATION lib
-              ARCHIVE DESTINATION lib
-              RUNTIME DESTINATION bin
-              INCLUDES DESTINATION include
-          )
-          install(FILES ${INCLUDES}
-              DESTINATION include
-          )
-          install(EXPORT EventLoopTargets
-              FILE EventLoopConfig.cmake
-              NAMESPACE EventLoop::
-              DESTINATION lib/cmake/EventLoop
-          )
-          EOF
-          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-          cmake --build build
-          cmake --install build
-          rm -rf /tmp/EventLoop
-
       - name: Configure
-        run: cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug
+        run: cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=/opt/eventloop-gcc
 
       - name: Build
         run: cmake --build build
@@ -193,60 +202,21 @@ jobs:
   # libraries is ABI-compatible in practice, not just in theory.
   build-test-clang-debug:
     name: build-and-test (alpine, clang-debug)
+    needs: prepare-image
     runs-on: ubuntu-latest
     container:
-      image: alpine:3.24
+      image: ${{ needs.prepare-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 10
     steps:
-      - name: Install build dependencies
-        run: |
-          apk add --no-cache \
-            cmake ninja clang gcc binutils git \
-            protobuf-dev \
-            grpc-dev \
-            abseil-cpp-dev \
-            c-ares-dev \
-            re2-dev \
-            openssl-dev \
-            zlib-dev \
-            spdlog-dev \
-            gflags-dev \
-            gtest-dev \
-            glaze
-
       - uses: actions/checkout@v5
 
-      - name: Build and install EventLoop
-        run: |
-          git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop
-          cd /tmp/EventLoop
-          git checkout e16fa52aae1d58a994fd93808c62fde14adb62f1
-          cat >> CMakeLists.txt <<'EOF'
-
-          install(TARGETS ${PROJECT_NAME}
-              EXPORT EventLoopTargets
-              LIBRARY DESTINATION lib
-              ARCHIVE DESTINATION lib
-              RUNTIME DESTINATION bin
-              INCLUDES DESTINATION include
-          )
-          install(FILES ${INCLUDES}
-              DESTINATION include
-          )
-          install(EXPORT EventLoopTargets
-              FILE EventLoopConfig.cmake
-              NAMESPACE EventLoop::
-              DESTINATION lib/cmake/EventLoop
-          )
-          EOF
-          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DCMAKE_CXX_COMPILER=clang++
-          cmake --build build
-          cmake --install build
-          rm -rf /tmp/EventLoop
-
       - name: Configure
-        run: cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++
+        run: |
+          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_PREFIX_PATH=/opt/eventloop-clang
 
       - name: Build
         run: cmake --build build
@@ -260,63 +230,16 @@ jobs:
   # sanitizer runtime Alpine's own ecosystem actually maintains musl support for.
   build-test-clang-asan-ubsan:
     name: build-and-test (alpine, clang-asan-ubsan)
+    needs: prepare-image
     runs-on: ubuntu-latest
     container:
-      image: alpine:3.24
+      image: ${{ needs.prepare-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 10
     steps:
-      # llvm22 provides llvm22-symbolizer, needed to turn ASan/UBSan stack traces into function
-      # names and line numbers. Neither the clang nor the compiler-rt package ships a symbolizer.
-      # The sanitizer runtime only recognizes a fixed set of binary names (llvm-symbolizer,
-      # addr2line, atos, ...), so llvm22-symbolizer must be symlinked to the unversioned name.
-      - name: Install build dependencies
-        run: |
-          apk add --no-cache \
-            cmake ninja clang compiler-rt gcc binutils git \
-            llvm22 \
-            protobuf-dev \
-            grpc-dev \
-            abseil-cpp-dev \
-            c-ares-dev \
-            re2-dev \
-            openssl-dev \
-            zlib-dev \
-            spdlog-dev \
-            gflags-dev \
-            gtest-dev \
-            glaze
-          ln -sf /usr/bin/llvm22-symbolizer /usr/bin/llvm-symbolizer
-
       - uses: actions/checkout@v5
-
-      - name: Build and install EventLoop
-        run: |
-          git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop
-          cd /tmp/EventLoop
-          git checkout e16fa52aae1d58a994fd93808c62fde14adb62f1
-          cat >> CMakeLists.txt <<'EOF'
-
-          install(TARGETS ${PROJECT_NAME}
-              EXPORT EventLoopTargets
-              LIBRARY DESTINATION lib
-              ARCHIVE DESTINATION lib
-              RUNTIME DESTINATION bin
-              INCLUDES DESTINATION include
-          )
-          install(FILES ${INCLUDES}
-              DESTINATION include
-          )
-          install(EXPORT EventLoopTargets
-              FILE EventLoopConfig.cmake
-              NAMESPACE EventLoop::
-              DESTINATION lib/cmake/EventLoop
-          )
-          EOF
-          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DCMAKE_CXX_COMPILER=clang++
-          cmake --build build
-          cmake --install build
-          rm -rf /tmp/EventLoop
 
       # EventLoop itself is never built with sanitizers - only this project's own code is. Linking
       # instrumented binaries against its plain shared library is fine; ASan/UBSan just won't catch
@@ -324,6 +247,7 @@ jobs:
       - name: Configure
         run: |
           cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_PREFIX_PATH=/opt/eventloop-clang \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
 
