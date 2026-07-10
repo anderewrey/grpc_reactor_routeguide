@@ -317,9 +317,22 @@ jobs:
       - name: Build
         run: cmake --build build
 
-      # detect_leaks=0: LeakSanitizer needs ptrace, which is often unavailable in CI containers and
-      # would otherwise fail unrelated to any real leak in this project's code.
+      # detect_invalid_pointer_pairs=2: flags <, <=, >, >=, - between pointers into unrelated
+      # allocations. This project mostly uses smart pointers/references rather than raw pointer
+      # arithmetic between objects, so this is expected to be a no-op check, not a source of noise.
+      # quarantine_size_mb=512 (default 256): delays heap-block reuse longer, improving
+      # use-after-free detection odds; a pure sensitivity increase, not a behavior change.
+      # strict_string_checks=1: checks that C-string arguments are actually null-terminated.
+      # Narrowly scoped to this project's own C-string usage (e.g. GetFeatureName(), strlen() in
+      # rg_utils.cpp), not gRPC/Abseil internals, so not expected to surface non-instrumented-
+      # library noise the way the TSan suppressions did.
+      # detect_stack_use_after_return=1: targets this project's actual risk pattern - lambdas that
+      # capture local state by reference and get invoked later, possibly from a different thread
+      # (EventLoop handlers, the reactor_map_ reference captures).
+      # detect_leaks=1: leak detection is on by default upstream; this project previously forced it
+      # off pre-emptively on the assumption LeakSanitizer's ptrace requirement wouldn't be available
+      # in this container. Turned on here to find out empirically instead of assuming.
       - name: Test
         env:
-          ASAN_OPTIONS: detect_leaks=0
+          ASAN_OPTIONS: detect_invalid_pointer_pairs=2 quarantine_size_mb=512 strict_string_checks=1 detect_stack_use_after_return=1 detect_leaks=1
         run: ctest --test-dir build --output-on-failure
