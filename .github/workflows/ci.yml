@@ -258,10 +258,15 @@ jobs:
       image: alpine:3.24
     timeout-minutes: 10
     steps:
+      # llvm22 provides llvm22-symbolizer, needed to turn ASan/UBSan stack traces into function
+      # names and line numbers. Neither the clang nor the compiler-rt package ships a symbolizer.
+      # The sanitizer runtime only recognizes a fixed set of binary names (llvm-symbolizer,
+      # addr2line, atos, ...), so llvm22-symbolizer must be symlinked to the unversioned name.
       - name: Install build dependencies
         run: |
           apk add --no-cache \
             cmake ninja clang compiler-rt gcc binutils git \
+            llvm22 \
             protobuf-dev \
             grpc-dev \
             abseil-cpp-dev \
@@ -273,6 +278,7 @@ jobs:
             gflags-dev \
             gtest-dev \
             glaze
+          ln -sf /usr/bin/llvm22-symbolizer /usr/bin/llvm-symbolizer
 
       - uses: actions/checkout@v5
 
@@ -332,7 +338,16 @@ jobs:
       # detect_leaks=1: leak detection is on by default upstream; this project previously forced it
       # off pre-emptively on the assumption LeakSanitizer's ptrace requirement wouldn't be available
       # in this container. Turned on here to find out empirically instead of assuming.
+      # check_initialization_order=1 + strict_init_order=1: detects static initialization order
+      # fiasco bugs (a global's constructor reading another global that hasn't been constructed
+      # yet). Off by default because it is expensive and rarely relevant, but this project's
+      # per-RPC logger registry (rg_logger) and reactor maps are exactly the kind of static state
+      # that pattern breaks.
       - name: Test
         env:
-          ASAN_OPTIONS: detect_invalid_pointer_pairs=2 quarantine_size_mb=512 strict_string_checks=1 detect_stack_use_after_return=1 detect_leaks=1
+          ASAN_OPTIONS: >-
+            detect_invalid_pointer_pairs=2 quarantine_size_mb=512 strict_string_checks=1
+            detect_stack_use_after_return=1 detect_leaks=1 check_initialization_order=1 strict_init_order=1
+          ASAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer
+          UBSAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer
         run: ctest --test-dir build --output-on-failure
