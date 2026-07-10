@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
       - uses: pre-commit/action@v3.0.1
@@ -51,14 +51,14 @@ jobs:
           echo "image=ghcr.io/${{ github.repository }}/ci-alpine:${hash}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # Content-addressed tag: if this exact Dockerfile + EventLoop patch combination was already
       # built and pushed by a previous run, reuse it instead of rebuilding.
@@ -73,7 +73,7 @@ jobs:
 
       - name: Build and push image
         if: steps.check.outputs.exists != 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: .github/docker/ci.Dockerfile
