@@ -125,8 +125,13 @@ jobs:
       - uses: actions/checkout@v5
 
       # EventLoop isn't packaged and has no install rules upstream, so it is built and installed
-      # from source, applying the same patch file the vcpkg overlay port uses (see
-      # vcpkg/ports/eventloop/) so the install rules exist in exactly one place, not two.
+      # from source, applying the same two patch files the vcpkg overlay port uses (see
+      # vcpkg/ports/eventloop/) so the fixes exist in exactly one place, not two:
+      # - add-install-rules.patch: EventLoop has no install() rules at all upstream.
+      # - restrict-languages-cxx.patch: EventLoop's project() call leaves LANGUAGES unrestricted,
+      #   so CMake enables and probes for a C compiler too even though EventLoop has no C sources,
+      #   defaulting to whatever `cc` resolves to (GCC, since the gcc package is installed here
+      #   even for the Clang variants) instead of matching CXX_COMPILER.
       #
       # EventLoop itself is never built with sanitizers - only this project's own code is. Linking
       # instrumented binaries against its plain shared library is fine; ASan/UBSan just won't catch
@@ -136,6 +141,7 @@ jobs:
           git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop
           cd /tmp/EventLoop
           git checkout e16fa52aae1d58a994fd93808c62fde14adb62f1
+          git apply "$GITHUB_WORKSPACE/vcpkg/ports/eventloop/restrict-languages-cxx.patch"
           git apply "$GITHUB_WORKSPACE/vcpkg/ports/eventloop/add-install-rules.patch"
           cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_CXX_COMPILER=${{ matrix.cxx_compiler }}

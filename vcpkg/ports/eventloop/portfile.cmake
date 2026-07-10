@@ -8,6 +8,7 @@ vcpkg_from_github(
     SHA512 cc233c1d29162716987a6f84f491d9a9550cf789879ea85d5a33309e66b6cf65b999ce19cb68d736bfc9e2b29f96e9d78cd08227d0aba58fb9aaf0d93432c202
     HEAD_REF main
     PATCHES
+        restrict-languages-cxx.patch
         add-install-rules.patch
 )
 
