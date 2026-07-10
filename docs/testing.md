@@ -109,30 +109,25 @@ port) to avoid conflicts between parallel test runs.
 
 ## Continuous integration
 
-[ci.yml][ci-workflow] runs the test suite in three independent build-and-test jobs, each an Alpine
-container with a different compiler and sanitizer combination, plus a separate lint job. A failure
-in one job does not block the others from reporting their own result.
+[ci.yml][ci-workflow] runs the test suite as a `build-test` job with three matrix variants, each an
+Alpine container with a different compiler and sanitizer combination, plus a separate lint job.
+`fail-fast` is disabled, so a failure in one variant does not block the others from reporting their
+own result. Each variant installs its own apk packages and rebuilds EventLoop from source
+independently rather than sharing a container image, since a prebuilt-image approach was tried and
+measured slower: the image big enough to cover both toolchains costs more to pull per job (no
+persistent Docker layer cache between GitHub-hosted runner jobs) than the apk install and
+EventLoop's own build cost in the first place, and it added a build-the-image job as a hard
+serialization step in front of all three variants.
 
-| Job | Compiler | Sanitizers | Publishes JUnit report |
+| Matrix variant | Compiler | Sanitizers | Publishes JUnit report |
 | ----- | ---------- | ------------ | ------------------------- |
-| `build-test-gcc-debug` | GCC | None | Yes |
-| `build-test-clang-debug` | Clang | None | No |
-| `build-test-clang-asan-ubsan` | Clang | AddressSanitizer, UndefinedBehaviorSanitizer | No |
+| `gcc-debug` | GCC | None | Yes |
+| `clang-debug` | Clang | None | No |
+| `clang-asan-ubsan` | Clang | AddressSanitizer, UndefinedBehaviorSanitizer | No |
 
-`build-test-gcc-debug` is the only job that publishes a per-suite JUnit check-run report, since it
-is the baseline configuration. The other jobs are pass/fail gates: a failure needs ctest's raw
-output and stack trace, not a results table.
-
-### Shared build environment
-
-All three build-and-test jobs run in the same container image instead of each installing its own
-apk packages and rebuilding EventLoop from source. A `prepare-image` job builds this image from
-[ci.Dockerfile](/.github/docker/ci.Dockerfile) and pushes it to GHCR, tagged with a hash of the
-Dockerfile plus the EventLoop patch it applies. When neither has changed since the last run, the
-tagged image already exists in the registry and the build step is skipped, so the three jobs
-simply pull it. The image bakes in both a GCC-built and a Clang-built copy of EventLoop, installed
-to separate prefixes (`/opt/eventloop-gcc`, `/opt/eventloop-clang`), so each job selects its
-matching copy via `-DCMAKE_PREFIX_PATH`.
+`gcc-debug` is the only variant that publishes a per-suite JUnit check-run report, since it is the
+baseline configuration. The other variants are pass/fail gates: a failure needs ctest's raw output
+and stack trace, not a results table.
 
 ### Why Clang for the sanitizer job, not GCC
 
