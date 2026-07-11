@@ -248,3 +248,55 @@ jobs:
                 },
               });
             }
+
+  # openSUSE Tumbleweed's rolling repos ship gRPC/Protobuf/Abseil/spdlog/gflags/gtest/glaze as a
+  # single version-matched, tested-together bundle (unlike Alpine/Debian/Fedora, where these
+  # versions are not necessarily coordinated), so this job is a second, independent system-package
+  # sanity check alongside the Alpine job above - GCC only, no sanitizers, matching Alpine's
+  # gcc-debug baseline.
+  build-test-opensuse:
+    name: build-and-test (opensuse-tumbleweed, gcc-debug)
+    runs-on: ubuntu-latest
+    container:
+      image: opensuse/tumbleweed:latest
+    timeout-minutes: 10
+    steps:
+      - name: Install build dependencies
+        run: |
+          zypper --non-interactive --gpg-auto-import-keys refresh
+          zypper --non-interactive install \
+            cmake ninja git gcc-c++ \
+            grpc-devel \
+            protobuf-devel \
+            abseil-cpp-devel \
+            c-ares-devel \
+            re2-devel \
+            libopenssl-devel \
+            zlib-devel \
+            spdlog-devel \
+            gflags-devel \
+            gtest \
+            glaze-devel
+
+      - uses: actions/checkout@v5
+
+      # See the comment on the Alpine job's EventLoop step - same fork pin, same reason.
+      - name: Build and install EventLoop
+        run: |
+          git clone https://github.com/anderewrey/EventLoop.git /tmp/EventLoop
+          cd /tmp/EventLoop
+          git checkout d5d29a0349f3159067df0c3ff2741f1e984679f0
+          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_CXX_COMPILER=g++
+          cmake --build build
+          cmake --install build
+          rm -rf /tmp/EventLoop
+
+      - name: Configure
+        run: cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=g++
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
