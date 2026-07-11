@@ -7,12 +7,18 @@
 
 #include <spdlog/spdlog.h>
 
+#include <array>
+#include <cstdint>
 #include <string>
+#include <string_view>
 
-#include "rg_service/route_guide_db_data.h"
 #include "rg_service/rg_utils.h"
 
-FeatureList rg_db::GetInitialFeatures() {
+namespace rg_db {
+
+#include "rg_service/route_guide_db.inc"
+
+FeatureList GetInitialFeatures() {
   FeatureList feature_list;
   feature_list.reserve(kInitialFeatures.size());
   for (const auto& [latitude, longitude, name] : kInitialFeatures) {
@@ -22,3 +28,5 @@ FeatureList rg_db::GetInitialFeatures() {
   spdlog::info("Initial features loaded, {} features.", feature_list.size());
   return feature_list;
 }
+
+}  // namespace rg_db

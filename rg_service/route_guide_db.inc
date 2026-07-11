@@ -3,15 +3,10 @@
 /// Copyright 2024-2025 anderewrey
 ///
 
-#pragma once
-
-#include <array>
-#include <cstdint>
-#include <string_view>
-
 // Initial RouteGuide features, baked in at compile time to give the sandbox servers/clients
 // a ready-to-use payload without any runtime file parsing.
-namespace rg_db {
+// Not a standalone header: expects <array>, <cstdint>, and <string_view> already included,
+// and to be spliced inside namespace rg_db (see rg_db.cpp, its sole includer).
 
 struct FeatureData {
   int32_t latitude;
@@ -19,7 +14,7 @@ struct FeatureData {
   std::string_view name;
 };
 
-inline constexpr std::array<FeatureData, 100> kInitialFeatures{{
+constexpr std::array<FeatureData, 100> kInitialFeatures{{
     {407838351, -746143763, "Patriots Path, Mendham, NJ 07945, USA"},
     {408122808, -743999179, "101 New Jersey 10, Whippany, NJ 07981, USA"},
     {413628156, -749015468, "U.S. 6, Shohola, PA 18458, USA"},
@@ -121,5 +116,3 @@ inline constexpr std::array<FeatureData, 100> kInitialFeatures{{
     {411733222, -744228360, ""},
     {410248224, -747127767, "3 Hasta Way, Newton, NJ 07860, USA"},
 }};
-
-}  // namespace rg_db
