@@ -1,6 +1,6 @@
 # Reactor Client Tests
 
-find_package(GTest CONFIG REQUIRED)
+find_package(GTest REQUIRED)
 find_package(EventLoop CONFIG REQUIRED)
 
 set(REACTOR_TESTS
