@@ -14,7 +14,7 @@ struct FeatureData {
   std::string_view name;
 };
 
-constexpr std::array<FeatureData, 100> kInitialFeatures{{
+constexpr auto kInitialFeatures = std::to_array<FeatureData>({
     {407838351, -746143763, "Patriots Path, Mendham, NJ 07945, USA"},
     {408122808, -743999179, "101 New Jersey 10, Whippany, NJ 07981, USA"},
     {413628156, -749015468, "U.S. 6, Shohola, PA 18458, USA"},
@@ -115,4 +115,4 @@ constexpr std::array<FeatureData, 100> kInitialFeatures{{
     {418465462, -746859398, ""},
     {411733222, -744228360, ""},
     {410248224, -747127767, "3 Hasta Way, Newton, NJ 07860, USA"},
-}};
+});
