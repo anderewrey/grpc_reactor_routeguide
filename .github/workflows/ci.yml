@@ -41,7 +41,7 @@ jobs:
   # against glibc's struct layouts and crash on musl before this project's own code even runs.
   # Clang's compiler-rt is the sanitizer runtime Alpine's own ecosystem actually maintains musl
   # support for, so the sanitizer variant uses Clang exclusively.
-  build-test:
+  build-test-alpine:
     name: build-and-test (alpine, ${{ matrix.id }})
     runs-on: ubuntu-latest
     container:

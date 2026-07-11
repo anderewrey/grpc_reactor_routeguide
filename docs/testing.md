@@ -109,7 +109,7 @@ port) to avoid conflicts between parallel test runs.
 
 ## Continuous integration
 
-[ci.yml][ci-workflow] runs the test suite as a `build-test` job with three matrix variants, each an
+[ci.yml][ci-workflow] runs the test suite as a `build-test-alpine` job with three matrix variants, each an
 Alpine container with a different compiler and sanitizer combination, plus a separate lint job.
 `fail-fast` is disabled, so a failure in one variant does not block the others from reporting their
 own result. Each variant installs its own apk packages and rebuilds EventLoop from source
