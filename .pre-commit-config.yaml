@@ -39,24 +39,19 @@ repos:
     rev: 2.0.2
     hooks:
       - id: cpplint
-        args: [ "--filter=
+        args: [ &cpplint_filter "--filter=
                  -build/c++11,
                  -build/c++17,
                  -build/namespaces,
                  -whitespace/indent_namespace",
-                "--linelength=120" ]
-      # cpplint's default `types: [c++]` filter never matches route_guide_db.inc (identify tags it
-      # "inc", not "c++"), so it silently skips it. Named explicitly here rather than via a \.inc$
-      # glob, since it's spliced code, not a self-contained header - not something to auto-lint on
-      # extension alone if other .inc files show up later for different reasons.
+                &cpplint_linelength "--linelength=120" ]
+      # cpplint's hook (upstream .pre-commit-hooks.yaml) gates files via a `files:` extension regex,
+      # not an identify "type" - and that regex doesn't include .inc, so it silently skips
+      # route_guide_db.inc. Named explicitly here rather than via a \.inc$ glob, since it's spliced
+      # code, not a self-contained header - not something to auto-lint on extension alone if other
+      # .inc files show up later for different reasons.
       - id: cpplint
         name: cpplint (route_guide_db.inc)
         types: [text]
         files: ^rg_service/route_guide_db\.inc$
-        args: [ "--extensions=inc",
-                "--filter=
-                 -build/c++11,
-                 -build/c++17,
-                 -build/namespaces,
-                 -whitespace/indent_namespace",
-                "--linelength=120" ]
+        args: [ "--extensions=inc", *cpplint_filter, *cpplint_linelength ]
