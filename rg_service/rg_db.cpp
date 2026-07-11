@@ -5,51 +5,20 @@
 
 #include "rg_service/rg_db.h"
 
-#include <gflags/gflags.h>
 #include <spdlog/spdlog.h>
 
 #include <string>
-#include <vector>
 
-#include <glaze/glaze.hpp>
-
-#include "generated/route_guide.grpc.pb.h"
+#include "rg_service/route_guide_db_data.h"
 #include "rg_service/rg_utils.h"
 
-// Expect only arg: --db_path=path/to/route_guide_db.json.
-DEFINE_string(db_path, "route_guide_db.json", "path to .json database file");
-
-using routeguide::Feature;
-
-// The data representation for the route_guide database file and requires to have exactly the following JSON structure:
-// [{"location": { "latitude": 123, "longitude": 456}, "name": "the name can be empty" }, { ... }, ... ]
-struct FeatureJson {
-  struct Location {
-    int latitude{};
-    int longitude{};
-  } location;
-  std::string name;
-};
-using FeatureJsonList = std::vector<FeatureJson>;
-
-FeatureList rg_db::GetDbFileContent() {
-  if (FLAGS_db_path.empty()) {
-    spdlog::error("arg --db_path is empty");
-    return {};
-  }
-
-  FeatureJsonList json_data;
-  std::string buffer;
-  if (const auto error = glz::read_file_json(json_data, FLAGS_db_path, buffer)) {
-    spdlog::error("Error parsing the db file: {}", glz::format_error(error, buffer));
-    return {};
-  }
-
+FeatureList rg_db::GetInitialFeatures() {
   FeatureList feature_list;
-  for (const auto& [location, name] : json_data) {
-    feature_list.emplace_back(rg_utils::MakeFeature(name, location.latitude, location.longitude));
+  feature_list.reserve(kInitialFeatures.size());
+  for (const auto& [latitude, longitude, name] : kInitialFeatures) {
+    feature_list.emplace_back(rg_utils::MakeFeature(std::string(name), latitude, longitude));
   }
 
-  spdlog::info("DB parsed, loaded {} features.", feature_list.size());
+  spdlog::info("Initial features loaded, {} features.", feature_list.size());
   return feature_list;
 }

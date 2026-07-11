@@ -116,8 +116,7 @@ jobs:
             zlib-dev \
             spdlog-dev \
             gflags-dev \
-            gtest-dev \
-            glaze
+            gtest-dev
           if command -v llvm22-symbolizer > /dev/null 2>&1; then
             ln -sf /usr/bin/llvm22-symbolizer /usr/bin/llvm-symbolizer
           fi

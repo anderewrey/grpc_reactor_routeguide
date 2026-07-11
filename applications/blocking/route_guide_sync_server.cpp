@@ -156,7 +156,7 @@ int main(int argc, char** argv) {
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-  feature_list_ = rg_db::GetDbFileContent();
+  feature_list_ = rg_db::GetInitialFeatures();
   RunServer();
 
   gflags::ShutDownCommandLineFlags();
