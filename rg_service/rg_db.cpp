@@ -12,20 +12,15 @@
 #include <string_view>
 
 #include "rg_service/rg_utils.h"
-
-namespace rg_db {
-
 #include "rg_service/route_guide_db.inc"
 
-FeatureList GetInitialFeatures() {
+FeatureList rg_db::GetInitialFeatures() {
   FeatureList feature_list;
   feature_list.reserve(kInitialFeatures.size());
-  for (const auto& [latitude, longitude, name] : kInitialFeatures) {
+  for (const auto& [name, latitude, longitude] : kInitialFeatures) {
     feature_list.emplace_back(rg_utils::MakeFeature(name, latitude, longitude));
   }
 
   spdlog::info("Initial features loaded, {} features.", feature_list.size());
   return feature_list;
 }
-
-}  // namespace rg_db
