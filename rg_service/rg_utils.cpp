@@ -10,7 +10,7 @@
 #include <cstring>
 #include <numbers>
 #include <random>
-#include <string_view>
+#include <string>
 
 #include "generated/route_guide.grpc.pb.h"
 
@@ -36,20 +36,16 @@ Rectangle rg_utils::MakeRectangle(const int32_t latitude_lo, const int32_t longi
   return rect;
 }
 
-// string_view has no single-arg set_name()/set_message() overload here, hence the (data(), size())
-// pair below. A default-constructed string_view (data() == nullptr) is never passed by any caller in
-// this codebase; it would still be safe here since size() == 0 short-circuits before the pointer is
-// read (verified against protobuf's/libstdc++'s zero-length copy path).
-Feature rg_utils::MakeFeature(const std::string_view name, const int32_t latitude, const int32_t longitude) {
+Feature rg_utils::MakeFeature(const std::string& name, const int32_t latitude, const int32_t longitude) {
   Feature f;
-  f.set_name(name.data(), name.size());
+  f.set_name(name);
   *f.mutable_location() = MakePoint(latitude, longitude);
   return f;
 }
 
-RouteNote rg_utils::MakeRouteNote(const std::string_view message, const int32_t latitude, const int32_t longitude) {
+RouteNote rg_utils::MakeRouteNote(const std::string& message, const int32_t latitude, const int32_t longitude) {
   RouteNote n;
-  n.set_message(message.data(), message.size());
+  n.set_message(message);
   *n.mutable_location() = MakePoint(latitude, longitude);
   return n;
 }

@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include <string_view>
+#include <string>
 #include <vector>
 
 #include "rg_service/route_guide_service.h"
@@ -16,8 +16,8 @@ namespace rg_utils {
 routeguide::Point MakePoint(int32_t latitude, int32_t longitude);
 routeguide::Rectangle MakeRectangle(int32_t latitude_lo, int32_t longitude_lo,
                                     int32_t latitude_hi, int32_t longitude_hi);
-routeguide::Feature MakeFeature(std::string_view name, int32_t latitude, int32_t longitude);
-routeguide::RouteNote MakeRouteNote(std::string_view message, int32_t latitude, int32_t longitude);
+routeguide::Feature MakeFeature(const std::string& name, int32_t latitude, int32_t longitude);
+routeguide::RouteNote MakeRouteNote(const std::string& message, int32_t latitude, int32_t longitude);
 double GetDistance(const routeguide::Point& start, const routeguide::Point& end);
 const char* GetFeatureName(const routeguide::Point& point, const FeatureList& feature_list);
 bool IsPointWithinRectangle(const routeguide::Rectangle& rectangle, const routeguide::Point& point);

@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 #include "rg_service/rg_utils.h"
@@ -18,7 +19,7 @@ FeatureList rg_db::GetInitialFeatures() {
   FeatureList feature_list;
   feature_list.reserve(kInitialFeatures.size());
   for (const auto& [name, latitude, longitude] : kInitialFeatures) {
-    feature_list.emplace_back(rg_utils::MakeFeature(name, latitude, longitude));
+    feature_list.emplace_back(rg_utils::MakeFeature(std::string(name), latitude, longitude));
   }
 
   spdlog::info("Initial features loaded, {} features.", feature_list.size());
