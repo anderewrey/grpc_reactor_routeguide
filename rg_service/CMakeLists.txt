@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright 2024-2026 anderewrey
+# Copyright 2024 anderewrey
 
 # Find dependencies - Abseil first (required by protobuf and gRPC)
 find_package(absl CONFIG REQUIRED)

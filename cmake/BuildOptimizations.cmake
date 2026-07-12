@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright 2024-2026 anderewrey
+# Copyright 2024 anderewrey
 
 # BuildOptimizations.cmake
 # Applies binary size optimizations for Release and MinSizeRel builds

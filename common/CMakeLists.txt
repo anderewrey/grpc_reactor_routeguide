@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright 2024-2026 anderewrey
+# Copyright 2024 anderewrey
 
 # Header-only library for common C++ compatibility utilities
 add_library(common INTERFACE)
