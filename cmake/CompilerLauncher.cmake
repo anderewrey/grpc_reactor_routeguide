@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 anderewrey
+
 # CompilerLauncher.cmake
 # Configures and reports the compiler launcher for this project's own targets.
 #

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 anderewrey
+
 # ConfigureRPath.cmake
 # Configures library search paths and RPATH for runtime shared library loading
 #

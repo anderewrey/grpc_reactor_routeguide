@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 anderewrey
+
 # Generic protobuf utilities library
 
 find_package(protobuf CONFIG REQUIRED)

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 anderewrey
+
 # Asynchronous callback-based RouteGuide applications
 
 # Client executable

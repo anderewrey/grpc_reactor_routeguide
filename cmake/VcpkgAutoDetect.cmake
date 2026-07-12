@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 anderewrey
+
 # VcpkgAutoDetect.cmake
 # Automatically detect vcpkg installation and set CMAKE_TOOLCHAIN_FILE
 #

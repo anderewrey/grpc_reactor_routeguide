@@ -1,7 +1,7 @@
 ///
 /// SPDX-License-Identifier: Apache-2.0
 /// Copyright 2015 gRPC authors
-/// Copyright 2024-2025 anderewrey
+/// Copyright 2024-2026 anderewrey
 ///
 
 #include <grpc/grpc.h>
