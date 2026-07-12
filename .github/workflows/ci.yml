@@ -248,10 +248,10 @@ jobs:
               });
             }
 
-  # openSUSE Tumbleweed's rolling repos ship gRPC/Protobuf/Abseil/spdlog/gflags/gtest/glaze as a
-  # single version-matched, tested-together bundle (unlike Alpine/Debian/Fedora, where these
-  # versions are not necessarily coordinated), so this job is a second, independent system-package
-  # sanity check alongside the Alpine job above.
+  # openSUSE Tumbleweed's rolling repos ship gRPC/Protobuf/Abseil/spdlog/gflags/gtest as a single
+  # version-matched, tested-together bundle (unlike Alpine/Debian/Fedora, where these versions are
+  # not necessarily coordinated), so this job is a second, independent system-package sanity check
+  # alongside the Alpine job above.
   #
   # Unlike Alpine, the sanitizer variant here uses GCC, not Clang: Tumbleweed is glibc-based, so
   # GCC's libsanitizer interceptors (built and tested against glibc) work natively - none of the
@@ -294,8 +294,7 @@ jobs:
             zlib-devel \
             spdlog-devel \
             gflags-devel \
-            gtest \
-            glaze-devel
+            gtest
 
       - uses: actions/checkout@v5
 
