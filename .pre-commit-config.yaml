@@ -39,9 +39,16 @@ repos:
     rev: 2.0.2
     hooks:
       - id: cpplint
-        args: [ "--filter=
+        args: [ &cpplint_filter "--filter=
                  -build/c++11,
                  -build/c++17,
                  -build/namespaces,
                  -whitespace/indent_namespace",
-                "--linelength=120" ]
+                &cpplint_linelength "--linelength=120" ]
+      # cpplint's hook gates by a `files:` regex (not an identify "type"), which excludes .inc - named
+      # explicitly rather than via a glob, since not every future .inc file is guaranteed to be C++.
+      - id: cpplint
+        name: cpplint (route_guide_db.inc)
+        types: [text]
+        files: ^rg_service/route_guide_db\.inc$
+        args: [ "--extensions=inc", *cpplint_filter, *cpplint_linelength ]

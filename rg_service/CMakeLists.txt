@@ -5,7 +5,6 @@ find_package(gRPC CONFIG REQUIRED)
 # vcpkg's gflags defaults to non-namespaced targets. This enables gflags::gflags target.
 set(GFLAGS_USE_TARGET_NAMESPACE TRUE)
 find_package(gflags CONFIG REQUIRED)
-find_package(glaze CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 
 # Include protobuf/gRPC generation helper
@@ -73,7 +72,6 @@ target_link_libraries(rg_service
         common
         spdlog::spdlog
     PRIVATE
-        glaze::glaze
         protobuf::libprotobuf
         gRPC::grpc++
         gRPC::grpc

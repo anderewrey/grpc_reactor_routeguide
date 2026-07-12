@@ -85,7 +85,6 @@ among alternatives. What follows are the choices made *around* them.
 | Language | C++20 | Core language |
 | Event System | EventLoop | Cross-thread event dispatching |
 | Logging | spdlog | Structured logging |
-| JSON | glaze | Database loading |
 | Build | CMake + Ninja | Build orchestration |
 | Dependencies | vcpkg | Multi-compiler package management |
 
@@ -150,8 +149,7 @@ route_guide_active_reactor_client
     │   ├── protobuf_utils
     │   │   └── protobuf::libprotobuf
     │   ├── gflags::gflags
-    │   ├── spdlog::spdlog
-    │   └── glaze::glaze
+    │   └── spdlog::spdlog
     └── EventLoop::EventLoop
 ```
 

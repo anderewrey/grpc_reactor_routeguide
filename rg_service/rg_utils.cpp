@@ -10,7 +10,7 @@
 #include <cstring>
 #include <numbers>
 #include <random>
-#include <string>
+#include <string_view>
 
 #include "generated/route_guide.grpc.pb.h"
 
@@ -36,16 +36,17 @@ Rectangle rg_utils::MakeRectangle(const int32_t latitude_lo, const int32_t longi
   return rect;
 }
 
-Feature rg_utils::MakeFeature(const std::string& name, const int32_t latitude, const int32_t longitude) {
+// No single-arg string_view setter overload exists; size() == 0 guards data() before it's read.
+Feature rg_utils::MakeFeature(const std::string_view name, const int32_t latitude, const int32_t longitude) {
   Feature f;
-  f.set_name(name);
+  f.set_name(name.data(), name.size());
   *f.mutable_location() = MakePoint(latitude, longitude);
   return f;
 }
 
-RouteNote rg_utils::MakeRouteNote(const std::string& message, const int32_t latitude, const int32_t longitude) {
+RouteNote rg_utils::MakeRouteNote(const std::string_view message, const int32_t latitude, const int32_t longitude) {
   RouteNote n;
-  n.set_message(message);
+  n.set_message(message.data(), message.size());
   *n.mutable_location() = MakePoint(latitude, longitude);
   return n;
 }

@@ -38,7 +38,6 @@ All dependencies are managed through [vcpkg][vcpkg] and declared in [vcpkg.json]
 - [gRPC][grpc] for RPC communication, including Protobuf and Abseil.
 - [EventLoop][eventloop-lib] for asynchronous event handling
 - [gflags][gflags-lib] for command-line argument processing
-- [glaze][glaze-lib] for JSON parsing
 - [spdlog][spdlog-lib] for logging
 - [GoogleTest][gtest-lib] for unit testing
 
@@ -87,7 +86,6 @@ Refer to [reactor_client.md](/applications/reactor/reactor_client.md)
 [cpp20-support]: https://en.cppreference.com/w/cpp/compiler_support/20
 [eventloop-lib]: https://github.com/amoldhamale1105/EventLoop
 [gflags-lib]: https://github.com/gflags/gflags
-[glaze-lib]: https://github.com/stephenberry/glaze
 [spdlog-lib]: https://github.com/gabime/spdlog
 [design-patterns-book]: https://refactoring.guru/design-patterns/book
 [refactoring-guru]: https://refactoring.guru/design-patterns

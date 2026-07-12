@@ -8,7 +8,7 @@ for gRPC build tuning.
 ## Prerequisites
 
 The build requires a C++20 compiler, CMake, Ninja, and Git. vcpkg supplies the C++ libraries (gRPC, Protobuf, Abseil,
-spdlog, gflags, glaze, EventLoop, GoogleTest).
+spdlog, gflags, EventLoop, GoogleTest).
 
 | Tool | Purpose | Minimum |
 | ---- | ------- | ------- |
