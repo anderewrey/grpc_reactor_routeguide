@@ -1,6 +1,6 @@
 ///
 /// SPDX-License-Identifier: Apache-2.0
-/// Copyright 2024 anderewrey
+/// Copyright 2026 anderewrey
 ///
 
 // Initial RouteGuide features, baked in at compile time - no runtime file parsing needed.
