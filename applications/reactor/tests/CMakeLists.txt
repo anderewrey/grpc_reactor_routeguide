@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2025 anderewrey
+
 # Reactor Client Tests
 
 find_package(GTest REQUIRED)

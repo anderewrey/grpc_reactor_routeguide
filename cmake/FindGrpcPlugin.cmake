@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2025 anderewrey
+
 # FindGrpcPlugin.cmake
 # Finds the grpc_cpp_plugin executable required for gRPC code generation
 #

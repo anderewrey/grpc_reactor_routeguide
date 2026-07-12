@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2025 anderewrey
+
 # CompilerCompatibilityCheck.cmake
 # Verifies compiler compatibility between system-installed libraries and current compiler
 #

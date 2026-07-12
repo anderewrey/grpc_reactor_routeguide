@@ -70,6 +70,10 @@ Refer to [reactor_client.md](/applications/reactor/reactor_client.md)
 - Rainer Grimm (1962-2025) for his [books][rainer-books] and [blog][modernescpp-blog] about modern C++. He advocated
   for ALS awareness and research throughout his journey with the disease. Consider supporting ALS research in his memory.
 
+## License
+
+This project is licensed under the [Apache License 2.0](/LICENSE).
+
 <!-- Reference links -->
 [vcpkg]: https://vcpkg.io/
 [grpc]: https://grpc.io/

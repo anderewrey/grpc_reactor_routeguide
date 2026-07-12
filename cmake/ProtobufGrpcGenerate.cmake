@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2025 anderewrey
+
 # ProtobufGrpcGenerate.cmake
 # Helper function for generating protobuf and gRPC C++ code from .proto files
 #
