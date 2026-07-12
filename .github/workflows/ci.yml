@@ -22,25 +22,91 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
       - uses: pre-commit/action@v3.0.1
 
-  # GCC, no sanitizer. Also the only job that publishes the JUnit check-run report - the other jobs
-  # below are pass/fail gates where a failure needs ctest's raw output/stack trace, not a table.
-  build-test-gcc-debug:
-    name: build-and-test (alpine, gcc-debug)
+  # Three variants of the same job, each an Alpine container with a different compiler and
+  # sanitizer combination. fail-fast is off so a failure in one variant doesn't cancel the others -
+  # they are pass/fail gates (a failure needs ctest's raw output/stack trace, not a table), except
+  # gcc-debug, the baseline configuration, which also publishes a per-suite JUnit check-run report.
+  #
+  # Alpine's grpc-dev/protobuf-dev/abseil-cpp-dev packages are themselves built with GCC, so the
+  # Clang variants also check that Clang-compiled code linking against those GCC-built system
+  # libraries is ABI-compatible in practice, not just in theory.
+  #
+  # Why Clang for the sanitizer variant, not GCC: Alpine's GCC package ships with
+  # --enable-libsanitizer, but its libsanitizer interceptors (e.g. sendmsg) are written and tested
+  # against glibc's struct layouts and crash on musl before this project's own code even runs.
+  # Clang's compiler-rt is the sanitizer runtime Alpine's own ecosystem actually maintains musl
+  # support for, so the sanitizer variant uses Clang exclusively.
+  build-test-alpine:
+    name: build-and-test (alpine, ${{ matrix.id }})
     runs-on: ubuntu-latest
     container:
       image: alpine:3.24
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: gcc-debug
+            packages: g++ nodejs
+            cxx_compiler: g++
+            cxx_flags: ""
+            linker_flags: ""
+            asan_options: ""
+            publish_report: true
+          - id: clang-debug
+            packages: clang gcc binutils
+            cxx_compiler: clang++
+            cxx_flags: ""
+            linker_flags: ""
+            asan_options: ""
+            publish_report: false
+          # ASan runtime options below (see ci.yml history for prior art), enabling checks that are
+          # off by default upstream:
+          # detect_invalid_pointer_pairs=2: flags <, <=, >, >=, - between pointers into unrelated
+          # allocations. This project mostly uses smart pointers/references rather than raw pointer
+          # arithmetic between objects, so this is expected to be a no-op check, not a source of noise.
+          # quarantine_size_mb=512 (default 256): delays heap-block reuse longer, improving
+          # use-after-free detection odds; a pure sensitivity increase, not a behavior change.
+          # strict_string_checks=1: checks that C-string arguments are actually null-terminated.
+          # Narrowly scoped to this project's own C-string usage (e.g. GetFeatureName(), strlen() in
+          # rg_utils.cpp), not gRPC/Abseil internals, so not expected to surface non-instrumented-
+          # library noise the way ThreadSanitizer's suppressions did (see "Why no ThreadSanitizer
+          # job" in docs/testing.md).
+          # detect_stack_use_after_return=1: targets this project's actual risk pattern - lambdas
+          # that capture local state by reference and get invoked later, possibly from a different
+          # thread (EventLoop handlers, the reactor_map_ reference captures).
+          # detect_leaks=1: leak detection is on by default upstream; this project previously forced
+          # it off pre-emptively on the assumption LeakSanitizer's ptrace requirement wouldn't be
+          # available in this container. Turned on after finding out empirically that it works.
+          # check_initialization_order=1 + strict_init_order=1: detects static initialization order
+          # fiasco bugs (a global's constructor reading another global that hasn't been constructed
+          # yet). Off by default because it is expensive and rarely relevant, but this project's
+          # per-RPC logger registry (rg_logger) and reactor maps are exactly the kind of static
+          # state that pattern breaks.
+          - id: clang-asan-ubsan
+            packages: clang compiler-rt gcc binutils llvm22
+            cxx_compiler: clang++
+            cxx_flags: "-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+            linker_flags: "-fsanitize=address,undefined"
+            asan_options: >-
+              detect_invalid_pointer_pairs=2 quarantine_size_mb=512 strict_string_checks=1
+              detect_stack_use_after_return=1 detect_leaks=1 check_initialization_order=1 strict_init_order=1
+            publish_report: false
     steps:
+      # llvm22 (only installed for the sanitizer variant) provides llvm22-symbolizer, needed to
+      # turn ASan/UBSan stack traces into function names and line numbers; neither the clang nor
+      # the compiler-rt package ships a symbolizer. The sanitizer runtime only recognizes a fixed
+      # set of binary names (llvm-symbolizer, addr2line, atos, ...), so it's symlinked to the
+      # unversioned name when present.
       - name: Install build dependencies
         run: |
           apk add --no-cache \
-            cmake ninja g++ git \
-            nodejs \
+            cmake ninja git ${{ matrix.packages }} \
             protobuf-dev \
             grpc-dev \
             abseil-cpp-dev \
@@ -52,51 +118,46 @@ jobs:
             gflags-dev \
             gtest-dev \
             glaze
+          if command -v llvm22-symbolizer > /dev/null 2>&1; then
+            ln -sf /usr/bin/llvm22-symbolizer /usr/bin/llvm-symbolizer
+          fi
 
       - uses: actions/checkout@v5
 
-      # EventLoop isn't packaged and has no install rules upstream, so add
-      # them (same pinned commit as the vcpkg overlay port) and install
-      # manually.
+      # Pinned to a commit on the anderewrey/EventLoop fork's cmake-improvement branch, not
+      # upstream amoldhamale1105/EventLoop, since that branch carries fixes this project needs
+      # (LANGUAGES CXX restriction, install() rules, GNUInstallDirs) that are proposed upstream but
+      # not yet merged - see TODOS.md. No patches needed here - the fork commit already has them
+      # applied directly. Revert to upstream + the two patch files once the PR is accepted.
       - name: Build and install EventLoop
         run: |
-          git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop
+          git clone https://github.com/anderewrey/EventLoop.git /tmp/EventLoop
           cd /tmp/EventLoop
-          git checkout e16fa52aae1d58a994fd93808c62fde14adb62f1
-          cat >> CMakeLists.txt <<'EOF'
-
-          install(TARGETS ${PROJECT_NAME}
-              EXPORT EventLoopTargets
-              LIBRARY DESTINATION lib
-              ARCHIVE DESTINATION lib
-              RUNTIME DESTINATION bin
-              INCLUDES DESTINATION include
-          )
-          install(FILES ${INCLUDES}
-              DESTINATION include
-          )
-          install(EXPORT EventLoopTargets
-              FILE EventLoopConfig.cmake
-              NAMESPACE EventLoop::
-              DESTINATION lib/cmake/EventLoop
-          )
-          EOF
-          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          git checkout d5d29a0349f3159067df0c3ff2741f1e984679f0
+          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx_compiler }}
           cmake --build build
           cmake --install build
           rm -rf /tmp/EventLoop
 
       - name: Configure
-        run: cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug
+        run: |
+          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=${{ matrix.cxx_compiler }} \
+            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.linker_flags }}"
 
       - name: Build
         run: cmake --build build
 
       - name: Test
+        env:
+          ASAN_OPTIONS: ${{ matrix.asan_options }}
+          ASAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer
+          UBSAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer
         run: ctest --test-dir build --output-on-failure
 
       - name: Publish test report
-        if: always()
+        if: always() && matrix.publish_report
         uses: mikepenz/action-junit-report@v6
         with:
           report_paths: build/test-results/*.xml
@@ -111,7 +172,7 @@ jobs:
       # block when it failed. This groups them by <testsuite name> (the GoogleTest fixture) into
       # collapsible <details> sections on the check run.
       - name: Attach detailed results to the check run
-        if: always()
+        if: always() && matrix.publish_report
         uses: actions/github-script@v9
         with:
           script: |
@@ -188,173 +249,79 @@ jobs:
               });
             }
 
-  # Clang, no sanitizer. Alpine's grpc-dev/protobuf-dev/abseil-cpp-dev packages are themselves built
-  # with GCC, so this also checks that Clang-compiled code linking against those GCC-built system
-  # libraries is ABI-compatible in practice, not just in theory.
-  build-test-clang-debug:
-    name: build-and-test (alpine, clang-debug)
+  # openSUSE Tumbleweed's rolling repos ship gRPC/Protobuf/Abseil/spdlog/gflags/gtest/glaze as a
+  # single version-matched, tested-together bundle (unlike Alpine/Debian/Fedora, where these
+  # versions are not necessarily coordinated), so this job is a second, independent system-package
+  # sanity check alongside the Alpine job above.
+  #
+  # Unlike Alpine, the sanitizer variant here uses GCC, not Clang: Tumbleweed is glibc-based, so
+  # GCC's libsanitizer interceptors (built and tested against glibc) work natively - none of the
+  # musl incompatibility that forces Alpine's sanitizer job onto Clang applies here. GCC's sanitizer
+  # runtime also symbolizes via addr2line/binutils directly, no separate llvm-symbolizer needed.
+  build-test-opensuse:
+    name: build-and-test (opensuse-tumbleweed, ${{ matrix.id }})
     runs-on: ubuntu-latest
     container:
-      image: alpine:3.24
+      image: opensuse/tumbleweed:latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: gcc-debug
+            cxx_flags: ""
+            linker_flags: ""
+            asan_options: ""
+          # Same ASan runtime options as the Alpine clang-asan-ubsan variant - see ci.yml history
+          # for the rationale behind each one.
+          - id: gcc-asan-ubsan
+            cxx_flags: "-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+            linker_flags: "-fsanitize=address,undefined"
+            asan_options: >-
+              detect_invalid_pointer_pairs=2 quarantine_size_mb=512 strict_string_checks=1
+              detect_stack_use_after_return=1 detect_leaks=1 check_initialization_order=1 strict_init_order=1
     steps:
       - name: Install build dependencies
         run: |
-          apk add --no-cache \
-            cmake ninja clang gcc binutils git \
-            protobuf-dev \
-            grpc-dev \
-            abseil-cpp-dev \
-            c-ares-dev \
-            re2-dev \
-            openssl-dev \
-            zlib-dev \
-            spdlog-dev \
-            gflags-dev \
-            gtest-dev \
-            glaze
+          zypper --non-interactive --gpg-auto-import-keys refresh
+          zypper --non-interactive install \
+            cmake ninja git gcc-c++ \
+            grpc-devel \
+            protobuf-devel \
+            abseil-cpp-devel \
+            c-ares-devel \
+            re2-devel \
+            libopenssl-devel \
+            zlib-devel \
+            spdlog-devel \
+            gflags-devel \
+            gtest \
+            glaze-devel
 
       - uses: actions/checkout@v5
 
+      # See the comment on the Alpine job's EventLoop step - same fork pin, same reason.
       - name: Build and install EventLoop
         run: |
-          git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop
+          git clone https://github.com/anderewrey/EventLoop.git /tmp/EventLoop
           cd /tmp/EventLoop
-          git checkout e16fa52aae1d58a994fd93808c62fde14adb62f1
-          cat >> CMakeLists.txt <<'EOF'
-
-          install(TARGETS ${PROJECT_NAME}
-              EXPORT EventLoopTargets
-              LIBRARY DESTINATION lib
-              ARCHIVE DESTINATION lib
-              RUNTIME DESTINATION bin
-              INCLUDES DESTINATION include
-          )
-          install(FILES ${INCLUDES}
-              DESTINATION include
-          )
-          install(EXPORT EventLoopTargets
-              FILE EventLoopConfig.cmake
-              NAMESPACE EventLoop::
-              DESTINATION lib/cmake/EventLoop
-          )
-          EOF
+          git checkout d5d29a0349f3159067df0c3ff2741f1e984679f0
           cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DCMAKE_CXX_COMPILER=clang++
+            -DCMAKE_CXX_COMPILER=g++
           cmake --build build
           cmake --install build
           rm -rf /tmp/EventLoop
 
       - name: Configure
-        run: cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++
+        run: |
+          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.linker_flags }}"
 
       - name: Build
         run: cmake --build build
 
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
-
-  # Clang + ASan/UBSan. GCC's Alpine package ships with --disable-libsanitizer patched back on, but
-  # its libsanitizer interceptors (e.g. sendmsg) are written and tested against glibc's struct
-  # layouts and crash on musl before this project's own code even runs. Clang's compiler-rt is the
-  # sanitizer runtime Alpine's own ecosystem actually maintains musl support for.
-  build-test-clang-asan-ubsan:
-    name: build-and-test (alpine, clang-asan-ubsan)
-    runs-on: ubuntu-latest
-    container:
-      image: alpine:3.24
-    timeout-minutes: 10
-    steps:
-      # llvm22 provides llvm22-symbolizer, needed to turn ASan/UBSan stack traces into function
-      # names and line numbers. Neither the clang nor the compiler-rt package ships a symbolizer.
-      # The sanitizer runtime only recognizes a fixed set of binary names (llvm-symbolizer,
-      # addr2line, atos, ...), so llvm22-symbolizer must be symlinked to the unversioned name.
-      - name: Install build dependencies
-        run: |
-          apk add --no-cache \
-            cmake ninja clang compiler-rt gcc binutils git \
-            llvm22 \
-            protobuf-dev \
-            grpc-dev \
-            abseil-cpp-dev \
-            c-ares-dev \
-            re2-dev \
-            openssl-dev \
-            zlib-dev \
-            spdlog-dev \
-            gflags-dev \
-            gtest-dev \
-            glaze
-          ln -sf /usr/bin/llvm22-symbolizer /usr/bin/llvm-symbolizer
-
-      - uses: actions/checkout@v5
-
-      - name: Build and install EventLoop
-        run: |
-          git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop
-          cd /tmp/EventLoop
-          git checkout e16fa52aae1d58a994fd93808c62fde14adb62f1
-          cat >> CMakeLists.txt <<'EOF'
-
-          install(TARGETS ${PROJECT_NAME}
-              EXPORT EventLoopTargets
-              LIBRARY DESTINATION lib
-              ARCHIVE DESTINATION lib
-              RUNTIME DESTINATION bin
-              INCLUDES DESTINATION include
-          )
-          install(FILES ${INCLUDES}
-              DESTINATION include
-          )
-          install(EXPORT EventLoopTargets
-              FILE EventLoopConfig.cmake
-              NAMESPACE EventLoop::
-              DESTINATION lib/cmake/EventLoop
-          )
-          EOF
-          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DCMAKE_CXX_COMPILER=clang++
-          cmake --build build
-          cmake --install build
-          rm -rf /tmp/EventLoop
-
-      # EventLoop itself is never built with sanitizers - only this project's own code is. Linking
-      # instrumented binaries against its plain shared library is fine; ASan/UBSan just won't catch
-      # bugs inside EventLoop.so itself.
-      - name: Configure
-        run: |
-          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer" \
-            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
-
-      - name: Build
-        run: cmake --build build
-
-      # detect_invalid_pointer_pairs=2: flags <, <=, >, >=, - between pointers into unrelated
-      # allocations. This project mostly uses smart pointers/references rather than raw pointer
-      # arithmetic between objects, so this is expected to be a no-op check, not a source of noise.
-      # quarantine_size_mb=512 (default 256): delays heap-block reuse longer, improving
-      # use-after-free detection odds; a pure sensitivity increase, not a behavior change.
-      # strict_string_checks=1: checks that C-string arguments are actually null-terminated.
-      # Narrowly scoped to this project's own C-string usage (e.g. GetFeatureName(), strlen() in
-      # rg_utils.cpp), not gRPC/Abseil internals, so not expected to surface non-instrumented-
-      # library noise the way the TSan suppressions did.
-      # detect_stack_use_after_return=1: targets this project's actual risk pattern - lambdas that
-      # capture local state by reference and get invoked later, possibly from a different thread
-      # (EventLoop handlers, the reactor_map_ reference captures).
-      # detect_leaks=1: leak detection is on by default upstream; this project previously forced it
-      # off pre-emptively on the assumption LeakSanitizer's ptrace requirement wouldn't be available
-      # in this container. Turned on here to find out empirically instead of assuming.
-      # check_initialization_order=1 + strict_init_order=1: detects static initialization order
-      # fiasco bugs (a global's constructor reading another global that hasn't been constructed
-      # yet). Off by default because it is expensive and rarely relevant, but this project's
-      # per-RPC logger registry (rg_logger) and reactor maps are exactly the kind of static state
-      # that pattern breaks.
       - name: Test
         env:
-          ASAN_OPTIONS: >-
-            detect_invalid_pointer_pairs=2 quarantine_size_mb=512 strict_string_checks=1
-            detect_stack_use_after_return=1 detect_leaks=1 check_initialization_order=1 strict_init_order=1
-          ASAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer
-          UBSAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer
+          ASAN_OPTIONS: ${{ matrix.asan_options }}
         run: ctest --test-dir build --output-on-failure

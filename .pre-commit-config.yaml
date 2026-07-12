@@ -9,9 +9,14 @@ repos:
       - id: check-shebang-scripts-are-executable
       - id: check-symlinks
       - id: detect-private-key
+      # .patch files are exact `git diff` output: a blank line or trailing whitespace inside a hunk
+      # can be meaningful context (e.g. a blank line in the diffed file itself), not incidental
+      # formatting, so these two hooks must not rewrite them.
       - id: end-of-file-fixer
+        exclude: \.patch$
       - id: fix-byte-order-marker
       - id: trailing-whitespace
+        exclude: \.patch$
       - id: forbid-submodules
 
   - repo: https://github.com/igorshubovych/markdownlint-cli
