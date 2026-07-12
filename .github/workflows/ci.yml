@@ -41,7 +41,7 @@ jobs:
   # against glibc's struct layouts and crash on musl before this project's own code even runs.
   # Clang's compiler-rt is the sanitizer runtime Alpine's own ecosystem actually maintains musl
   # support for, so the sanitizer variant uses Clang exclusively.
-  build-test:
+  build-test-alpine:
     name: build-and-test (alpine, ${{ matrix.id }})
     runs-on: ubuntu-latest
     container:
@@ -248,3 +248,80 @@ jobs:
                 },
               });
             }
+
+  # openSUSE Tumbleweed's rolling repos ship gRPC/Protobuf/Abseil/spdlog/gflags/gtest/glaze as a
+  # single version-matched, tested-together bundle (unlike Alpine/Debian/Fedora, where these
+  # versions are not necessarily coordinated), so this job is a second, independent system-package
+  # sanity check alongside the Alpine job above.
+  #
+  # Unlike Alpine, the sanitizer variant here uses GCC, not Clang: Tumbleweed is glibc-based, so
+  # GCC's libsanitizer interceptors (built and tested against glibc) work natively - none of the
+  # musl incompatibility that forces Alpine's sanitizer job onto Clang applies here. GCC's sanitizer
+  # runtime also symbolizes via addr2line/binutils directly, no separate llvm-symbolizer needed.
+  build-test-opensuse:
+    name: build-and-test (opensuse-tumbleweed, ${{ matrix.id }})
+    runs-on: ubuntu-latest
+    container:
+      image: opensuse/tumbleweed:latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: gcc-debug
+            cxx_flags: ""
+            linker_flags: ""
+            asan_options: ""
+          # Same ASan runtime options as the Alpine clang-asan-ubsan variant - see ci.yml history
+          # for the rationale behind each one.
+          - id: gcc-asan-ubsan
+            cxx_flags: "-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+            linker_flags: "-fsanitize=address,undefined"
+            asan_options: >-
+              detect_invalid_pointer_pairs=2 quarantine_size_mb=512 strict_string_checks=1
+              detect_stack_use_after_return=1 detect_leaks=1 check_initialization_order=1 strict_init_order=1
+    steps:
+      - name: Install build dependencies
+        run: |
+          zypper --non-interactive --gpg-auto-import-keys refresh
+          zypper --non-interactive install \
+            cmake ninja git gcc-c++ \
+            grpc-devel \
+            protobuf-devel \
+            abseil-cpp-devel \
+            c-ares-devel \
+            re2-devel \
+            libopenssl-devel \
+            zlib-devel \
+            spdlog-devel \
+            gflags-devel \
+            gtest \
+            glaze-devel
+
+      - uses: actions/checkout@v5
+
+      # See the comment on the Alpine job's EventLoop step - same fork pin, same reason.
+      - name: Build and install EventLoop
+        run: |
+          git clone https://github.com/anderewrey/EventLoop.git /tmp/EventLoop
+          cd /tmp/EventLoop
+          git checkout d5d29a0349f3159067df0c3ff2741f1e984679f0
+          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_CXX_COMPILER=g++
+          cmake --build build
+          cmake --install build
+          rm -rf /tmp/EventLoop
+
+      - name: Configure
+        run: |
+          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.linker_flags }}"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        env:
+          ASAN_OPTIONS: ${{ matrix.asan_options }}
+        run: ctest --test-dir build --output-on-failure
