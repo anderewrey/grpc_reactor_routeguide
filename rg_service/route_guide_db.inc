@@ -3,16 +3,11 @@
 /// Copyright 2024-2025 anderewrey
 ///
 
-// Initial RouteGuide features, baked in at compile time to give the sandbox servers/clients
-// a ready-to-use payload without any runtime file parsing.
-// Not a standalone header: expects <array>, <cstdint>, and <string_view> already included by
-// its includer (rg_db.cpp). Wraps its own `namespace rg_db` so the #include site does not have
-// to be nested inside a manually-opened namespace block to get the right scope.
+// Initial RouteGuide features, baked in at compile time - no runtime file parsing needed.
+// Not standalone: expects <array>/<cstdint>/<string_view> already included by rg_db.cpp.
 namespace rg_db {
 
-// Field order matches routeguide::Feature's wire layout (name, then location.latitude/
-// longitude) and rg_utils::MakeFeature's parameter order, so no reordering happens between
-// this table, the structured binding below, and the MakeFeature call in rg_db.cpp.
+// Field order matches Feature's wire layout and MakeFeature's params: name, latitude, longitude.
 struct FeatureData {
   std::string_view name;
   int32_t latitude;

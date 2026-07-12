@@ -45,11 +45,8 @@ repos:
                  -build/namespaces,
                  -whitespace/indent_namespace",
                 &cpplint_linelength "--linelength=120" ]
-      # cpplint's hook (upstream .pre-commit-hooks.yaml) gates files via a `files:` extension regex,
-      # not an identify "type" - and that regex doesn't include .inc, so it silently skips
-      # route_guide_db.inc. Named explicitly here rather than via a \.inc$ glob, since it's spliced
-      # code, not a self-contained header - not something to auto-lint on extension alone if other
-      # .inc files show up later for different reasons.
+      # cpplint's hook gates by a `files:` regex (not an identify "type"), which excludes .inc - named
+      # explicitly rather than via a glob, since not every future .inc file is guaranteed to be C++.
       - id: cpplint
         name: cpplint (route_guide_db.inc)
         types: [text]
