@@ -43,7 +43,7 @@ jobs:
       - name: Install build dependencies
         run: |
           apk add --no-cache \
-            cmake ninja git clang \
+            cmake ninja git clang gcc binutils \
             protobuf-dev \
             grpc-dev \
             abseil-cpp-dev \
