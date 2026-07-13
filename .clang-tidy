@@ -16,6 +16,12 @@ Checks: >
   -misc-include-cleaner
 # reactor_client.h's protected reactor members are intentional (see architecture.md), not a defect.
 # misc-include-cleaner is disabled: it flagged umbrella-header symbol use as 63 of 99 diagnostics.
-HeaderFilterRegex: '^(applications|rg_service|protobuf_utils|common)/'
+# clang-analyzer-* and bugprone-* both target similar defect classes (e.g. use-after-free); kept as
+# occasional double-reporting, not disabled, since no concrete pair of checks is confirmed to
+# always co-fire on the same code.
+#
+# Unanchored (no leading ^): compile_commands.json's -I paths are absolute (CMAKE_SOURCE_DIR always
+# is), so clang-tidy reports header paths as absolute too - an anchored pattern never matches them.
+HeaderFilterRegex: '.*/(applications|rg_service|protobuf_utils|common)/.*'
 WarningsAsErrors: ''
 FormatStyle: none

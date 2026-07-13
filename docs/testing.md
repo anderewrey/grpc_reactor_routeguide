@@ -159,12 +159,14 @@ symlinked to the unversioned `llvm-symbolizer` name the sanitizer runtime expect
 
 ### Static analysis
 
-[static-analysis.yml][static-analysis-workflow] runs `lint` (pre-commit) and `clang-tidy` as their
-own workflow, separate from the build/test matrix above, on every push. clang-tidy has two entry
-points sharing one build: a `pull_request` or `push` run that annotates diagnostics without
-failing the job, and a `workflow_dispatch` run that fails on any diagnostic for a deliberate,
-whole-repo pass. See `static-analysis.yml` for why it is a separate workflow, and `.clang-tidy`
-for the check selection.
+[static-analysis.yml][static-analysis-workflow] runs `lint` (pre-commit), `clang-tidy`, and
+`cppcheck` as their own workflow, separate from the build/test matrix above, on every push. A
+`build` job compiles once and shares `compile_commands.json` and the generated protobuf/gRPC
+headers with both analysis tools, which run as one matrix job's two entries rather than as
+separate jobs. Each entry has two triggers: a `pull_request` or `push` run that annotates
+diagnostics without failing the job, and a `workflow_dispatch` run that fails on any diagnostic
+for a deliberate, whole-repo pass. See `static-analysis.yml` for why it is a separate workflow,
+and `.clang-tidy` for clang-tidy's check selection.
 
 ## Adding new tests
 

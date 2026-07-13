@@ -42,9 +42,15 @@ repos:
         additional_dependencies: [pyyaml]
         # Disable rule C0307: indentation width, because it does not match the default CLion indentation.
         args: [ --line-width=120, --disabled-codes=C0307 ]
-        # portfile.cmake follows vcpkg's own upstream convention (e.g. an inline SHA512 hash always
-        # exceeds 120 columns), not this project's style.
         exclude: ^vcpkg/ports/.*/portfile\.cmake$
+      # portfile.cmake follows vcpkg's own upstream convention for its inline SHA512 hash, which
+      # always exceeds 120 columns - only --line-width is raised here, every other rule (naming,
+      # docstrings, ...) still applies, same two-entry split cpplint uses below for route_guide_db.inc.
+      - id: cmake-lint
+        name: cmake-lint (portfile.cmake)
+        additional_dependencies: [pyyaml]
+        args: [ --line-width=200, --disabled-codes=C0307 ]
+        files: ^vcpkg/ports/.*/portfile\.cmake$
 
   - repo: https://github.com/cpplint/cpplint
     rev: 2.0.2

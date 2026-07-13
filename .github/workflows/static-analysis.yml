@@ -10,8 +10,12 @@ on:
 permissions:
   contents: read
 
+# github.event.pull_request.head.sha (falling back to github.sha for push/workflow_dispatch) keys
+# this on the commit, not github.ref: a push to a branch with an open PR against master fires both
+# a push and a pull_request event for the same commit, each with a different ref - keying on ref
+# would let both run to completion instead of the later one cancelling the earlier duplicate.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -25,20 +29,21 @@ jobs:
           python-version: '3.x'
       - uses: pre-commit/action@v3.0.1
 
-  # clang-tidy and cppcheck are independent jobs, not steps in one job, so they run in parallel -
-  # each does its own full build rather than sharing one, the same tradeoff ci.yml's
-  # build-test-alpine job already made (see its comment) for the same reason.
-  clang-tidy:
-    name: static-analysis (clang-tidy)
+  # Builds once and shares compile_commands.json plus the generated protobuf/gRPC headers with
+  # both analysis jobs below, instead of each doing its own full build: neither clang-tidy nor
+  # cppcheck links or runs anything, and this project's CMake has no compiler-conditional flags, so
+  # which compiler produces these doesn't change what either tool sees.
+  build:
+    name: static-analysis (build)
     runs-on: ubuntu-latest
     container:
       image: alpine:3.24
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Install build dependencies
         run: |
           apk add --no-cache \
-            cmake ninja git clang clang-extra-tools gcc binutils \
+            cmake ninja git clang \
             protobuf-dev \
             grpc-dev \
             abseil-cpp-dev \
@@ -73,44 +78,40 @@ jobs:
       - name: Build
         run: cmake --build build
 
-      - name: Run clang-tidy
-        run: |
-          : > clang-tidy-output.txt
-          find applications common protobuf_utils rg_service -name '*.cpp' | while IFS= read -r f; do
-            clang-tidy -p build "$f" >> clang-tidy-output.txt 2>&1 || true
-          done
-          cat clang-tidy-output.txt
+      - name: Upload compile_commands.json and generated sources
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-analysis-build
+          path: |
+            build/compile_commands.json
+            build/rg_service/generated
+          retention-days: 1
 
-      # Turns each clang-tidy diagnostic line into a native GitHub Actions warning annotation.
-      - name: Annotate warnings
-        if: github.event_name == 'pull_request' || github.event_name == 'push'
-        run: |
-          grep -E ': (warning|error): ' clang-tidy-output.txt | while IFS= read -r diag; do
-            file=$(echo "$diag" | cut -d: -f1)
-            lineno=$(echo "$diag" | cut -d: -f2)
-            col=$(echo "$diag" | cut -d: -f3)
-            message=$(echo "$diag" | cut -d: -f4- | sed -E 's/^ (warning|error): //')
-            echo "::warning file=${file},line=${lineno},col=${col}::${message}"
-          done
-
-      - name: Fail on any warning (full repo pass)
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          if grep -qE ': (warning|error): ' clang-tidy-output.txt; then
-            exit 1
-          fi
-
-  cppcheck:
-    name: static-analysis (cppcheck)
+  # clang-tidy and cppcheck as two entries of one matrix, instead of two hand-duplicated jobs -
+  # each still installs its own analysis tool and its own EventLoop (needed for header resolution,
+  # but fast enough not to be worth sharing - only the whole-project compile above was).
+  analysis:
+    name: static-analysis (${{ matrix.tool }})
+    needs: build
     runs-on: ubuntu-latest
     container:
       image: alpine:3.24
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tool: clang-tidy
+            packages: clang clang-extra-tools
+            severity_regex: 'warning|error'
+          - tool: cppcheck
+            packages: cppcheck
+            severity_regex: 'warning|error|performance|portability'
     steps:
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           apk add --no-cache \
-            cmake ninja git g++ cppcheck \
+            cmake ninja git g++ ${{ matrix.packages }} \
             protobuf-dev \
             grpc-dev \
             abseil-cpp-dev \
@@ -124,7 +125,9 @@ jobs:
 
       - uses: actions/checkout@v5
 
-      # See ci.yml's build-test-alpine job for the same EventLoop fork pin and rationale.
+      # See ci.yml's build-test-alpine job for the same EventLoop fork pin and rationale. Built
+      # with g++ regardless of matrix.tool: only its headers are needed here, not a matching
+      # compiler, so there is nothing clang-tidy-specific about this step.
       - name: Build and install EventLoop
         run: |
           git clone https://github.com/anderewrey/EventLoop.git /tmp/EventLoop
@@ -136,44 +139,57 @@ jobs:
           cmake --install build
           rm -rf /tmp/EventLoop
 
-      - name: Configure
-        run: |
-          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=g++ \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      - uses: actions/download-artifact@v4
+        with:
+          name: static-analysis-build
+          path: build
 
-      - name: Build
-        run: cmake --build build
+      # Runs each file in its own background process (own output file, to avoid interleaved writes
+      # from concurrent appends to one file), instead of one clang-tidy process per file in series.
+      - name: Run clang-tidy
+        if: matrix.tool == 'clang-tidy'
+        run: |
+          mkdir -p /tmp/clang-tidy-out
+          find applications common protobuf_utils rg_service -name '*.cpp' -print0 | \
+            xargs -0 -P "$(nproc)" -I{} sh -c \
+              'clang-tidy -p build "$1" > "/tmp/clang-tidy-out/$(echo "$1" | tr / _).txt" 2>&1 || true' _ {}
+          cat /tmp/clang-tidy-out/*.txt > analysis-output.txt
+          cat analysis-output.txt
 
       # A different engine than clang-tidy (not LLVM-based), so it surfaces a different set of
-      # findings. -i build skips the generated protobuf/gRPC sources as primary check targets, but
-      # protoc's own version-guard #error (in the header they still transitively include) isn't
-      # this project's code either, so preprocessorErrorDirective is suppressed outright.
+      # findings. -i build skips the generated protobuf/gRPC sources as primary check targets;
+      # preprocessorErrorDirective is scoped to build/* (protoc's own version-guard #error, reached
+      # transitively through an #include there) so a real #error in this project's own code would
+      # still surface.
       - name: Run cppcheck
+        if: matrix.tool == 'cppcheck'
         run: |
           cppcheck --project=build/compile_commands.json \
+            -j "$(nproc)" \
             --enable=warning,performance,portability \
             --suppress=missingIncludeSystem \
-            --suppress=preprocessorErrorDirective \
+            --suppress=preprocessorErrorDirective:build/* \
             --inline-suppr \
             --template=gcc \
             -i build \
-            > cppcheck-output.txt 2>&1 || true
-          cat cppcheck-output.txt
+            > analysis-output.txt 2>&1 || true
+          cat analysis-output.txt
 
+      # Turns each diagnostic line into a native GitHub Actions warning annotation.
       - name: Annotate warnings
         if: github.event_name == 'pull_request' || github.event_name == 'push'
         run: |
-          grep -E ': (warning|error|performance|portability): ' cppcheck-output.txt | while IFS= read -r diag; do
+          grep -E ": (${{ matrix.severity_regex }}): " analysis-output.txt | while IFS= read -r diag; do
             file=$(echo "$diag" | cut -d: -f1)
             lineno=$(echo "$diag" | cut -d: -f2)
             col=$(echo "$diag" | cut -d: -f3)
-            message=$(echo "$diag" | cut -d: -f4- | sed -E 's/^ (warning|error|performance|portability): //')
+            message=$(echo "$diag" | cut -d: -f4- | sed -E "s/^ (${{ matrix.severity_regex }}): //")
             echo "::warning file=${file},line=${lineno},col=${col}::${message}"
           done
 
       - name: Fail on any warning (full repo pass)
         if: github.event_name == 'workflow_dispatch'
         run: |
-          if grep -qE ': (warning|error|performance|portability): ' cppcheck-output.txt; then
+          if grep -qE ": (${{ matrix.severity_regex }}): " analysis-output.txt; then
             exit 1
           fi
