@@ -23,5 +23,8 @@ Checks: >
 # Unanchored (no leading ^): compile_commands.json's -I paths are absolute (CMAKE_SOURCE_DIR always
 # is), so clang-tidy reports header paths as absolute too - an anchored pattern never matches them.
 HeaderFilterRegex: '.*/(applications|rg_service|protobuf_utils|common)/.*'
+# Without this, the pattern above also matches protoc's generated headers under
+# build/rg_service/generated/ (the out-of-source build directory mirrors rg_service/'s name).
+ExcludeHeaderFilterRegex: '/build/'
 WarningsAsErrors: ''
 FormatStyle: none
