@@ -22,7 +22,7 @@ if(NOT DEFINED CACHE{VCPKG_ROOT})
     else()
         # Try common locations (ordered by likelihood)
         # Paths are platform-aware: Unix paths for Linux/macOS, Windows paths for Windows
-        set(_VCPKG_SEARCH_PATHS
+        set(_vcpkg_search_paths
             # User development directories (Unix-style)
             "$ENV{HOME}/git/vcpkg"
             "$ENV{HOME}/vcpkg"
@@ -59,16 +59,16 @@ if(NOT DEFINED CACHE{VCPKG_ROOT})
             "${CMAKE_SOURCE_DIR}/../vcpkg"
         )
 
-        foreach(_PATH ${_VCPKG_SEARCH_PATHS})
-            if(EXISTS "${_PATH}/scripts/buildsystems/vcpkg.cmake")
-                set(VCPKG_ROOT "${_PATH}" CACHE PATH "Path to vcpkg installation")
+        foreach(path ${_vcpkg_search_paths})
+            if(EXISTS "${path}/scripts/buildsystems/vcpkg.cmake")
+                set(VCPKG_ROOT "${path}" CACHE PATH "Path to vcpkg installation")
                 message(STATUS "VCPKG_ROOT auto-detected: ${VCPKG_ROOT}")
                 break()
             endif()
         endforeach()
 
         if(NOT DEFINED CACHE{VCPKG_ROOT})
-            message(WARNING "VCPKG_ROOT not found. Searched: ${_VCPKG_SEARCH_PATHS}")
+            message(WARNING "VCPKG_ROOT not found. Searched: ${_vcpkg_search_paths}")
         endif()
     endif()
 endif()

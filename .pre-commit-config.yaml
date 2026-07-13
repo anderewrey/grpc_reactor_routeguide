@@ -27,13 +27,24 @@ repos:
         #args: [ "--disable MD013 MD024 -- " ]
         args: [ --config=markdownlint.yaml ]
 
-  # - repo: https://github.com/cheshirekow/cmake-format-precommit
-  #   rev: v0.6.13
-  #   hooks:
-  #     - id: cmake-format
-  #     - id: cmake-lint
-  #       # Disable rule C0307: indentation width, because it does not match the default CLion indentation.
-  #       args: [ --line-width=120, --disabled-codes=C0307 ]
+  # cmake-format (the autofixer) is intentionally not enabled: it reformats CMakeLists.txt into
+  # cmakelang's own dense packing (e.g. splitting single-arg set() calls onto two lines, reflowing
+  # multi-line comments into paragraphs), which fights this repo's existing hand-formatted style
+  # instead of matching it - confirmed by a real CI run. cmake-lint alone only reports, never
+  # rewrites, and already passes clean.
+  - repo: https://github.com/cheshirekow/cmake-format-precommit
+    rev: v0.6.13
+    hooks:
+      # cmakelang doesn't declare pyyaml as a hard dependency, but needs it at runtime to load a
+      # YAML-format config file - without this it crashes with "ModuleNotFoundError: No module
+      # named 'yaml'" before ever reading a CMakeLists.txt.
+      - id: cmake-lint
+        additional_dependencies: [pyyaml]
+        # Disable rule C0307: indentation width, because it does not match the default CLion indentation.
+        args: [ --line-width=120, --disabled-codes=C0307 ]
+        # portfile.cmake follows vcpkg's own upstream convention (e.g. an inline SHA512 hash always
+        # exceeds 120 columns), not this project's style.
+        exclude: ^vcpkg/ports/.*/portfile\.cmake$
 
   - repo: https://github.com/cpplint/cpplint
     rev: 2.0.2

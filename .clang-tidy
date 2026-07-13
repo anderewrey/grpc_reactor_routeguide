@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 anderewrey
+
+# Scoped to this project's own sources - see HeaderFilterRegex below.
+Checks: >
+  -*,
+  bugprone-*,
+  performance-*,
+  misc-*,
+  portability-*,
+  readability-*,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -misc-non-private-member-variables-in-classes,
+  -misc-include-cleaner
+# reactor_client.h's protected reactor members are intentional (see architecture.md), not a defect.
+# misc-include-cleaner is disabled: it flagged umbrella-header symbol use as 63 of 99 diagnostics.
+HeaderFilterRegex: '^(applications|rg_service|protobuf_utils|common)/'
+WarningsAsErrors: ''
+FormatStyle: none

@@ -110,7 +110,7 @@ port) to avoid conflicts between parallel test runs.
 ## Continuous integration
 
 [ci.yml][ci-workflow] runs the test suite as a `build-test-alpine` job with three matrix variants, each an
-Alpine container with a different compiler and sanitizer combination, plus a separate lint job.
+Alpine container with a different compiler and sanitizer combination.
 `fail-fast` is disabled, so a failure in one variant does not block the others from reporting their
 own result. Each variant installs its own apk packages and rebuilds EventLoop from source
 independently rather than sharing a container image, since a prebuilt-image approach was tried and
@@ -156,6 +156,15 @@ stack-use-after-return detection, leak detection, and static initialization orde
 Stack traces from this job are symbolized via `llvm22-symbolizer`, installed alongside Clang and
 symlinked to the unversioned `llvm-symbolizer` name the sanitizer runtime expects. Neither the
 `clang` nor the `compiler-rt` Alpine package ships a symbolizer binary.
+
+### Static analysis
+
+[static-analysis.yml][static-analysis-workflow] runs `lint` (pre-commit) and `clang-tidy` as their
+own workflow, separate from the build/test matrix above, on every push. clang-tidy has two entry
+points sharing one build: a `pull_request` or `push` run that annotates diagnostics without
+failing the job, and a `workflow_dispatch` run that fails on any diagnostic for a deliberate,
+whole-repo pass. See `static-analysis.yml` for why it is a separate workflow, and `.clang-tidy`
+for the check selection.
 
 ## Adding new tests
 
@@ -233,6 +242,7 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 
 <!-- Reference links -->
 [ci-workflow]: /.github/workflows/ci.yml
+[static-analysis-workflow]: /.github/workflows/static-analysis.yml
 [reactor-client]: /applications/reactor/reactor_client.h
 [reactor-client-routeguide]: /applications/reactor/reactor_client_routeguide.h
 [unary-test]: /applications/reactor/tests/active_unary_reactor_test.cpp

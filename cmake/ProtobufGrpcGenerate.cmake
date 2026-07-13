@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2025 anderewrey
 
+include(FindGrpcPlugin)
+
 # ProtobufGrpcGenerate.cmake
 # Helper function for generating protobuf and gRPC C++ code from .proto files
 #
@@ -15,9 +17,6 @@
 # This function generates both:
 #   - Standard protobuf C++ files (.pb.h, .pb.cc)
 #   - gRPC service C++ files (.grpc.pb.h, .grpc.pb.cc)
-
-include(FindGrpcPlugin)
-
 function(protobuf_grpc_generate)
     cmake_parse_arguments(
         ARG
