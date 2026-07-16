@@ -1,6 +1,6 @@
 {
   "name": "eventloop",
-  "version": "0.1.0",
+  "version": "2.0.0",
   "description": "Minimalist event loop library - overlay port required (not in vcpkg registry)",
   "homepage": "https://github.com/amoldhamale1105/EventLoop",
   "license": "MIT",
