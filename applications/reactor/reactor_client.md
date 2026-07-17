@@ -178,30 +178,6 @@ operations are still valid via an internal `stream_no_more_` flag:
   after a call already checked it. Closing that race fully would need the same `AddHold()`/`RemoveHold()`
   protection `OnReadDone()` already uses for the read side.
 
-### Why OnReadDone holds before returning
-
-When the `OnReadDoneOkCallback` returns true, the application thread will call `StartRead()` later, from
-`GetResponse()`, not immediately inside the gRPC callback. Between that return and the later `StartRead()` call,
-a concurrent `OnDone()` could still arrive and destroy the reactor's underlying gRPC-bound callback state. Any
-operation on the reactor after that would use a dangling pointer and segfault. `AddHold()` prevents `OnDone()`
-from firing during this window, and `RemoveHold()` in `GetResponse()` releases it once the new `StartRead()` is
-issued (or skipped, if the stream is done). This is the gap gRPC's own callback API leaves open by design, and
-why it added the [hold mechanism][grpc-hold-pr].
-
-### Hold semantics per RPC, not per direction
-
-gRPC's hold count (`AddHold()`/`RemoveHold()`) is a single counter shared by the entire RPC, not one counter per
-read/write direction, per gRPC's documented public contract (`grpcpp/support/client_callback.h`, not vendored in
-this repository). This has a direct consequence for `ActiveBidiReactor`:
-
-- A hold added in `OnReadDone()` (protecting a response held for later `GetResponse()`) does not block other,
-  independent reactions from firing. In particular, `OnWriteDone(false)` on an unrelated in-flight write can
-  still fire and set `stream_no_more_` while that hold is outstanding. The hold only gates `OnDone()`, not other
-  callbacks.
-- Consequently, `GetResponse()` must call `RemoveHold()` unconditionally, whether or not it restarts reading.
-  Only the restart is conditional on `stream_no_more_`. Skipping `RemoveHold()` when `stream_no_more_` happens to
-  already be true would leak the hold and stall the RPC (`OnDone()` would never fire) rather than fail loudly.
-
 ### Application-facing API
 
 These methods are exposed to application code with naming that reflects application-level semantics:
@@ -335,6 +311,38 @@ business logic (state updates, UI notifications, domain processing) in these han
 
 The Future component provides asynchronous access to RPC results. The reactor instance acts as the Future, exposing
 `GetResponse()` to retrieve response data and `Status()` to check operation success or failure.
+
+### Guards component
+
+The Guards component prevents `OnDone()` from concluding an RPC, and destroying its underlying gRPC-bound state,
+while the application still has an operation pending outside of any gRPC reaction. It is implemented via gRPC's
+`AddHold()`/`RemoveHold()` mechanism.
+
+#### Why OnReadDone holds before returning
+
+When the `OnReadDoneOkCallback` returns true, the application thread will call `StartRead()` later, from
+`GetResponse()`, not immediately inside the gRPC callback. Between that return and the later `StartRead()` call,
+a concurrent `OnDone()` could still arrive and destroy the reactor's underlying gRPC-bound callback state. Calling
+`StartRead()` at that point would forward through that now-destroyed object and segfault. Other reactor
+operations, `Status()` and `TryCancel()`, do not touch gRPC's internal object at all, so they remain safe to call
+regardless of hold state; only the deferred `StartRead()` needs the hold's protection. `AddHold()` prevents
+`OnDone()` from firing during this window, and `RemoveHold()` in `GetResponse()` releases it once the new
+`StartRead()` is issued (or skipped, if the stream is done). This is the gap gRPC's own callback API leaves open
+by design, and why it added the [hold mechanism][grpc-hold-pr].
+
+#### Hold semantics per RPC, not per direction
+
+gRPC's hold count (`AddHold()`/`RemoveHold()`) is a single counter shared by the entire RPC, not one counter per
+read/write direction, per gRPC's documented public contract (`grpcpp/support/client_callback.h`, not vendored in
+this repository). This has a direct consequence for `ActiveBidiReactor`:
+
+- A hold added in `OnReadDone()` (protecting a response held for later `GetResponse()`) does not block other,
+  independent reactions from firing. In particular, `OnWriteDone(false)` on an unrelated in-flight write can
+  still fire and set `stream_no_more_` while that hold is outstanding. The hold only gates `OnDone()`, not other
+  callbacks.
+- Consequently, `GetResponse()` must call `RemoveHold()` unconditionally, whether or not it restarts reading.
+  Only the restart is conditional on `stream_no_more_`. Skipping `RemoveHold()` when `stream_no_more_` happens to
+  already be true would leak the hold and stall the RPC (`OnDone()` would never fire) rather than fail loudly.
 
 ## Unary RPC client
 
@@ -590,8 +598,12 @@ When it returns:
 thread-safe to access the reactor from a different processing thread without concurrent events (e.g. RPC termination).
 Once the proceeding of the response is done, the RPC must be signaled to start a new read and then the hold can be
 removed.
-- false, the active reactor will immediately start a new response reading without waiting. That case can be useful when
-the responses are put on a queue or when it is discarded.
+- false, the active reactor will immediately start a new response reading without waiting, reusing the same response
+storage for that next read. Because no hold is added, any data the callback wants to keep must be extracted (copied
+or moved out) before the callback returns, since the next incoming response overwrites that storage as soon as
+reading resumes. That case can be useful when the response is copied onto a queue for later, application-thread
+processing, or when it is discarded outright. That extraction must stay minimal, since it still executes on the
+gRPC thread; the response's actual processing should happen afterward, on the application thread.
 
 #### Class functions
 

@@ -140,7 +140,7 @@ class RouteGuideClient {
               auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
               assert(reactor == reactor_.get());
               const auto status = reactor->Status();
-              // (Point 4.8) update application with status
+              // (Point 4.10) update application with status
               logger.info("         | {} reactor: {}", event->getName(), fmt::ptr(reactor));
               // (Point 4.11) Destroy reactor
               reactor_.reset();
