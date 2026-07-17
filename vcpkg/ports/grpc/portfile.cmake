@@ -1,7 +1,8 @@
 # Custom gRPC port for grpc_reactor_routeguide project
 # Based on docs/grpc-build-guide.md specifications
-# Version: 1.73.1
 # C++ only, speed-optimized, minimal features
+
+# VERSION is injected by vcpkg from this port's own vcpkg.json "version" field.
 
 # Why we call git directly instead of using vcpkg_from_git or vcpkg_from_github:
 #
@@ -14,18 +15,18 @@
 #
 # This approach matches docs/grpc-build-guide.md: git clone --depth 1 --recurse-submodules
 
-set(SOURCE_PATH "${CURRENT_BUILDTREES_DIR}/src/grpc-v1.73.1")
+set(SOURCE_PATH "${CURRENT_BUILDTREES_DIR}/src/grpc-v${VERSION}")
 
 if(NOT EXISTS "${SOURCE_PATH}/.git")
     find_program(GIT git)
 
-    message(STATUS "Cloning gRPC v1.73.1 with submodules...")
+    message(STATUS "Cloning gRPC v${VERSION} with submodules...")
     file(MAKE_DIRECTORY "${CURRENT_BUILDTREES_DIR}/src")
 
     vcpkg_execute_required_process(
         COMMAND ${GIT} clone
             --depth 1
-            --branch v1.73.1
+            --branch v${VERSION}
             --recurse-submodules
             https://github.com/grpc/grpc.git
             ${SOURCE_PATH}
