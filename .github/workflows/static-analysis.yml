@@ -1,7 +1,13 @@
 name: static-analysis
 
 on:
+  # Excludes master: a PR targeting master already ran this via pull_request below before merge, so
+  # a push straight to master (post-merge) would be a redundant re-run - and it collides with ci.yml's
+  # own push-triggered run for the same commit, racing to create the "JUnit Test Report" check run
+  # (mikepenz/action-junit-report's Checks API call has no explicit check-suite target, so GitHub can
+  # attach it to whichever of the two same-commit check suites it treats as current).
   push:
+    branches-ignore: [master]
   pull_request:
     branches: [master]
   workflow_dispatch:
