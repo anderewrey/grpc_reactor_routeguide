@@ -40,11 +40,11 @@ if(NOT USING_VCPKG AND NOT SKIP_COMPILER_CHECK)
     set(COMPILER_MISMATCH FALSE)
     set(MISMATCH_DETAILS "")
 
-    foreach(LIB_PATH ${LIBS_TO_CHECK})
-        if(EXISTS "${LIB_PATH}")
+    foreach(lib_path ${LIBS_TO_CHECK})
+        if(EXISTS "${lib_path}")
             # Extract compiler info from the library's .comment section
             execute_process(
-                COMMAND readelf -p .comment "${LIB_PATH}"
+                COMMAND readelf -p .comment "${lib_path}"
                 OUTPUT_VARIABLE LIB_COMMENT
                 ERROR_QUIET
                 OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -78,21 +78,21 @@ if(NOT USING_VCPKG AND NOT SKIP_COMPILER_CHECK)
             if(NOT "${LIB_COMPILER_TYPE}" STREQUAL "${CURRENT_COMPILER_TYPE}")
                 set(COMPILER_MISMATCH TRUE)
                 string(APPEND MISMATCH_DETAILS
-                    "  ${LIB_PATH}:\n"
+                    "  ${lib_path}:\n"
                     "    Built with: ${LIB_COMPILER_TYPE} ${LIB_COMPILER_VERSION}\n"
                     "    Your compiler: ${CURRENT_COMPILER_TYPE} ${CURRENT_COMPILER_VERSION}\n"
                 )
             elseif(NOT "${LIB_COMPILER_VERSION}" STREQUAL "${CURRENT_COMPILER_VERSION}")
                 # Major.minor version mismatch is a warning, not fatal
                 message(WARNING
-                    "Compiler version mismatch for ${LIB_PATH}:\n"
+                    "Compiler version mismatch for ${lib_path}:\n"
                     "  Library built with: ${LIB_COMPILER_TYPE} ${LIB_COMPILER_VERSION}\n"
                     "  Your compiler: ${CURRENT_COMPILER_TYPE} ${CURRENT_COMPILER_VERSION}\n"
                     "  This may cause issues with template-heavy code."
                 )
             endif()
 
-            message(STATUS "Checked ${LIB_PATH}: ${LIB_COMPILER_TYPE} ${LIB_COMPILER_VERSION}")
+            message(STATUS "Checked ${lib_path}: ${LIB_COMPILER_TYPE} ${LIB_COMPILER_VERSION}")
         endif()
     endforeach()
 

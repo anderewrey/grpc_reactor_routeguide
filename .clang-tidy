@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 anderewrey
+
+# Scoped to this project's own sources - see HeaderFilterRegex below.
+Checks: >
+  -*,
+  bugprone-*,
+  performance-*,
+  misc-*,
+  portability-*,
+  readability-*,
+  clang-analyzer-*,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -misc-non-private-member-variables-in-classes,
+  -misc-include-cleaner
+# reactor_client.h's protected reactor members are intentional (see architecture.md), not a defect.
+# misc-include-cleaner is disabled: it flagged umbrella-header symbol use as 63 of 99 diagnostics.
+# clang-analyzer-* and bugprone-* both target similar defect classes (e.g. use-after-free); kept as
+# occasional double-reporting, not disabled, since no concrete pair of checks is confirmed to
+# always co-fire on the same code.
+#
+# Unanchored (no leading ^): compile_commands.json's -I paths are absolute (CMAKE_SOURCE_DIR always
+# is), so clang-tidy reports header paths as absolute too - an anchored pattern never matches them.
+HeaderFilterRegex: '.*/(applications|rg_service|protobuf_utils|common)/.*'
+# Without this, the pattern above also matches protoc's generated headers under
+# build/rg_service/generated/ (the out-of-source build directory mirrors rg_service/'s name).
+ExcludeHeaderFilterRegex: '/build/'
+WarningsAsErrors: ''
+FormatStyle: none

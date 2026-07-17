@@ -17,16 +17,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
-    name: lint (pre-commit)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.x'
-      - uses: pre-commit/action@v3.0.1
-
   # Three variants of the same job, each an Alpine container with a different compiler and
   # sanitizer combination. fail-fast is off so a failure in one variant doesn't cancel the others -
   # they are pass/fail gates (a failure needs ctest's raw output/stack trace, not a table), except
