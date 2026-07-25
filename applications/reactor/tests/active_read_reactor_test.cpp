@@ -7,6 +7,9 @@
 /// Tests the server-side streaming (read) reactor pattern using ListFeatures RPC.
 /// Uses std::promise/future for synchronization.
 ///
+/// The ok callback owns each received message, so these tests take ownership
+/// there instead of pulling a response back from the reactor.
+///
 /// The test fixture creates:
 /// - An in-process gRPC server with controllable ListFeatures responses
 /// - Client reactors with callbacks that complete promises directly
@@ -146,12 +149,11 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleResponses_ReceivesAll) {
   // Create request (bounding rectangle)
   routeguide::Rectangle request = rg_utils::MakeRectangle(0, -800000000, 500000000, 0);
 
-  // Create callbacks - use false to let reactor auto-continue reads
+  // Create callbacks - each message arrives owned by the ok callback
   routeguide::ListFeatures::Callbacks cbs;
   cbs.ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
-                                 const routeguide::Feature& response) {
-    received_features.push_back(response);
-    return false;  // Don't hold - let reactor auto-continue to next read
+                                std::unique_ptr<routeguide::Feature> response) {
+    received_features.push_back(std::move(*response));
   };
   cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {
     // Stream ended - no more reads
@@ -203,9 +205,8 @@ TEST_F(ActiveReadReactorTest, ListFeatures_EmptyStream_CompletesSuccessfully) {
 
   routeguide::ListFeatures::Callbacks cbs;
   cbs.ok = [&read_count](grpc::ClientReadReactor<routeguide::Feature>*,
-                          const routeguide::Feature&) {
+                         std::unique_ptr<routeguide::Feature>) {
     ++read_count;  // Should never be called for empty stream
-    return false;
   };
   cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {
     // Expected: stream ends immediately
@@ -247,9 +248,8 @@ TEST_F(ActiveReadReactorTest, ListFeatures_SingleFeature_ReceivesOne) {
 
   routeguide::ListFeatures::Callbacks cbs;
   cbs.ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
-                                 const routeguide::Feature& response) {
-    received_features.push_back(response);
-    return false;
+                                std::unique_ptr<routeguide::Feature> response) {
+    received_features.push_back(std::move(*response));
   };
   cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
@@ -299,9 +299,8 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ServerErrorMidStream_PropagatesStatus
 
   routeguide::ListFeatures::Callbacks cbs;
   cbs.ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
-                                 const routeguide::Feature& response) {
-    received_features.push_back(response);
-    return false;
+                                std::unique_ptr<routeguide::Feature> response) {
+    received_features.push_back(std::move(*response));
   };
   cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
@@ -344,9 +343,8 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ImmediateError_PropagatesStatus) {
 
   routeguide::ListFeatures::Callbacks cbs;
   cbs.ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
-                                 const routeguide::Feature& response) {
-    received_features.push_back(response);
-    return false;
+                                std::unique_ptr<routeguide::Feature> response) {
+    received_features.push_back(std::move(*response));
   };
   cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
@@ -390,9 +388,8 @@ TEST_F(ActiveReadReactorTest, ListFeatures_TryCancel_TerminatesStream) {
 
   routeguide::ListFeatures::Callbacks cbs;
   cbs.ok = [&read_count](grpc::ClientReadReactor<routeguide::Feature>*,
-                          const routeguide::Feature&) {
+                         std::unique_ptr<routeguide::Feature>) {
     ++read_count;
-    return false;
   };
   cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
@@ -441,9 +438,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_DeadlineExceeded_PropagatesStatus) {
   routeguide::Rectangle request;
 
   routeguide::ListFeatures::Callbacks cbs;
-  cbs.ok = [](grpc::ClientReadReactor<routeguide::Feature>*, const routeguide::Feature&) {
-    return false;
-  };
+  cbs.ok = [](grpc::ClientReadReactor<routeguide::Feature>*, std::unique_ptr<routeguide::Feature>) {};
   cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
                               const grpc::Status& status) {
@@ -494,9 +489,8 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleConcurrent_AllComplete) {
 
     routeguide::ListFeatures::Callbacks cbs;
     cbs.ok = [&feature_counts, i](grpc::ClientReadReactor<routeguide::Feature>*,
-                                   const routeguide::Feature&) {
+                                  std::unique_ptr<routeguide::Feature>) {
       ++feature_counts[i];
-      return false;
     };
     cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
     cbs.done = [&completed_count, &all_done_promise, &statuses, i, kNumConcurrentStreams](
@@ -542,9 +536,8 @@ TEST_F(ActiveReadReactorTest, ListFeatures_NokCallback_FiresOnStreamEnd) {
 
   routeguide::ListFeatures::Callbacks cbs;
   cbs.ok = [&ok_count](grpc::ClientReadReactor<routeguide::Feature>*,
-                        const routeguide::Feature&) {
+                       std::unique_ptr<routeguide::Feature>) {
     ++ok_count;
-    return false;
   };
   cbs.nok = [&nok_called](grpc::ClientReadReactor<routeguide::Feature>*) {
     nok_called = true;
@@ -565,6 +558,103 @@ TEST_F(ActiveReadReactorTest, ListFeatures_NokCallback_FiresOnStreamEnd) {
   EXPECT_TRUE(status.ok());
   EXPECT_EQ(ok_count, 2);
   EXPECT_TRUE(nok_called) << "nok callback should fire when stream ends";
+}
+
+/// @test Validates an unbound ok slot discards messages without stalling the stream.
+///
+/// The re-arm sits outside the `if (cbs_.ok)` guard, so a stream with no ok callback still drains:
+///
+/// 1. Server sends 5 features, none of which is handed anywhere
+/// 2. OnReadDone(false) ends the stream, then OnDone fires with OK
+TEST_F(ActiveReadReactorTest, ListFeatures_NoOkCallbackBound_StreamStillDrains) {
+  std::vector<routeguide::Feature> features;
+  for (int i = 0; i < 5; ++i) {
+    features.push_back(rg_utils::MakeFeature("Feature " + std::to_string(i), 100 + i, -100 - i));
+  }
+  test_service_.SetListFeaturesResponse(features);
+
+  bool nok_called = false;
+  std::promise<grpc::Status> done_promise;
+  std::future<grpc::Status> done_future = done_promise.get_future();
+
+  routeguide::Rectangle request;
+
+  routeguide::ListFeatures::Callbacks cbs;
+  // cbs.ok deliberately left unbound.
+  cbs.nok = [&nok_called](grpc::ClientReadReactor<routeguide::Feature>*) {
+    nok_called = true;
+  };
+  cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
+                             const grpc::Status& status) {
+    done_promise.set_value(status);
+  };
+
+  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
+      *stub_, CreateClientContext(), request, std::move(cbs));
+
+  auto wait_result = done_future.wait_for(std::chrono::seconds(5));
+  ASSERT_EQ(wait_result, std::future_status::ready) << "Stream stalled with no ok callback bound";
+
+  grpc::Status status = done_future.get();
+
+  EXPECT_TRUE(status.ok()) << "Status: " << status.error_message();
+  EXPECT_TRUE(nok_called) << "nok callback should fire when stream ends";
+}
+
+/// @test Validates the stream completes while the consumer defers all processing.
+///
+/// The ok callback parks each owned message and calls nothing back into the reactor. This deadlocked
+/// under the previous contract, where only GetResponse() issued the next read.
+///
+/// Verifies that:
+/// - All 25 messages arrive with no consumer-side action at all
+/// - The nok and done events still fire
+/// - Every parked message still holds its own value, so none of them alias a shared read buffer
+TEST_F(ActiveReadReactorTest, ListFeatures_DeferredConsumer_StreamCompletesWithoutConsumerAction) {
+  constexpr int kFeatureCount = 25;
+  std::vector<routeguide::Feature> expected_features;
+  for (int i = 0; i < kFeatureCount; ++i) {
+    expected_features.push_back(
+        rg_utils::MakeFeature("Feature " + std::to_string(i), 400000000 + i * 1000, -740000000 + i * 1000));
+  }
+  test_service_.SetListFeaturesResponse(expected_features);
+
+  // Parked messages: kept owned and untouched until the RPC is over.
+  std::vector<std::unique_ptr<routeguide::Feature>> parked;
+  bool nok_called = false;
+  std::promise<grpc::Status> done_promise;
+  std::future<grpc::Status> done_future = done_promise.get_future();
+
+  routeguide::Rectangle request = rg_utils::MakeRectangle(0, -800000000, 500000000, 0);
+
+  routeguide::ListFeatures::Callbacks cbs;
+  cbs.ok = [&parked](grpc::ClientReadReactor<routeguide::Feature>*,
+                     std::unique_ptr<routeguide::Feature> response) {
+    parked.push_back(std::move(response));  // Defer everything: no processing, no reactor call
+  };
+  cbs.nok = [&nok_called](grpc::ClientReadReactor<routeguide::Feature>*) {
+    nok_called = true;
+  };
+  cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
+                             const grpc::Status& status) {
+    done_promise.set_value(status);
+  };
+
+  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
+      *stub_, CreateClientContext(), request, std::move(cbs));
+
+  auto wait_result = done_future.wait_for(std::chrono::seconds(5));
+  ASSERT_EQ(wait_result, std::future_status::ready)
+      << "Stream stalled while the consumer deferred processing";
+
+  grpc::Status status = done_future.get();
+
+  EXPECT_TRUE(status.ok()) << "Status: " << status.error_message();
+  EXPECT_TRUE(nok_called) << "nok callback should fire when stream ends";
+  ASSERT_EQ(parked.size(), static_cast<size_t>(kFeatureCount));
+  for (int i = 0; i < kFeatureCount; ++i) {
+    EXPECT_EQ(parked[i]->name(), expected_features[i].name()) << "Parked message " << i << " was overwritten";
+  }
 }
 
 }  // namespace

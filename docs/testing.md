@@ -44,8 +44,10 @@ complexity of a background dispatch thread.
 path: a gRPC reactor callback triggers `EventLoop::TriggerEvent()`, and the application thread
 executes the deferred handler. It runs a real EventLoop in `NON_BLOCK` mode on a background
 thread. It asserts that reactor callbacks execute off the main thread, while `EventLoop` handlers
-execute the deferred processing. This includes the hold/resume pattern for streaming responses,
-where `GetResponse()` is called from an `EventLoop` handler.
+execute the deferred processing. For `ActiveReadReactor` this includes the ownership-transfer path:
+the gRPC-thread `ok` callback releases the owned message into `EventLoop::TriggerEvent()`, and the
+`EventLoop` handler reclaims that pointer. The same case asserts that messages arrive in network
+order and that the `done` event is handled behind all of them, since both ride the same FIFO queue.
 
 Unlike the four unit test files, this single fixture accumulates one case per reactor type
 instead of splitting into one file per type. Every case exercises the same dispatch path and
@@ -57,7 +59,7 @@ differs only in RPC shape.
 | ---------- | ---------- |
 | Reactor callback logic, error paths, cancellation, deadlines | Synchronous unit test |
 | Thread-hopping and dispatch through `EventLoop` | Integration test |
-| Hold/resume pattern for streaming responses | Integration test |
+| Message ownership crossing the thread boundary through `EventLoop` | Integration test |
 | New reactor type | Both: one synchronous unit test file plus one integration test |
 
 ## Test coverage
@@ -69,10 +71,16 @@ See the file list above for which file covers which RPC type.
 | RPC Type | Reactor Class | Scenarios |
 | ---------- | --------------- | ----------- |
 | Unary (`GetFeature`) | `ActiveUnaryReactor` | Success, empty/server/not-found response, cancel, deadline, concurrent |
-| Server stream (`ListFeatures`) | `ActiveReadReactor` | Multiple/empty response, mid-stream error, cancel, concurrent |
+| Server stream (`ListFeatures`) | `ActiveReadReactor` | Multiple/empty, error, cancel, concurrent, deferred consumer |
 | Client stream (`RecordRoute`) | `ActiveWriteReactor` | Multiple/empty point, overlapping writes, cancel, error |
 | Bidirectional (`RouteChat`) | `ActiveBidiReactor` | Send/receive, interleaved, either side closes first, cancel |
 | EventLoop dispatch | N/A | `GetFeature`/`ListFeatures`/cancel dispatched through a real `EventLoop` |
+
+The deferred-consumer scenario of the server-stream row is
+`ListFeatures_DeferredConsumer_StreamCompletesWithoutConsumerAction` in [active_read_reactor_test.cpp][read-test].
+Its `ok` callback parks every received message and calls nothing back into the reactor, and the stream still runs
+to completion, because `ActiveReadReactor` re-arms each read itself. The same test checks that every parked
+message kept its own value, so none of them alias a shared read buffer.
 
 ### Naming convention
 

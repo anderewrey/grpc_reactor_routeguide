@@ -51,8 +51,8 @@ std::unique_ptr<grpc::ClientContext> CreateClientContext() {
  *   ActiveBidiReactor) = Method Request
  * - EventLoop = Scheduler + Activation Queue
  * - EventLoop::RegisterEvent handlers = Servant (business logic placeholder)
- * - GetResponse() / Status() = Future
- * - AddHold/RemoveHold = Guards (prevent concurrent access)
+ * - GetResponse() / Status() = Future (ListFeatures pushes owned messages instead)
+ * - AddHold/RemoveHold = Guards (prevent concurrent access), RouteChat only
  *
  * Note: This demo uses simple logging as Servant logic. Production applications
  * would implement actual business logic in the event handlers.
@@ -102,23 +102,14 @@ class RouteGuideClient {
             }),
         list_features_on_read_done_ok_(
             kListFeaturesOnReadDoneOk,
-            [this, &reactor_ = reactor_map_[routeguide::ListFeatures::RpcKey],
-             &logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures)](const EventLoop::Event* event) {
-              // (Point 2.7) ProceedEvent: OnReadDoneOk
+            [&logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures)](const EventLoop::Event* event) {
+              // (Point 2.8) ProceedEvent: OnReadDoneOk
               assert(main_thread == std::this_thread::get_id());  // application thread
-              auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
-              assert(reactor == reactor_.get());
-              // (Point 2.8, 2.9, 2.10, 2.11) extracts response and restart RPC
-              routeguide::ListFeatures::ResponseT response;
-              reactor->GetResponse(response);
-              // (Point 2.12) update application with response
-              logger.info("RESPONSE | {}: {}", response.GetTypeName(), protobuf_utils::ToString(response));
-#if 0
-          // Triggering extra concurrency: Un-comment that #IF block to probe the refusal of concurrent RPC calls.
-          // Each received result from stream is reused to trigger a concurrent unary RPC request. If the RPC already
-          // has a pending operation, the new call is refused.
-          GetFeature(response.location());
-#endif
+              // The event data is the message, not the reactor: reclaim the released ownership
+              const std::unique_ptr<routeguide::ListFeatures::ResponseT> response{
+                  static_cast<routeguide::ListFeatures::ResponseT*>(event->getData())};
+              // (Point 2.9) update application with response
+              logger.info("RESPONSE | {}: {}", response->GetTypeName(), protobuf_utils::ToString(*response));
             }),
         list_features_on_read_done_nok_(
             kListFeaturesOnReadDoneNOk,
@@ -273,11 +264,10 @@ class RouteGuideClient {
     }
 
     Callbacks cbs;
-    // (Point 2.4) TriggerEvent: OnReadDoneOk
-    cbs.ok = [](auto* reactor, const ResponseT&) -> bool {
+    // (Point 2.5) TriggerEvent: OnReadDoneOk, handing the message ownership to the queue
+    cbs.ok = [](auto*, std::unique_ptr<ResponseT> response) {
       assert(main_thread != std::this_thread::get_id());  // gRPC thread
-      EventLoop::TriggerEvent(kListFeaturesOnReadDoneOk, reactor);
-      return true;  // true: hold the RPC until the application proceeded the response
+      EventLoop::TriggerEvent(kListFeaturesOnReadDoneOk, response.release());
     };
     // (Point 4.3) TriggerEvent: OnReadDoneNOk
     cbs.nok = [](auto* reactor) {

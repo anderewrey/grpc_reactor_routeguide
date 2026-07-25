@@ -17,9 +17,13 @@ Servant handlers.
 
 | Aspect | Definition | This Implementation |
 | -------- | ------------------ | --------------------- |
-| Guards | Method Requests have `guard()` for synchronization | `AddHold()`/`RemoveHold()` mechanism |
+| Guards | Method Requests have `guard()` for synchronization | `AddHold()`/`RemoveHold()` in `ActiveBidiReactor` |
 | Servant | Business logic component with state | Application-provided (demo uses logging placeholders) |
 | Scope | Full client-server encapsulation | Client-side library (server has separate Servant) |
+
+`ActiveBidiReactor` is the only reactor that guards a message with a hold. `ActiveReadReactor` transfers ownership
+of each received message to its `ok` callback and re-arms the next read as the last action of the same read
+reaction, so the next read cannot complete while that reaction runs and no hold is needed.
 
 The implementation follows this component structure:
 
@@ -54,11 +58,11 @@ Queue); the corresponding Response Handler then runs on the application thread.
 | Component | Implementation | Role |
 | ----------- | ---------------- | ------ |
 | **Proxy** | `RouteGuideClient::GetFeature()`, `ListFeatures()` | Client-facing API, creates reactors |
-| **Method Request** | `ActiveUnaryReactor`, `ActiveReadReactor` | Encapsulates RPC state with guards |
+| **Method Request** | `ActiveUnaryReactor`, `ActiveReadReactor` | Encapsulates RPC state and context |
 | **Scheduler** | `EventLoop::Run()` | Dispatches events to handlers |
 | **Activation Queue** | EventLoop internal queue | Holds pending events |
 | **Servant** | `EventLoop::RegisterEvent()` handlers | Processes RPC responses (application logic) |
-| **Future** | `GetResponse()`, `Status()` | Deferred result access |
+| **Future** | `GetResponse()` and `Status()`, or `Status()` alone in `ActiveReadReactor` | Deferred result access |
 
 > **Note:** The "Proxy" terminology describes the component's role in the Active Object pattern, not
 > an application of the GoF Proxy design pattern. The demo application uses simple logging as Servant
@@ -72,7 +76,8 @@ Queue); the corresponding Response Handler then runs on the application thread.
 | gRPC Thread Pool | Execute callbacks (OnDone, OnReadDone, OnWriteDone) |
 
 See "Why Active Object pattern?" below for why this split exists and what problem it solves. The exact race
-conditions the hold mechanism protects against, and where that protection is incomplete, are documented in
+conditions the hold mechanism of `ActiveBidiReactor` protects against, and where that protection is incomplete,
+are documented in
 [reactor_client.md](/applications/reactor/reactor_client.md#hold-semantics-per-rpc-not-per-direction).
 
 ## Technology stack
@@ -102,9 +107,11 @@ for other RPCs.
 
 The Active Object pattern defers response processing to the application thread instead of processing it inside
 the callback. The Proxy (`GetFeature()`, `ListFeatures()`) returns immediately without touching application
-state. The `AddHold()`/`RemoveHold()` guard holds the RPC open while the response is handed off; the EventLoop
-then dispatches it to the Servant (`EventLoop::RegisterEvent()` handlers), which runs on the single application
-thread, in sequence with everything else the application does.
+state. The callback hands the response to the EventLoop, which dispatches it to the Servant
+(`EventLoop::RegisterEvent()` handlers) on the single application thread, in sequence with everything else the
+application does. `ActiveReadReactor` puts ownership of the message itself into that dispatch. The other reactors
+keep the response inside the reactor until the application thread pulls it with `GetResponse()`, and
+`ActiveBidiReactor` holds the RPC open with `AddHold()`/`RemoveHold()` until that pull happens.
 
 1. **Thread Safety**: Responses processed on application thread, not gRPC thread
 2. **Non-blocking**: Client calls return immediately
@@ -127,6 +134,22 @@ application re-deriving its own synchronization around gRPC's callbacks.
 1. **Simple API**: `TriggerEvent()` / `RegisterEvent()` / `Run()`
 2. **Thread-safe**: Safe cross-thread event dispatching
 3. **Replaceable**: Interface allows swapping with other event systems
+
+### Why the read side pushes instead of holding
+
+`ActiveReadReactor` hands each message to its callback and re-arms its own read, where the other streaming
+reactors keep the response until the application pulls it under a hold. The hold paced reads by the consumer:
+message N+1 could not be received until the application had consumed message N, and a consumer that deferred
+processing stalled the stream. Pushing removes that coupling, at two costs.
+
+| Cost                    | Cause                                   | Accepted because              |
+|-------------------------|-----------------------------------------|-------------------------------|
+| The queue is unbounded  | EventLoop has no backpressured delivery | The request bounds the volume |
+| `Halt()` leaks messages | `Halt()` discards rather than drains    | The demo's loop never halts   |
+
+Neither is acceptable for a stream whose volume the peer controls. Such a stream needs bounded buffering, which
+was evaluated and rejected for an unresolved lost-wakeup race, recorded in
+[reactor_client_response_ownership_sketch.md](/applications/reactor/reactor_client_response_ownership_sketch.md).
 
 ## Component structure
 
@@ -196,7 +219,7 @@ Each reactor type has a corresponding callback struct:
 
 **Server-streaming** (`ActiveReadCallbacks<ResponseT>`):
 
-- `ok`: called on successful read, returns bool to hold/continue
+- `ok`: called on successful read, receives ownership of the message as a `std::unique_ptr<ResponseT>`
 - `nok`: called when stream ends (no more reads)
 - `done`: called on RPC completion
 
@@ -243,7 +266,9 @@ cbs.done = [](auto* reactor, const grpc::Status& status, const ResponseT& respon
   }
 };
 
-// Application checks status after OnDone
+// Application checks status after OnDone, then pulls the response from a reactor that exposes
+// GetResponse(). ActiveReadReactor has no GetResponse(): its messages were already pushed to the
+// ok callback, so only Status() is read here.
 if (reactor->Status().ok()) {
   ResponseT response;
   reactor->GetResponse(response);
@@ -259,11 +284,16 @@ thread boundaries.
 **Atomic flags for cross-thread state:**
 
 ```cpp
-std::atomic_bool response_ready_{false};  // Set by gRPC thread, read by app thread
-std::atomic_bool read_no_more_{false};    // Set by gRPC thread, read by app thread
+std::atomic_bool response_ready_{false};   // Set by gRPC thread, read by app thread
+std::atomic_bool stream_no_more_{false};   // Set by gRPC thread, read by app thread
 ```
 
-**Hold mechanism for streaming:**
+`response_ready_` guards `GetResponse()` in `ActiveUnaryReactor`, `ActiveWriteReactor`, and `ActiveBidiReactor`.
+`stream_no_more_` guards the write path of `ActiveWriteReactor`, and both the write path and the read restart of
+`ActiveBidiReactor::GetResponse()`. `ActiveReadReactor` has neither flag, because nothing it owns is read from the
+application thread.
+
+**Hold mechanism, `ActiveBidiReactor` read side:**
 
 ```cpp
 // In OnReadDone - hold before returning to application
@@ -273,6 +303,10 @@ this->AddHold();
 this->StartRead(&response_);
 this->RemoveHold();
 ```
+
+`ActiveReadReactor` needs no equivalent. It swaps each message into a `std::unique_ptr<ResponseT>`, passes that
+pointer to the `ok` callback, and calls `StartRead()` as the last statement of the reaction, all on the gRPC
+thread.
 
 ### Feature to component mapping
 
