@@ -210,11 +210,11 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_MultiplePoints_ReturnsCorrectSummary)
     write_cv.notify_one();
   };
   cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>* base_reactor,
-                                const grpc::Status& status,
-                                const routeguide::RouteSummary& response) {
+                               const grpc::Status& status,
+                               std::unique_ptr<routeguide::RouteSummary> response) {
     RecordRouteResult result;
     result.status = status;
-    result.summary = response;
+    result.summary = std::move(*response);
     result.completed = true;
     result_promise.set_value(std::move(result));
   };
@@ -290,11 +290,11 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_EmptyStream_ReturnsZeroCounts) {
   routeguide::RecordRoute::Callbacks cbs;
   cbs.write_done = [](grpc::ClientWriteReactor<routeguide::Point>*, bool) {};
   cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>*,
-                                const grpc::Status& status,
-                                const routeguide::RouteSummary& response) {
+                               const grpc::Status& status,
+                               std::unique_ptr<routeguide::RouteSummary> response) {
     RecordRouteResult result;
     result.status = status;
-    result.summary = response;
+    result.summary = std::move(*response);
     result.completed = true;
     result_promise.set_value(std::move(result));
   };
@@ -334,11 +334,11 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_SinglePoint_ReturnsZeroDistance) {
   routeguide::RecordRoute::Callbacks cbs;
   cbs.write_done = [](grpc::ClientWriteReactor<routeguide::Point>*, bool) {};
   cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>*,
-                                const grpc::Status& status,
-                                const routeguide::RouteSummary& response) {
+                               const grpc::Status& status,
+                               std::unique_ptr<routeguide::RouteSummary> response) {
     RecordRouteResult result;
     result.status = status;
-    result.summary = response;
+    result.summary = std::move(*response);
     result.completed = true;
     result_promise.set_value(std::move(result));
   };
@@ -396,11 +396,11 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_OverlappingWrites_RejectedByWritePend
     write_cv.notify_one();
   };
   cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>*,
-                                const grpc::Status& status,
-                                const routeguide::RouteSummary& response) {
+                               const grpc::Status& status,
+                               std::unique_ptr<routeguide::RouteSummary> response) {
     RecordRouteResult result;
     result.status = status;
-    result.summary = response;
+    result.summary = std::move(*response);
     result.completed = true;
     result_promise.set_value(std::move(result));
   };
@@ -467,11 +467,11 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_OnWriteDone_FiresForEachWrite) {
     }
   };
   cbs.done = [&result_promise, &write_done_count](grpc::ClientWriteReactor<routeguide::Point>*,
-                                                   const grpc::Status& status,
-                                                   const routeguide::RouteSummary& response) {
+                                                  const grpc::Status& status,
+                                                  std::unique_ptr<routeguide::RouteSummary> response) {
     RecordRouteResult result;
     result.status = status;
-    result.summary = response;
+    result.summary = std::move(*response);
     result.write_done_count = write_done_count.load();
     result.completed = true;
     result_promise.set_value(std::move(result));
@@ -515,8 +515,8 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_TryCancel_TerminatesStream) {
   routeguide::RecordRoute::Callbacks cbs;
   cbs.write_done = [](grpc::ClientWriteReactor<routeguide::Point>*, bool) {};
   cbs.done = [&done_promise](grpc::ClientWriteReactor<routeguide::Point>*,
-                              const grpc::Status& status,
-                              const routeguide::RouteSummary&) {
+                             const grpc::Status& status,
+                             std::unique_ptr<routeguide::RouteSummary>) {
     done_promise.set_value(status);
   };
 
@@ -560,11 +560,11 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_ServerError_PropagatesStatus) {
   routeguide::RecordRoute::Callbacks cbs;
   cbs.write_done = [](grpc::ClientWriteReactor<routeguide::Point>*, bool) {};
   cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>*,
-                                const grpc::Status& status,
-                                const routeguide::RouteSummary& response) {
+                               const grpc::Status& status,
+                               std::unique_ptr<routeguide::RouteSummary> response) {
     RecordRouteResult result;
     result.status = status;
-    result.summary = response;
+    result.summary = std::move(*response);
     result.completed = true;
     result_promise.set_value(std::move(result));
   };
@@ -585,6 +585,37 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_ServerError_PropagatesStatus) {
   EXPECT_FALSE(result.status.ok());
   EXPECT_EQ(result.status.error_code(), grpc::StatusCode::INTERNAL);
   EXPECT_EQ(result.status.error_message(), "Server test error");
+  // The response still transferred, holding an empty summary: the callback above dereferenced it
+  // unconditionally, which is only safe because a failed RPC yields a message rather than nothing.
+  EXPECT_EQ(result.summary.point_count(), 0);
+  EXPECT_EQ(result.summary.feature_count(), 0);
+  EXPECT_EQ(result.summary.distance(), 0);
+}
+
+/// @test Validates an unbound done slot discards the response without breaking the RPC.
+///
+/// With no done callback the response has no accessor, so it stays in the reactor until destruction:
+///
+/// 1. Only write_done is bound, and it counts the completed writes
+/// 2. The RPC runs to completion and the summary is never handed anywhere
+TEST_F(ActiveWriteReactorTest, RecordRoute_NoDoneCallbackBound_RpcStillCompletes) {
+  std::atomic<int> write_done_count{0};
+
+  routeguide::RecordRoute::Callbacks cbs;
+  // cbs.done deliberately left unbound.
+  cbs.write_done = [&write_done_count](grpc::ClientWriteReactor<routeguide::Point>*, bool ok) {
+    if (ok) ++write_done_count;
+  };
+
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor>(
+      *stub_, CreateClientContext(), std::move(cbs));
+
+  reactor->SendRequest(rg_utils::MakePoint(407838351, -746143763));
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  reactor->CloseRequestStream();
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  EXPECT_GE(write_done_count.load(), 1) << "the write path must run with no done callback bound";
 }
 
 }  // namespace

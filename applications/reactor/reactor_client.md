@@ -54,9 +54,8 @@ their own business logic.
 - **Scheduler integration**: Callbacks trigger `EventLoop::TriggerEvent()`
 - **Guard mechanism**: `AddHold()`/`RemoveHold()` prevents concurrent access during response processing, needed by
   `ActiveBidiReactor` only
-- **Future-like access**: `Status()` for deferred status retrieval, and `GetResponse()` for the reactors that keep
-  their response until the application pulls it. `ActiveReadReactor` instead pushes each message to its callback
-  as an owned object
+- **Future-like access**: `Status()` for deferred status retrieval. Every reactor pushes its messages to a
+  callback as owned objects, except `ActiveBidiReactor`, which still keeps its response for a `GetResponse()` pull
 
 **What applications provide:**
 
@@ -79,12 +78,10 @@ Production applications implement actual business logic:
 ```cpp
 // Production: Real Servant logic
 EventLoop::RegisterEvent(kGetFeatureOnDone, [&app_state](const Event* event) {
-  routeguide::Feature response;
-  if (reactor->GetResponse(response)) {
-    app_state.UpdateFeatureCache(response);      // Business logic
-    ui_controller.NotifyFeatureLoaded(response); // State changes
-    metrics.RecordFeatureQuery(response);        // Application concerns
-  }
+  const std::unique_ptr<routeguide::Feature> response{static_cast<routeguide::Feature*>(event->getData())};
+  app_state.UpdateFeatureCache(*response);      // Business logic
+  ui_controller.NotifyFeatureLoaded(*response); // State changes
+  metrics.RecordFeatureQuery(*response);        // Application concerns
 });
 ```
 
@@ -102,11 +99,11 @@ processing.
 | Proxy                   | `GetFeature()`, `ListFeatures()` methods  | Creates Method Requests, returns immediately |
 | Method Request          | `ActiveUnaryReactor`, `ActiveReadReactor` | Encapsulates RPC state                       |
 | Activation Queue        | EventLoop internal queue                  | Holds pending notifications, and the owned   |
-|                         |                                           | messages pushed by `ActiveReadReactor`       |
+|                         |                                           | messages the reactors push                   |
 | Scheduler               | `EventLoop::Run()`                        | Dispatches events to handlers                |
 | Servant                 | `EventLoop::RegisterEvent()` handlers     | Application-provided business logic          |
-| Future                  | `GetResponse()`, `Status()`               | Deferred result access, `Status()` alone in  |
-|                         |                                           | `ActiveReadReactor`                          |
+| Future                  | `Status()`, plus `GetResponse()` in       | Deferred result access                       |
+|                         | `ActiveBidiReactor`                       |                                              |
 | Guards                  | `AddHold()`/`RemoveHold()`                | Prevents concurrent access during processing,|
 |                         |                                           | in `ActiveBidiReactor` only                  |
 
@@ -196,8 +193,8 @@ These methods are exposed to application code with naming that reflects applicat
 | `SendRequest()`        | Send a request message on the stream         | Takes ownership; caller gives up the request |
 | `SendLastRequest()`    | Send the final request and close, atomically | For a known-last message                     |
 | `CloseRequestStream()` | Signal end of client requests                | Returns false if rejected (see below)        |
-| `GetResponse()`        | Extract a received response via swap         | Not on `ActiveReadReactor`, which pushes     |
-|                        |                                              | each message to its ok callback instead      |
+| `GetResponse()`        | Extract a received response via swap         | `ActiveBidiReactor` only. The others deliver |
+|                        |                                              | their messages as owned objects              |
 | `TryCancel()`          | Cancel the entire RPC                        | Thread-safe, any thread                      |
 | `Status()`             | Get final RPC status                         | Valid after `OnDone`                         |
 
@@ -222,10 +219,12 @@ For server-side reactors, the naming will mirror client-side with role reversal:
 
 | RPC Type          | Send             | Close Stream           | Receive          | Cancel         | Status     |
 |-------------------|------------------|------------------------|------------------|----------------|------------|
-| **Unary**         | (constructor)    | N/A                    | `GetResponse()`  | `TryCancel()`  | `Status()` |
+| **Unary**         | (constructor)    | N/A                    | done callback,   | `TryCancel()`  | `Status()` |
+|                   |                  |                        | owned response   |                |            |
 | **Server-Stream** | (constructor)    | N/A                    | ok callback,     | `TryCancel()`  | `Status()` |
 |                   |                  |                        | owned message    |                |            |
-| **Client-Stream** | `SendRequest()`  | `CloseRequestStream()` | `GetResponse()`  | `TryCancel()`  | `Status()` |
+| **Client-Stream** | `SendRequest()`  | `CloseRequestStream()` | done callback,   | `TryCancel()`  | `Status()` |
+|                   |                  |                        | owned response   |                |            |
 | **Bidi**          | `SendRequest()`  | `CloseRequestStream()` | `GetResponse()`  | `TryCancel()`  | `Status()` |
 
 #### Server-side reactors (future)
@@ -272,8 +271,8 @@ The implementation is organized across three architectural layers, mapping Activ
 | Activation Queue   | Event loop queue of notifications and messages | EventLoop internal queue                       |
 | Method Request     | Reactor instances encapsulating RPC state      | `ActiveUnaryReactor`, `ActiveReadReactor`      |
 | Servant            | Application business logic handlers            | `RegisterEvent()` handlers                     |
-| Future             | Reactor handle for retrieving results          | `GetResponse()`, `Status()`. `Status()` alone  |
-|                    |                                                | in `ActiveReadReactor`                         |
+| Future             | Reactor handle for retrieving results          | `Status()`, plus `GetResponse()` in            |
+|                    |                                                | `ActiveBidiReactor`                            |
 | Guards             | Prevents concurrent access during processing   | `AddHold()`, `RemoveHold()`, in                |
 |                    |                                                | `ActiveBidiReactor` only                       |
 
@@ -299,9 +298,26 @@ The Scheduler bridges gRPC threads to the application thread. gRPC callbacks inv
 notifications in the Activation Queue. The Scheduler dequeues and dispatches them to response handlers on the
 application thread, maintaining single-threaded execution.
 
-For `ActiveReadReactor`, the queue carries the message itself rather than a notification that one is ready. The
-resulting obligations are listed under [Message ownership](#message-ownership), and the trade-offs they come from
-are in [architecture.md](/docs/architecture.md).
+For every reactor except `ActiveBidiReactor`, the queue carries the message itself rather than a notification that
+one is ready. The resulting obligations are listed under [Message ownership](#message-ownership), and the
+trade-offs they come from are in [architecture.md](/docs/architecture.md).
+
+### Message ownership
+
+Every reactor except `ActiveBidiReactor` hands its messages to a callback as owned objects, and the callback
+typically releases them into the event queue. That makes the application responsible for each message. Four
+obligations follow, each from a property of the [EventLoop library][eventloop-lib]:
+
+| Obligation                              | Why                                      | Cost                 |
+|-----------------------------------------|------------------------------------------|----------------------|
+| Reclaim the pointer into a `unique_ptr` | The queue carries a bare `void*`         | Leak                 |
+| Reclaim it in exactly one handler       | Every callback under one name is invoked | Double free          |
+| Reclaim before anything can throw       | Nothing else owns it meanwhile           | Leak                 |
+| Drain the queue before `Halt()`         | `Halt()` discards, it does not drain     | Queued messages leak |
+
+The event data is one pointer, so an application running several concurrent RPCs of the same method cannot tell
+which reactor produced a message. It must use a distinct event name per reactor instance, or pass the reactor
+pointer the callback received alongside the message.
 
 ### Method Request component
 
@@ -327,9 +343,9 @@ business logic (state updates, UI notifications, domain processing) in these han
 
 ### Future component
 
-The Future component provides asynchronous access to RPC results. The reactor instance acts as the Future, exposing
-`GetResponse()` to retrieve response data and `Status()` to check operation success or failure. `ActiveReadReactor`
-is the exception: it exposes `Status()` only, because it pushes each message to its callback instead of holding it
+The Future component provides asynchronous access to RPC results. The reactor instance acts as the Future,
+exposing `Status()` to check operation success or failure. `ActiveBidiReactor` also exposes `GetResponse()` to
+retrieve response data; the other three push their messages to a callback as owned objects instead of holding them
 for a later retrieval.
 
 ### Guards component
@@ -402,28 +418,27 @@ When `ClientUnaryReactor::OnDone` event is handled in the active reactor, the ar
 function are:
 
 ````cpp
-using OnDoneCallback = std::function<void(grpc::ClientUnaryReactor* reactor, const grpc::Status&, const ResponseT&)>;
+using OnDoneCallback =
+    std::function<void(grpc::ClientUnaryReactor* reactor, const grpc::Status&, std::unique_ptr<ResponseT>)>;
 ````
 
 - the pointer to the active reactor instance (i.e. `this`)
 - a reference to the `grpc::Status` content
-- a reference to the `Response` content
+- the response, whose ownership transfers to the callback
 
-For the sake of the gRPC processing, it is strongly discouraged to process the response during that callback event. They
-are provided to ease some early-reaction logics or to select situations where the response handling is worthy or not.
+The response is never null. A failed RPC yields an empty message, because gRPC writes no response, so the status is
+what tells the callback whether the content is meaningful. See [Message ownership](#message-ownership) for the
+obligations that come with handing the response on to an event queue.
+
+For the sake of the gRPC processing, it is strongly discouraged to process the response during that callback event.
+The callback exists to hand the response to the application thread, or to discard it by dropping the pointer.
 
 #### Class functions
 
-Three public functions can be called by the application side:
+Two public functions can be called by the application side:
 
-- `bool GetResponse(ResponseT& response)`
 - `const grpc::Status& Status()`
 - `void TryCancel()`
-
-`GetResponse()` function swaps the underlying data storage of the response object. The swap mechanism is important to
-avoid a deep-copy of the content of the response. For the `ActiveUnaryReactor`, having the response swapped is acceptable
-because the unary RPC is meant to one response only, so the swap is a good technique to speed up the response proceeding
-time. The function will return true when the returned response is valid.
 
 `Status()` function simply returns a reference to the `grpc::Status` of the active reactor. Initialized as `Status::OK`,
 its content is updated once `ClientUnaryReactor::OnDone` event is received. It means calling `Status()` at any other
@@ -452,7 +467,7 @@ notification function as an `kGetFeatureOnDone` event.
 From the PlantUML sequence diagram, the corresponding points are:
 
 - 1.x : the `std::make_unique<ClientReactor>(...)` line
-- 3.4 : the `cbs.done = [](auto* reactor, const grpc::Status&, const ResponseT&) {...}` lines
+- 3.4 : the `cbs.done = [](auto*, const grpc::Status&, std::unique_ptr<ResponseT> response) {...}` lines
 
 ````cpp
 #include "applications/reactor/reactor_client_routeguide.h"
@@ -462,8 +477,9 @@ void GetFeature(routeguide::Point point) {
   using routeguide::GetFeature::ResponseT;
   using routeguide::GetFeature::RpcKey;
   Callbacks cbs;
-  cbs.done = [](auto* reactor, const grpc::Status&, const ResponseT&) {
-    EventLoop::TriggerEvent(kGetFeatureOnDone, reactor);  // Signal OnDoneCallback event from gRPC thread
+  cbs.done = [](auto*, const grpc::Status&, std::unique_ptr<ResponseT> response) {
+    // Signal OnDoneCallback from gRPC thread, handing the response ownership to the queue
+    EventLoop::TriggerEvent(kGetFeatureOnDone, response.release());
   };
   reactor_map_[RpcKey] = std::make_unique<ClientReactor>(*stub_,
                                                          std::move(CreateClientContext()),
@@ -484,13 +500,15 @@ The following snippet is an example code of the application-side callback. That 
 application thread, scheduled by the eventloop of the application. In this example, that lambda is used as the callback
 and given to the eventloop when the `kGetFeatureOnDone` is notified.
 
-From the PlantUML sequence diagram, the corresponding points are from 3.6 to 3.8.
+The handler reclaims the response the gRPC-thread callback released into the queue, and reads `Status()` from the
+reactor it already holds. The event data is the response, so the reactor pointer no longer rides with it.
+
+From the PlantUML sequence diagram, the corresponding points are from 3.5 to 3.7.
 
 ````cpp
-EventLoop::RegisterEvent(kGetFeatureOnDone, [&reactor_ = reactor_map_[GetFeature::RpcKey]](const Event*) {
+EventLoop::RegisterEvent(kGetFeatureOnDone, [&reactor_ = reactor_map_[GetFeature::RpcKey]](const Event* event) {
+  const std::unique_ptr<routeguide::Feature> response{static_cast<routeguide::Feature*>(event->getData())};
   if (reactor_->Status().ok()) {
-    routeguide::Feature response;
-    bool valid = reactor_->GetResponse(response);
     /**  proceeding of the content of response **/
   }
   reactor_.reset();
@@ -505,11 +523,11 @@ skinparam lifelineStrategy solid
 skinparam ParticipantPadding 50
 title gRPC Client reactor for unary RPC
 
+box "Application side" #powderblue
 boundary    app      as "Application\nside"
-box "ActiveUnaryReactor" #beige
-collections data     as "Data"
-control     reactor  as "ClientUnaryReactor"
+queue       equeue   as "EventLoop\nQueue"
 end box
+control     reactor  as "ClientUnaryReactor"
 entity      grpc     as "gRPC\nClientCallbackUnary"
 
 legend top center
@@ -523,8 +541,8 @@ autonumber 1.1
 == 1. RPC establishment ==
     app -[#darkblue]> reactor : Create Reactor
     activate reactor
-    data o-[#darkblue]->> reactor : Response holder
-    & reactor -[#darkblue]\ grpc : async RPC service call\nstub.async()->RpcMethod()
+    reactor -[#darkblue]> reactor : <i>internal read target ready
+    reactor -[#darkblue]\ grpc : async RPC service call\nstub.async()->RpcMethod()
     activate grpc #lightgreen
     reactor -[#darkblue]\ grpc : StartCall()
     activate grpc #green
@@ -540,21 +558,22 @@ autonumber 2.1
 autonumber 3.1
 == 3. RPC completion ==
     grpc <--? : RPC termination
-    &grpc -[#darkgreen]> data : <i>writes response
-    activate data #yellow
+    &grpc -[#darkgreen]> reactor : <i>writes response
+    activate reactor #gold
     deactivate grpc
     reactor <[#darkgreen]- grpc : OnDone
     deactivate grpc
 group #lightgreen (grpc-thread callback) ondone
-    {start3} app /[#darkgreen]- reactor : TriggerEvent : OnDone
+    {start3} equeue /[#darkgreen]- reactor : TriggerEvent : OnDone\n+ owned response
+    activate equeue #blue
+    deactivate reactor
 end
     ...
-    {end3} app -[#darkblue]> reactor : ProceedEvent: OnDone
-group #lightblue (app-thread callback) ondone
+    {end3} equeue -[#darkblue]> app : ProceedEvent: OnDone\n+ owned response
     {start3} <-> {end3} : Eventloop
-    data o-[#darkblue]> reactor : <i>extracts response
-    deactivate data
-    reactor -[#darkblue]> app : <i>update application with response
+    deactivate equeue
+group #lightblue (app-thread callback) ondone
+    app -[#darkblue]> app : <i>update application with response
     activate app #blue
     deactivate app
     app -[#darkblue]> reactor : Destroy Reactor
@@ -625,22 +644,6 @@ Processing the message inside the callback stays discouraged, because the callba
 callback exists to hand the message to the application thread, or to discard it: dropping the `std::unique_ptr` is
 all a discard takes.
 
-#### Message ownership
-
-Handing the message to an event queue makes the application responsible for it. Four obligations follow, each from
-a property of the [EventLoop library][eventloop-lib]:
-
-| Obligation                              | Why                                      | Cost                 |
-|-----------------------------------------|------------------------------------------|----------------------|
-| Reclaim the pointer into a `unique_ptr` | The queue carries a bare `void*`         | Leak                 |
-| Reclaim it in exactly one handler       | Every callback under one name is invoked | Double free          |
-| Reclaim before anything can throw       | Nothing else owns it meanwhile           | Leak                 |
-| Drain the queue before `Halt()`         | `Halt()` discards, it does not drain     | Queued messages leak |
-
-The event data is one pointer, so an application reading several concurrent streams of the same RPC cannot tell
-which reactor produced a message. It must use a distinct event name per reactor instance, or pass the reactor
-pointer the callback received alongside the message.
-
 #### Class functions
 
 Two public functions can be called by the application side:
@@ -648,7 +651,7 @@ Two public functions can be called by the application side:
 - `const grpc::Status& Status()`
 - `void TryCancel()`
 
-`ActiveReadReactor` exposes no `GetResponse()`, because nothing is left in the reactor to pull. Its internal
+Like the unary and write reactors, `ActiveReadReactor` exposes no `GetResponse()`. Its internal
 `response_` read target keeps a stable address across every read, and each message is swapped out of it by
 pointer, without a deep-copy, before the next read is armed.
 

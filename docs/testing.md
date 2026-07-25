@@ -70,9 +70,9 @@ See the file list above for which file covers which RPC type.
 
 | RPC Type | Reactor Class | Scenarios |
 | ---------- | --------------- | ----------- |
-| Unary (`GetFeature`) | `ActiveUnaryReactor` | Success, empty/server/not-found response, cancel, deadline, concurrent |
+| Unary (`GetFeature`) | `ActiveUnaryReactor` | Success, empty, error, failed response, cancel, deadline, concurrent |
 | Server stream (`ListFeatures`) | `ActiveReadReactor` | Multiple/empty, error, cancel, concurrent, deferred consumer |
-| Client stream (`RecordRoute`) | `ActiveWriteReactor` | Multiple/empty point, overlapping writes, cancel, error |
+| Client stream (`RecordRoute`) | `ActiveWriteReactor` | Multiple/empty point, overlapping writes, cancel, no done |
 | Bidirectional (`RouteChat`) | `ActiveBidiReactor` | Send/receive, interleaved, either side closes first, cancel |
 | EventLoop dispatch | N/A | `GetFeature`/`ListFeatures`/cancel dispatched through a real `EventLoop` |
 

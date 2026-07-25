@@ -51,7 +51,7 @@ std::unique_ptr<grpc::ClientContext> CreateClientContext() {
  *   ActiveBidiReactor) = Method Request
  * - EventLoop = Scheduler + Activation Queue
  * - EventLoop::RegisterEvent handlers = Servant (business logic placeholder)
- * - GetResponse() / Status() = Future (ListFeatures pushes owned messages instead)
+ * - Status() = Future, plus GetResponse() for RouteChat only. The three others push owned messages
  * - AddHold/RemoveHold = Guards (prevent concurrent access), RouteChat only
  *
  * Note: This demo uses simple logging as Servant logic. Production applications
@@ -84,19 +84,21 @@ class RouteGuideClient {
              &logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature)](const EventLoop::Event* event) {
               // (Point 3.5) ProceedEvent: OnDone
               assert(main_thread == std::this_thread::get_id());  // application thread
-              auto* reactor = static_cast<routeguide::GetFeature::ClientReactor*>(event->getData());
-              assert(reactor == reactor_.get());
+              // The event data is the response, not the reactor: reclaim the released ownership
+              const std::unique_ptr<routeguide::GetFeature::ResponseT> response{
+                  static_cast<routeguide::GetFeature::ResponseT*>(event->getData())};
+              // The slot is populated by now: this handler runs on the thread that assigns it, and
+              // a second GetFeature() is refused while one is in flight.
+              assert(reactor_);
+              auto* reactor = static_cast<routeguide::GetFeature::ClientReactor*>(reactor_.get());
               if (const auto status = reactor->Status(); status.ok()) {
-                // (Point 3.6) extracts response
-                routeguide::GetFeature::ResponseT response;
-                reactor->GetResponse(response);
-                // (Point 3.7) update application with response
-                logger.info("RESPONSE | {}: {}", response.GetTypeName(), protobuf_utils::ToString(response));
+                // (Point 3.6) update application with response
+                logger.info("RESPONSE | {}: {}", response->GetTypeName(), protobuf_utils::ToString(*response));
               } else {
                 logger.info("         | {} reactor: {} Status: OK: {} msg: {}", event->getName(), fmt::ptr(reactor),
                             status.ok(), status.error_message());
               }
-              // (Point 3.8) Destroy reactor
+              // (Point 3.7) Destroy reactor
               reactor_.reset();
               logger.info("         | reactor[{}] ended", fmt::ptr(reactor));
             }),
@@ -159,12 +161,14 @@ class RouteGuideClient {
              &logger = routeguide::logger::Get(routeguide::RpcMethods::kRecordRoute)](const EventLoop::Event* event) {
               // ProceedEvent: OnDone
               assert(main_thread == std::this_thread::get_id());  // application thread
-              auto* reactor = static_cast<routeguide::RecordRoute::ClientReactor*>(event->getData());
-              assert(reactor == reactor_.get());
+              // The event data is the response, not the reactor: reclaim the released ownership
+              const std::unique_ptr<routeguide::RecordRoute::ResponseT> response{
+                  static_cast<routeguide::RecordRoute::ResponseT*>(event->getData())};
+              // Same reasoning as the GetFeature handler above.
+              assert(reactor_);
+              auto* reactor = static_cast<routeguide::RecordRoute::ClientReactor*>(reactor_.get());
               if (const auto status = reactor->Status(); status.ok()) {
-                routeguide::RecordRoute::ResponseT response;
-                reactor->GetResponse(response);
-                logger.info("RESPONSE | {}: {}", response.GetTypeName(), protobuf_utils::ToString(response));
+                logger.info("RESPONSE | {}: {}", response->GetTypeName(), protobuf_utils::ToString(*response));
               } else {
                 logger.info("         | {} reactor: {} Status: OK: {} msg: {}", event->getName(), fmt::ptr(reactor),
                             status.ok(), status.error_message());
@@ -236,10 +240,10 @@ class RouteGuideClient {
       return;
     }
     Callbacks cbs;
-    // (Point 3.4) TriggerEvent: OnDone
-    cbs.done = [](auto* reactor, const grpc::Status&, const ResponseT&) {
+    // (Point 3.4) TriggerEvent: OnDone, handing the response ownership to the queue
+    cbs.done = [](auto*, const grpc::Status&, std::unique_ptr<ResponseT> response) {
       assert(main_thread != std::this_thread::get_id());  // gRPC thread
-      EventLoop::TriggerEvent(kGetFeatureOnDone, reactor);
+      EventLoop::TriggerEvent(kGetFeatureOnDone, response.release());
     };
 
     // (Point 1.1) Create reactor
@@ -313,10 +317,10 @@ class RouteGuideClient {
       assert(main_thread != std::this_thread::get_id());  // gRPC thread
       EventLoop::TriggerEvent(kRecordRouteOnWriteDone, reactor);
     };
-    // TriggerEvent: OnDone
-    cbs.done = [](auto* reactor, const grpc::Status&, const ResponseT&) {
+    // TriggerEvent: OnDone, handing the response ownership to the queue
+    cbs.done = [](auto*, const grpc::Status&, std::unique_ptr<ResponseT> response) {
       assert(main_thread != std::this_thread::get_id());  // gRPC thread
-      EventLoop::TriggerEvent(kRecordRouteOnDone, reactor);
+      EventLoop::TriggerEvent(kRecordRouteOnDone, response.release());
     };
 
     // (Point 1.1) Create reactor

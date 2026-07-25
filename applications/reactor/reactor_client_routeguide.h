@@ -45,7 +45,7 @@ class ClientReactor final : public RpcReactor::Client::ActiveUnaryReactor<Respon
                 Callbacks&& cbs)
       : ActiveUnaryReactor(std::move(context), std::move(cbs)) {
     // (Point 1.2, 1.3) async RPC call
-    stub.async()->GetFeature(context_.get(), &request, &response_, this);
+    stub.async()->GetFeature(context_.get(), &request, response_.get(), this);
     // (Point 1.4, 1.5) Starting RPC call, send request to server
     StartCall();
   }
@@ -106,9 +106,9 @@ class ClientReactor final : public RpcReactor::Client::ActiveWriteReactor<Reques
                 std::unique_ptr<grpc::ClientContext> context,
                 Callbacks&& cbs)
       : ActiveWriteReactor(std::move(context), std::move(cbs)) {
-    // async RPC call - gRPC writes the final response into response_ directly when the RPC
-    // completes; there is no separate read event for a client-streaming RPC's response.
-    stub.async()->RecordRoute(context_.get(), &response_, this);
+    // async RPC call - gRPC writes the final response into the reactor's read target directly when
+    // the RPC completes; there is no separate read event for a client-streaming RPC's response.
+    stub.async()->RecordRoute(context_.get(), response_.get(), this);
     // Starting RPC call
     StartCall();
   }

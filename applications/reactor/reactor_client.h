@@ -31,16 +31,20 @@ requires std::derived_from<ResponseT, google::protobuf::Message>
 struct ActiveUnaryCallbacks {
   /// Function signature for ClientUnaryReactor::OnDone event. This event function is called by gRPC when the RPC is
   /// done and no more operation is possible with that reactor instance.
+  /// The response ownership transfers to the callback, and carries the obligations documented in
+  /// reactor_client.md, under "Message ownership".
   /// @param reactor instance pointer on which the event is received
   /// @param status reference to the reason of the event
-  /// @param response reference to the response message the reactor received
-  using OnDoneCallback = std::function<void(grpc::ClientUnaryReactor*, const grpc::Status&, const ResponseT&)>;
+  /// @param response the received message, never null: a failed RPC yields an empty one, so the status is what
+  ///        says whether the content is meaningful. Stays in the reactor if this slot is unbound
+  using OnDoneCallback =
+      std::function<void(grpc::ClientUnaryReactor*, const grpc::Status&, std::unique_ptr<ResponseT>)>;
   OnDoneCallback done;  ///< Slot for ClientUnaryReactor::OnDone event
 };
 
 /// template class for unary RPC client reactor. This class is derived again by
 /// specialized RPC client reactors.
-/// Active Object components: Method Request (encapsulates RPC state) & Future (provides GetResponse(), Status())
+/// Active Object components: Method Request (encapsulates RPC state) & Future (provides Status())
 /// @tparam ResponseT type of protobuf message the RPC handles
 template <class ResponseT>
 requires std::derived_from<ResponseT, google::protobuf::Message>
@@ -76,21 +80,6 @@ class ActiveUnaryReactor : public grpc::ClientUnaryReactor {
     context_->TryCancel();
   }
 
-  /// Swaps the underlying data storage of the response object.
-  /// The swap mechanism is important to avoid a deep-copy of the content of the
-  /// response. Having the response swapped is acceptable because the unary RPC
-  /// is meant to one response only, so the swap is a good technique to speed up
-  /// the response proceeding time.
-  /// @param[out] response instance to swap
-  /// @return true when the returned response is valid, false otherwise.
-  bool GetResponse(ResponseT& response) {
-    if (!response_ready_) return false;
-    // (Point 3.6) extracts response
-    swap(response_, response);  // Moving the read content on the user side
-    response_ready_ = false;
-    return true;
-  }
-
   /// Obtain the status of the RPC set by the `OnDone` event. Calling this
   /// function at any other moment is meaningless.
   /// @return reference to the grpc::Status object
@@ -104,28 +93,20 @@ class ActiveUnaryReactor : public grpc::ClientUnaryReactor {
   /// @param status info coming from gRPC
   void OnDone(const grpc::Status& status) override {
     // (Point 3.1, 3.2, 3.3) RPC termination
-    response_ready_ = status.ok();
     if (cbs_.done) {
       status_ = status;  // doing deep-copy unfortunately
-      // (Point 3.4) TriggerEvent: OnDone
-      cbs_.done(this, status, response_);
+      // (Point 3.4) TriggerEvent: OnDone, handing the response ownership over
+      cbs_.done(this, status, std::move(response_));
     }
   }
 
  protected:
   std::unique_ptr<grpc::ClientContext> context_;  ///< gRPC client context for this RPC
-  ResponseT response_;  ///< response holder
+  std::unique_ptr<ResponseT> response_{std::make_unique<ResponseT>()};  ///< read target, moved out on OnDone
 
  private:
   grpc::Status status_;
   ActiveUnaryCallbacks<ResponseT> cbs_;
-
-  // The application MAY call (but should not) GetResponse() while a gRPC thread is on OnDone().
-  // That concurrent situation should not happen by design, unless the application
-  // is not waiting for the OnDoneCallback prior reading the response_;
-  // Once response_ready_ is set, the response_ may be thread-safely used by the application.
-  // Set by gRPC thread, read by application thread.
-  std::atomic_bool response_ready_{false};
 };
 
 /// Template callbacks for stream-reader RPC client reactor. It contains all available callbacks slots
@@ -266,18 +247,21 @@ struct ActiveWriteCallbacks {
 
   /// Function signature for ClientWriteReactor::OnDone event. This event function is called by gRPC when the RPC is
   /// done and no more operation is possible with that reactor instance.
+  /// The response ownership transfers to the callback, and carries the obligations documented in
+  /// reactor_client.md, under "Message ownership".
   /// @param reactor instance pointer on which the event is received
   /// @param status reference to the reason of the event
-  /// @param response reference to the response message the reactor received
+  /// @param response the received message, never null: a failed RPC yields an empty one, so the status is what
+  ///        says whether the content is meaningful. Stays in the reactor if this slot is unbound
   using OnDoneCallback = std::function<void(grpc::ClientWriteReactor<RequestT>*,
                                             const grpc::Status&,
-                                            const ResponseT&)>;
+                                            std::unique_ptr<ResponseT>)>;
   OnDoneCallback done;  ///< Slot for ClientWriteReactor::OnDone event
 };
 
 /// Template class for stream-writer RPC client reactor. This class is derived again by
 /// specialized RPC client reactors.
-/// Active Object components: Method Request (encapsulates RPC state) & Future (provides GetResponse(), Status())
+/// Active Object components: Method Request (encapsulates RPC state) & Future (provides Status())
 /// @tparam RequestT type of protobuf message the RPC sends
 /// @tparam ResponseT type of protobuf message the RPC receives as final response
 template <class RequestT, class ResponseT>
@@ -367,20 +351,6 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
     context_->TryCancel();
   }
 
-  /// Swaps the underlying data storage of the response object.
-  /// The swap mechanism is important to avoid a deep-copy of the content of the
-  /// response. Having the response swapped is acceptable because the client-streaming RPC
-  /// is meant to receive one final response only, so the swap is a good technique to speed up
-  /// the response proceeding time.
-  /// @param[out] response instance to swap
-  /// @return true when the returned response is valid, false otherwise.
-  bool GetResponse(ResponseT& response) {
-    if (!response_ready_) return false;
-    swap(response_, response);  // Moving the read content on the user side
-    response_ready_ = false;
-    return true;
-  }
-
   /// Obtain the status of the RPC set by the `OnDone` event. Calling this
   /// function at any other moment is meaningless.
   /// @return reference to the grpc::Status object
@@ -418,16 +388,15 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// @param status info coming from gRPC
   void OnDone(const grpc::Status& status) override {
     stream_no_more_ = true;
-    response_ready_ = status.ok();
     if (cbs_.done) {
       status_ = status;  // doing deep-copy unfortunately
-      cbs_.done(this, status, response_);
+      cbs_.done(this, status, std::move(response_));
     }
   }
 
  protected:
   std::unique_ptr<grpc::ClientContext> context_;  ///< gRPC client context for this RPC
-  ResponseT response_;  ///< response holder
+  std::unique_ptr<ResponseT> response_{std::make_unique<ResponseT>()};  ///< read target, moved out on OnDone
 
  private:
   grpc::Status status_;
@@ -437,10 +406,6 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   // here so StartWrite() has a stable pointer that survives past the caller's own statement -
   // the application gives up the request once SendRequest() accepts it.
   RequestT pending_request_;
-
-  // Flag indicating the response is ready to be read via GetResponse()
-  // Set by gRPC thread, read by application thread.
-  std::atomic_bool response_ready_{false};
 
   // Flag indicating a write operation is in progress.
   // gRPC requires that only one write be in flight at a time.

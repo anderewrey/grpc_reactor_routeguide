@@ -133,7 +133,7 @@ class ClientReactorIntegrationTest : public RouteGuideTestFixtureBase<TestRouteG
 /// 1. gRPC callback (OnDone) executes on gRPC thread pool
 /// 2. Callback triggers EventLoop::TriggerEvent()
 /// 3. EventLoop handler executes on EventLoop background thread
-/// 4. Response data is correctly extracted via GetResponse()
+/// 4. The handler reclaims the response ownership the callback released into the queue
 ///
 /// Thread assertions confirm callbacks do NOT run on the main thread.
 TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop) {
@@ -154,16 +154,15 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop
   // In NON_BLOCK mode, EventLoop runs in a background thread
   static constexpr auto kTestOnDone = "TestGetFeatureOnDone";
   RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
+    // Reclaim first, so no assertion below can leak the response
+    const std::unique_ptr<routeguide::Feature> feature{static_cast<routeguide::Feature*>(event->getData())};
+
     // In NON_BLOCK mode, this runs on EventLoop's background thread (not main thread)
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
 
-    auto* r = static_cast<routeguide::GetFeature::ClientReactor*>(event->getData());
-    EXPECT_EQ(r, reactor.get());
-
-    received_status = r->Status();
-    if (received_status.ok()) {
-      r->GetResponse(received_feature);
-    }
+    // Status() is read by the main thread after `done`, not here: this handler can run before the
+    // constructing statement below has assigned `reactor`, since StartCall() happens inside it.
+    received_feature = std::move(*feature);
     done = true;
   });
 
@@ -172,11 +171,11 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop
 
   // Create callbacks (triggered on gRPC thread)
   routeguide::GetFeature::Callbacks cbs;
-  cbs.done = [&main_thread_id = main_thread_id_](grpc::ClientUnaryReactor* r, const grpc::Status&,
-                                                  const routeguide::Feature&) {
+  cbs.done = [&main_thread_id = main_thread_id_](grpc::ClientUnaryReactor*, const grpc::Status&,
+                                                 std::unique_ptr<routeguide::Feature> response) {
     // Verify we're on gRPC thread (NOT main thread)
     EXPECT_NE(std::this_thread::get_id(), main_thread_id);
-    EventLoop::TriggerEvent(kTestOnDone, r);
+    EventLoop::TriggerEvent(kTestOnDone, response.release());
   };
 
   // Create reactor (Method Request in Active Object pattern)
@@ -192,7 +191,8 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
-  // Verify results
+  // Verify results. `done` orders this read after the handler, and the reactor is assigned by now.
+  received_status = reactor->Status();
   EXPECT_TRUE(received_status.ok()) << "Status: " << received_status.error_message();
   EXPECT_EQ(received_feature.name(), expected_feature.name());
   EXPECT_EQ(received_feature.location().latitude(), expected_feature.location().latitude());
@@ -327,17 +327,18 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_TryCancel_DispatchesToEventLoop)
 
   static constexpr auto kTestOnDone = "TestCancelOnDone";
   RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
+    // Reclaim the response even on the cancelled path, where its content is not used
+    const std::unique_ptr<routeguide::Feature> discarded{static_cast<routeguide::Feature*>(event->getData())};
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
-    auto* r = static_cast<routeguide::GetFeature::ClientReactor*>(event->getData());
-    received_status = r->Status();
+    // Status() is read by the main thread after `done`, for the reason given in the test above
     done = true;
   });
 
   routeguide::Point request = rg_utils::MakePoint(123, 0);
 
   routeguide::GetFeature::Callbacks cbs;
-  cbs.done = [](grpc::ClientUnaryReactor* r, const grpc::Status&, const routeguide::Feature&) {
-    EventLoop::TriggerEvent(kTestOnDone, r);
+  cbs.done = [](grpc::ClientUnaryReactor*, const grpc::Status&, std::unique_ptr<routeguide::Feature> response) {
+    EventLoop::TriggerEvent(kTestOnDone, response.release());
   };
 
   reactor = std::make_unique<routeguide::GetFeature::ClientReactor>(
@@ -355,6 +356,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_TryCancel_DispatchesToEventLoop)
   }
 
   // Cancel or OK are both valid (depending on timing)
+  received_status = reactor->Status();
   EXPECT_TRUE(received_status.error_code() == grpc::StatusCode::CANCELLED ||
               received_status.error_code() == grpc::StatusCode::OK);
 }
