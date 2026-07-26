@@ -11,9 +11,11 @@
 // C++23 backport for std::to_underlying
 // Only define if not already available (C++23+)
 #ifndef __cpp_lib_to_underlying
-namespace std {  // NOLINT(bugprone-std-namespace-modification): a standard-sanctioned backport,
-                 // gated on the feature-test macro so it vanishes once the toolchain provides it.
+namespace std {
 template <typename Enum>
+// A standard-sanctioned backport, gated on the feature-test macro above so it vanishes once the
+// toolchain provides it.
+// NOLINTNEXTLINE(bugprone-std-namespace-modification)
 constexpr underlying_type_t<Enum> to_underlying(Enum e) noexcept {
   return static_cast<underlying_type_t<Enum>>(e);
 }

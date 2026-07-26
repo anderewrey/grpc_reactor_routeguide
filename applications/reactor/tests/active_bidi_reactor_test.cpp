@@ -603,8 +603,9 @@ TEST_F(ActiveBidiReactorTest, RouteChat_DeadlineExceeded_PropagatesStatus) {
 /// - Each exchanges different messages
 /// - Wait for all OnDone callbacks
 /// - Verify all complete successfully
-// NOLINTNEXTLINE(readability-function-cognitive-complexity): exercises kNumStreams concurrent
-// streams end-to-end; splitting it would scatter one scenario across several helpers.
+// Exercises kNumStreams concurrent streams end-to-end; splitting it would scatter one scenario
+// across several helpers.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 TEST_F(ActiveBidiReactorTest, RouteChat_MultipleConcurrent_AllComplete) {
   const int kNumStreams = 3;
 
@@ -712,9 +713,8 @@ TEST_F(ActiveBidiReactorTest, RouteChat_MultipleConcurrent_AllComplete) {
 /// until GetResponse() released it, so a consumer that deferred stalled the RPC. Sending kNoteCount
 /// notes to one location makes the server echo every note it stored earlier, so note i comes back
 /// once per later note and the total is kNoteCount*(kNoteCount-1)/2.
-// NOLINTNEXTLINE(readability-function-cognitive-complexity): see rationale on the
-// RouteChat_MultipleConcurrent_AllComplete NOLINT above; this scenario is likewise one
-// end-to-end flow.
+// Same rationale as the RouteChat_MultipleConcurrent_AllComplete NOLINT above: one end-to-end flow.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 TEST_F(ActiveBidiReactorTest, RouteChat_DeferredConsumer_StreamCompletesWithoutConsumerAction) {
   constexpr int kNoteCount = 8;
   constexpr size_t kExpectedResponses = kNoteCount * (kNoteCount - 1) / 2;
