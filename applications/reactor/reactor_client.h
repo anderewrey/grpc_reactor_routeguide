@@ -123,19 +123,19 @@ struct ActiveReadCallbacks {
   /// @param response the received message, owned by the callback. Dropped if this slot is unbound
   using OnReadDoneOkCallback =
       std::function<void(grpc::ClientReadReactor<ResponseT>*, std::unique_ptr<ResponseT>)>;
-  OnReadDoneOkCallback ok;    ///< Slot for ClientReadReactor::OnReadDone event with positive OK flag
+  OnReadDoneOkCallback read_ok;  ///< Slot for ClientReadReactor::OnReadDone event with positive OK flag
 
   /// Function signature for ClientReadReactor::OnReadDone event with negative OK flag
   /// @param reactor instance pointer on which the event is received
   using OnReadDoneNOkCallback = std::function<void(grpc::ClientReadReactor<ResponseT>*)>;
-  OnReadDoneNOkCallback nok;  ///< Slot for ClientReadReactor::OnReadDone event with negative OK flag
+  OnReadDoneNOkCallback read_nok;  ///< Slot for ClientReadReactor::OnReadDone event with negative OK flag
 
   /// Function signature for ClientReadReactor::OnDone event. This event function is called by gRPC when the RPC is
   /// done and no more operation is possible with that reactor instance.
   /// @param reactor instance pointer on which the event is received
   /// @param status reference to the reason of the event
   using OnDoneCallback = std::function<void(grpc::ClientReadReactor<ResponseT>*, const grpc::Status&)>;
-  OnDoneCallback done;        ///< Slot for ClientReadReactor::OnDone event
+  OnDoneCallback done;  ///< Slot for ClientReadReactor::OnDone event
 };
 
 /// Template class for stream-reader RPC client reactor. This class is derived again by
@@ -152,7 +152,7 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
   ActiveReadReactor(std::unique_ptr<grpc::ClientContext> context,
                     ActiveReadCallbacks<ResponseT>&& cbs)
       : context_(std::move(context)),
-        cbs_(std::move(cbs)) { }
+        cbs_(std::move(cbs)) {}
 
   /// Destructor of the reactor class. It tells the gRPC connection to close the channel.
   /// If the context/channel is already closed, there's no problem to TryCancel() it again.
@@ -194,16 +194,16 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
     // (Point 2.3, 4.2) Event received from stream
     if (!ok) {
       // (Point 4.3) OnReadDone: False
-      if (cbs_.nok) cbs_.nok(this);
+      if (cbs_.read_nok) cbs_.read_nok(this);
       return;
     }
     // (Point 2.3) OnReadDone: true
-    if (cbs_.ok) {
+    if (cbs_.read_ok) {
       // (Point 2.4) extracts response, by pointer swap rather than deep-copy
       auto message = std::make_unique<ResponseT>();
       swap(*message, response_);
       // (Point 2.5) TriggerEvent: OnReadDoneOk
-      cbs_.ok(this, std::move(message));
+      cbs_.read_ok(this, std::move(message));
     }
     // (Point 2.6) Restart reading. Last action of the reaction, which is what removes the need for a
     // hold. See "Why ActiveReadReactor needs no hold" in reactor_client.md.
@@ -301,9 +301,13 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// std::move()'d, since the reactor takes ownership and the caller must not keep using it.
   /// @param request message to send, moved into the reactor
   /// @return true if the write was initiated, false if rejected (stream closed, write pending,
-  ///         or a prior write/the RPC has already failed)
+  ///         or the RPC has already finished/is finishing)
   bool SendRequest(RequestT&& request) {
-    if (stream_no_more_) return false;  // A prior write failed, or the RPC is done
+    // The stream_no_more_ check narrows a race it cannot close: a gRPC thread can set the flag
+    // right after this check passes. Closing it needs a hold covering the write flow, taken
+    // before StartCall(), which is the UseMultipleHolds() sketch below. Which reactions set the
+    // flag is listed at its declaration.
+    if (stream_no_more_) return false;  // RPC already finished (or finishing)
     if (writes_done_) return false;  // Stream already closed
     if (write_pending_) return false;  // Write already in progress
     pending_request_ = std::move(request);
@@ -317,9 +321,9 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// pair. The caller gives up the request the same way SendRequest() requires.
   /// @param request last message to send, moved into the reactor
   /// @return true if the write was initiated, false if rejected (stream closed, write pending,
-  ///         or a prior write/the RPC has already failed)
+  ///         or the RPC has already finished/is finishing)
   bool SendLastRequest(RequestT&& request) {
-    if (stream_no_more_) return false;  // A prior write failed, or the RPC is done
+    if (stream_no_more_) return false;  // RPC already finished (or finishing)
     if (writes_done_) return false;     // Stream already closed
     if (write_pending_) return false;   // Write already in progress
     pending_request_ = std::move(request);
@@ -334,9 +338,10 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// Signals the end of the client request stream.
   /// After this call, no more SendRequest() calls are allowed.
   /// @return true if the close was initiated, false if rejected (already closed, write pending,
-  ///         or the RPC has already failed) - callers should wait for OnWriteDone() and retry.
+  ///         or the RPC has already finished/is finishing). Callers should wait for OnWriteDone()
+  ///         and retry.
   bool CloseRequestStream() {
-    if (stream_no_more_) return false;  // Same guard as SendRequest(), see above
+    if (stream_no_more_) return false;  // Same race-narrowing guard as SendRequest(), see above
     if (writes_done_) return false;     // Already closed
     if (write_pending_) return false;   // Wait for the in-flight write to complete first
     writes_done_ = true;
@@ -357,10 +362,10 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   const grpc::Status& Status() { return status_; }
 
   // UPCOMING: gRPC's AddMultipleHolds(int holds) reserves a fixed hold budget upfront (before
-  // StartCall()) for independent operation-flows happening outside the reactions - unlike the
-  // single-hold, per-message pattern already used for reads elsewhere in this file. Not used by
-  // any application code in this project yet, and the intended lifetime/usage on the write side
-  // has not been designed. Left commented out until there is an application need for it.
+  // StartCall()) for an operation-flow issued outside the reactions, which is what SendRequest()
+  // does from the application thread. It could close the race noted there, but the intended
+  // lifetime/usage on the write side has not been designed and no application code uses it yet.
+  // Left commented out until there is an application need for it.
   // void UseMultipleHolds() {
   //     this->AddMultipleHolds(/* holds */ 1);
   // }
@@ -431,13 +436,13 @@ requires std::derived_from<RequestT, google::protobuf::Message> &&
          std::derived_from<ResponseT, google::protobuf::Message>
 struct ActiveBidiCallbacks {
   /// Function signature for ClientBidiReactor::OnReadDone event with positive OK flag.
+  /// The reactor swaps the message out before this call and re-arms its read after it, so the
+  /// callback owns the message and the reactor never refers to it again. Handing that ownership on
+  /// carries obligations documented in reactor_client.md, under "Message ownership".
   /// @param reactor instance pointer on which the event is received
-  /// @param response reference to the response message the reactor received
-  /// @retval true the response must be kept intact by the reactor until read later through GetResponse() function.
-  ///         The reactor is put on hold in the meantime.
-  /// @retval false the response is unwanted and the reactor can immediately execute a new read operation to obtain
-  ///         a new response.
-  using OnReadDoneOkCallback = std::function<bool(grpc::ClientBidiReactor<RequestT, ResponseT>*, const ResponseT&)>;
+  /// @param response the received message, owned by the callback. Dropped if this slot is unbound
+  using OnReadDoneOkCallback =
+      std::function<void(grpc::ClientBidiReactor<RequestT, ResponseT>*, std::unique_ptr<ResponseT>)>;
   OnReadDoneOkCallback read_ok;  ///< Slot for ClientBidiReactor::OnReadDone event with positive OK flag
 
   /// Function signature for ClientBidiReactor::OnReadDone event with negative OK flag.
@@ -461,7 +466,7 @@ struct ActiveBidiCallbacks {
 
 /// Template class for bidirectional streaming RPC client reactor. This class is derived again by
 /// specialized RPC client reactors.
-/// Active Object components: Method Request (encapsulates RPC state) & Future (provides GetResponse(), Status())
+/// Active Object components: Method Request (encapsulates RPC state) & Future (provides Status())
 /// @tparam RequestT type of protobuf message the RPC sends
 /// @tparam ResponseT type of protobuf message the RPC receives
 template <class RequestT, class ResponseT>
@@ -506,12 +511,10 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// @return true if the write was initiated, false if rejected (stream closed, write pending,
   ///         or the RPC has already finished/is finishing)
   bool SendRequest(RequestT&& request) {
-    // stream_no_more_ is set by OnReadDone(false), OnWriteDone(false), and OnDone() - per gRPC's
-    // own contract (grpcpp/support/client_callback.h), a failure on either read or write means no
-    // new read/write operation will succeed, so one flag covers both directions. This narrows but
-    // does not fully close the race: the flag could still flip to true right after this check
-    // passes. A full fix needs the same AddHold()/RemoveHold() protection this class' own
-    // OnReadDone() uses for its read direction.
+    // The stream_no_more_ check narrows a race it cannot close: a gRPC thread can set the flag
+    // right after this check passes. Closing it needs a hold covering the write flow, taken
+    // before StartCall(), which is the UseMultipleHolds() sketch below. Which reactions set the
+    // flag is listed at its declaration.
     if (stream_no_more_) return false;  // RPC already finished (or finishing)
     if (writes_done_) return false;  // Stream already closed
     if (write_pending_) return false;  // Write already in progress
@@ -545,8 +548,8 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// After this call, no more SendRequest() calls are allowed.
   /// The server may continue sending responses.
   /// @return true if the close was initiated, false if rejected (already closed, write pending,
-  ///         or the RPC has already finished/is finishing) - callers should wait for
-  ///         OnWriteDone() and retry.
+  ///         or the RPC has already finished/is finishing). Callers should wait for OnWriteDone()
+  ///         and retry.
   bool CloseRequestStream() {
     if (stream_no_more_) return false;  // Same race-narrowing guard as SendRequest(), see above
     if (writes_done_) return false;     // Already closed
@@ -563,46 +566,18 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
     context_->TryCancel();
   }
 
-  /// Swaps the underlying data storage of the response object and resume the held RPC.
-  /// The swap mechanism is important to avoid a deep-copy of the content of the
-  /// response. Having the response swapped is acceptable because the bidirectional
-  /// RPC overwrites the response at each received message, so the swap is a
-  /// good technique to speed up the response proceeding time.
-  /// RemoveHold() is always called once a hold was added (by OnReadDone()'s AddHold()), whether or
-  /// not reading is restarted. gRPC's hold count is a single, per-RPC counter shared by both the
-  /// read and write directions - it only gates OnDone() and does not block other reactions (e.g.
-  /// OnWriteDone() on an unrelated in-flight write can still fire and set stream_no_more_ while
-  /// this hold is outstanding). The hold must be released exactly once per AddHold() regardless,
-  /// or the RPC stalls forever.
-  /// @param[out] response instance to swap
-  /// @return true when the returned response is valid, false otherwise.
-  bool GetResponse(ResponseT& response) {
-    if (!response_ready_) return false;
-    swap(response_, response);  // Moving the read content on the user side
-    response_ready_ = false;
-    if (!stream_no_more_) {
-      // Restart reading
-      this->StartRead(&response_);
-    }
-    // Resuming RPC - must run regardless of whether reading restarted, see above.
-    this->RemoveHold();
-    return true;
-  }
-
   /// Obtain the status of the RPC set by the `OnDone` event. Calling this
   /// function at any other moment is meaningless.
   /// @return reference to the grpc::Status object
   const grpc::Status& Status() { return status_; }
 
   // UPCOMING: gRPC's AddMultipleHolds(int holds) reserves a fixed hold budget upfront (before
-  // StartCall()) for independent operation-flows happening outside the reactions - e.g. one hold
-  // for the read-flow and one for the write-flow, as an alternative to the single-hold, per-message
-  // pattern already used for reads in OnReadDone()/GetResponse() below. This could close the
-  // remaining race noted in SendRequest()/CloseRequestStream() (see comments there), but the
+  // StartCall()) for an operation-flow issued outside the reactions, which is what SendRequest()
+  // does from the application thread. It could close the race noted there, but the intended
   // lifetime/usage on the write side has not been designed and no application code uses it yet.
   // Left commented out until there is an application need for it.
   // void UseMultipleHolds() {
-  //     this->AddMultipleHolds(/* holds */ 2);
+  //     this->AddMultipleHolds(/* holds */ 1);
   // }
 
  protected:
@@ -612,20 +587,19 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// is called.
   /// @param ok true: a response is received. false: the read stream is closed.
   void OnReadDone(const bool ok) override {
-    response_ready_ = ok;
     if (!ok) {
       stream_no_more_ = true;
       if (cbs_.read_nok) cbs_.read_nok(this);
       return;
     }
-    if (cbs_.read_ok && cbs_.read_ok(this, response_)) {
-      // Hold the RPC until the application thread calls StartRead() again from GetResponse().
-      // See "Why ActiveBidiReactor holds before returning from OnReadDone" in reactor_client.md for
-      // why this hold exists: https://github.com/grpc/grpc/pull/18072
-      this->AddHold();
-      return;
+    if (cbs_.read_ok) {
+      // extracts response, by pointer swap rather than deep-copy
+      auto message = std::make_unique<ResponseT>();
+      swap(*message, response_);
+      cbs_.read_ok(this, std::move(message));
     }
-    response_ready_ = false;
+    // Restart reading. Last action of the reaction, which is what removes the need for a hold.
+    // See "Why the read side needs no hold" in reactor_client.md.
     this->StartRead(&response_);
   }
 
@@ -659,7 +633,7 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
 
  protected:
   std::unique_ptr<grpc::ClientContext> context_;  ///< gRPC client context for this RPC
-  ResponseT response_;  ///< response holder
+  ResponseT response_;  ///< internal read target, swapped out on each read, never exposed
 
  private:
   grpc::Status status_;
@@ -670,19 +644,6 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   // the application gives up the request once SendRequest() accepts it.
   RequestT pending_request_;
 
-  // The application MAY call GetResponse() while a gRPC thread is on OnReadDone().
-  // That concurrent situation should not happen by design, unless the application
-  // is not waiting for the OnReadDoneOkCallback prior reading the response_;
-  // Once response_ready_ is set, the response_ may be thread-safely used by the application.
-  // Set by gRPC thread, read by application thread.
-  std::atomic_bool response_ready_{false};
-
-  // Once we got OnReadDone(false), OnWriteDone(false), or OnDone(), no more StartRead() or
-  // StartWrite() must be called. Per gRPC's own contract (grpcpp/support/client_callback.h), a
-  // failure on either direction means neither will succeed anymore, so one flag covers both.
-  // Set by gRPC thread, read by application thread.
-  std::atomic_bool stream_no_more_{false};
-
   // Flag indicating a write operation is in progress.
   // gRPC requires that only one write be in flight at a time.
   // Set by application thread via StartWrite, cleared by gRPC thread via OnWriteDone.
@@ -692,5 +653,11 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   // After this, no more SendRequest() calls are allowed.
   // Set by application thread, read by application thread.
   std::atomic_bool writes_done_{false};
+
+  // Once we got OnReadDone(false), OnWriteDone(false), or OnDone(), no more StartRead() or
+  // StartWrite() must be called. Per gRPC's own contract (grpcpp/support/client_callback.h), a
+  // failure on either direction means neither will succeed anymore, so one flag covers both.
+  // Set by gRPC thread, read by application thread.
+  std::atomic_bool stream_no_more_{false};
 };
 }  // namespace RpcReactor::Client

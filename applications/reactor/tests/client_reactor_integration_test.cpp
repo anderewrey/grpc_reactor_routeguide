@@ -263,13 +263,13 @@ TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesTo
 
   // Create callbacks
   routeguide::ListFeatures::Callbacks cbs;
-  cbs.ok = [&main_thread_id = main_thread_id_](grpc::ClientReadReactor<routeguide::Feature>*,
+  cbs.read_ok = [&main_thread_id = main_thread_id_](grpc::ClientReadReactor<routeguide::Feature>*,
                                                std::unique_ptr<routeguide::Feature> response) {
     EXPECT_NE(std::this_thread::get_id(), main_thread_id);
     // Hand the message ownership to the queue; the reactor re-arms its read right after this.
     EventLoop::TriggerEvent(kTestOnReadOk, response.release());
   };
-  cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
+  cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&main_thread_id = main_thread_id_](grpc::ClientReadReactor<routeguide::Feature>* r,
                                                   const grpc::Status&) {
     EXPECT_NE(std::this_thread::get_id(), main_thread_id);

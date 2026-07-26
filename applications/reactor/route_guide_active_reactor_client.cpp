@@ -51,8 +51,8 @@ std::unique_ptr<grpc::ClientContext> CreateClientContext() {
  *   ActiveBidiReactor) = Method Request
  * - EventLoop = Scheduler + Activation Queue
  * - EventLoop::RegisterEvent handlers = Servant (business logic placeholder)
- * - Status() = Future, plus GetResponse() for RouteChat only. The three others push owned messages
- * - AddHold/RemoveHold = Guards (prevent concurrent access), RouteChat only
+ * - Status() = Future. All four reactors push their messages out as owned objects, so no reactor
+ *   holds a response for the application to pull, and none needs a Guard to protect one
  *
  * Note: This demo uses simple logging as Servant logic. Production applications
  * would implement actual business logic in the event handlers.
@@ -178,15 +178,13 @@ class RouteGuideClient {
             }),
         route_chat_on_read_done_ok_(
             kRouteChatOnReadDoneOk,
-            [&reactor_ = reactor_map_[routeguide::RouteChat::RpcKey],
-             &logger = routeguide::logger::Get(routeguide::RpcMethods::kRouteChat)](const EventLoop::Event* event) {
+            [&logger = routeguide::logger::Get(routeguide::RpcMethods::kRouteChat)](const EventLoop::Event* event) {
               // ProceedEvent: OnReadDoneOk
               assert(main_thread == std::this_thread::get_id());  // application thread
-              auto* reactor = static_cast<routeguide::RouteChat::ClientReactor*>(event->getData());
-              assert(reactor == reactor_.get());
-              routeguide::RouteChat::ResponseT response;
-              reactor->GetResponse(response);
-              logger.info("RESPONSE | {}: {}", response.GetTypeName(), protobuf_utils::ToString(response));
+              // The event data is the message, not the reactor: reclaim the released ownership
+              const std::unique_ptr<routeguide::RouteChat::ResponseT> response{
+                  static_cast<routeguide::RouteChat::ResponseT*>(event->getData())};
+              logger.info("RESPONSE | {}: {}", response->GetTypeName(), protobuf_utils::ToString(*response));
             }),
         route_chat_on_read_done_nok_(
             kRouteChatOnReadDoneNOk,
@@ -269,12 +267,12 @@ class RouteGuideClient {
 
     Callbacks cbs;
     // (Point 2.5) TriggerEvent: OnReadDoneOk, handing the message ownership to the queue
-    cbs.ok = [](auto*, std::unique_ptr<ResponseT> response) {
+    cbs.read_ok = [](auto*, std::unique_ptr<ResponseT> response) {
       assert(main_thread != std::this_thread::get_id());  // gRPC thread
       EventLoop::TriggerEvent(kListFeaturesOnReadDoneOk, response.release());
     };
     // (Point 4.3) TriggerEvent: OnReadDoneNOk
-    cbs.nok = [](auto* reactor) {
+    cbs.read_nok = [](auto* reactor) {
       assert(main_thread != std::this_thread::get_id());  // gRPC thread
       EventLoop::TriggerEvent(kListFeaturesOnReadDoneNOk, reactor);
     };
@@ -352,10 +350,9 @@ class RouteGuideClient {
 
     Callbacks cbs;
     // TriggerEvent: OnReadDoneOk
-    cbs.read_ok = [](auto* reactor, const ResponseT&) -> bool {
+    cbs.read_ok = [](auto*, std::unique_ptr<ResponseT> response) {
       assert(main_thread != std::this_thread::get_id());  // gRPC thread
-      EventLoop::TriggerEvent(kRouteChatOnReadDoneOk, reactor);
-      return true;  // true: hold the RPC until the application proceeded the response
+      EventLoop::TriggerEvent(kRouteChatOnReadDoneOk, response.release());
     };
     // TriggerEvent: OnReadDoneNOk
     cbs.read_nok = [](auto* reactor) {

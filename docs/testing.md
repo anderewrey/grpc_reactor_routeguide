@@ -45,7 +45,7 @@ path: a gRPC reactor callback triggers `EventLoop::TriggerEvent()`, and the appl
 executes the deferred handler. It runs a real EventLoop in `NON_BLOCK` mode on a background
 thread. It asserts that reactor callbacks execute off the main thread, while `EventLoop` handlers
 execute the deferred processing. For `ActiveReadReactor` this includes the ownership-transfer path:
-the gRPC-thread `ok` callback releases the owned message into `EventLoop::TriggerEvent()`, and the
+the gRPC-thread `read_ok` callback releases the owned message into `EventLoop::TriggerEvent()`, and the
 `EventLoop` handler reclaims that pointer. The same case asserts that messages arrive in network
 order and that the `done` event is handled behind all of them, since both ride the same FIFO queue.
 
@@ -78,7 +78,7 @@ See the file list above for which file covers which RPC type.
 
 The deferred-consumer scenario of the server-stream row is
 `ListFeatures_DeferredConsumer_StreamCompletesWithoutConsumerAction` in [active_read_reactor_test.cpp][read-test].
-Its `ok` callback parks every received message and calls nothing back into the reactor, and the stream still runs
+Its `read_ok` callback parks every received message and calls nothing back into the reactor, and the stream still runs
 to completion, because `ActiveReadReactor` re-arms each read itself. The same test checks that every parked
 message kept its own value, so none of them alias a shared read buffer.
 

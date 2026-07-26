@@ -157,14 +157,15 @@ These gRPC functions are called internally by the reactor classes and are not ex
 
 These callbacks are invoked by gRPC and handled internally by the reactor classes:
 
-| gRPC Callback               | When it fires                        | Invokes user callback             |
-|-----------------------------|--------------------------------------|-----------------------------------|
-| `OnReadDone(bool ok)`       | Read operation completed             | `cbs_.ok`/`cbs_.nok`              |
-| `OnWriteDone(bool ok)`      | Write operation completed            | `cbs_.write_done`                 |
-| `OnWritesDoneDone(bool ok)` | Explicit StartWritesDone() completed | none (internal only)              |
-| `OnDone(Status)`            | RPC terminated                       | `cbs_.done`                       |
+| gRPC Callback               | When it fires                        | Invokes user callback          |
+|-----------------------------|--------------------------------------|--------------------------------|
+| `OnReadDone(bool ok)`       | Read operation completed             | `cbs_.read_ok`/`cbs_.read_nok` |
+| `OnWriteDone(bool ok)`      | Write operation completed            | `cbs_.write_done`              |
+| `OnWritesDoneDone(bool ok)` | Explicit StartWritesDone() completed | none (internal only)           |
+| `OnDone(Status)`            | RPC terminated                       | `cbs_.done`                    |
 
-`ActiveBidiReactor` uses `cbs_.read_ok`/`cbs_.read_nok` instead of `cbs_.ok`/`cbs_.nok` for `OnReadDone`.
+`ActiveReadReactor` and `ActiveBidiReactor` name these two slots identically, so a reader of either finds the
+same `read_ok`/`read_nok` pair.
 
 ### Stream completion tracking
 
@@ -181,8 +182,9 @@ internal `stream_no_more_` flag. `ActiveReadReactor` needs no such flag, because
 - `OnWritesDoneDone()` fires only for an explicit `StartWritesDone()` (i.e. `CloseRequestStream()`), not for a
   close implied via `StartWriteLast()` (i.e. `SendLastRequest()`). This is per gRPC's own documented distinction.
 - This narrows, but does not fully close, a race with a concurrent `OnDone()`: the flag can flip to true right
-  after a call already checked it. Closing that race fully would need the same `AddHold()`/`RemoveHold()`
-  protection `ActiveBidiReactor::OnReadDone()` already uses for its read direction.
+  after a call already checked it. Closing that race fully would need a hold covering the write flow, taken
+  before `StartCall()` and released once when that flow conclusively ends, which is the `UseMultipleHolds()`
+  sketch both classes carry commented out.
 
 ### Application-facing API
 
@@ -685,8 +687,8 @@ and releases that ownership into the event queue. The two other callbacks pass t
 From the PlantUML sequence diagram, the corresponding points are:
 
 - 1.x : the `std::make_unique<ClientReactor>(...)` line
-- 2.5 : the `cbs.ok = [](auto*, std::unique_ptr<ResponseT> response) {...}` lines
-- 4.3 : the `cbs.nok = [](auto* reactor) {...}` lines
+- 2.5 : the `cbs.read_ok = [](auto*, std::unique_ptr<ResponseT> response) {...}` lines
+- 4.3 : the `cbs.read_nok = [](auto* reactor) {...}` lines
 - 4.6 : the `cbs.done = [](auto* reactor, const grpc::Status&) {...}` lines
 
 ````cpp
@@ -696,11 +698,11 @@ void ListFeatures(routeguide::Rectangle rect) {
   using routeguide::ListFeatures::Callbacks;
   using routeguide::ListFeatures::RpcKey;
   Callbacks cbs;
-  cbs.ok = [](auto*, std::unique_ptr<routeguide::Feature> response) {
+  cbs.read_ok = [](auto*, std::unique_ptr<routeguide::Feature> response) {
     // Signal OnReadDoneOkCallback from gRPC thread, handing the message ownership to the queue
     EventLoop::TriggerEvent(kListFeaturesOnReadDoneOk, response.release());
   };
-  cbs.nok = [](auto* reactor) {
+  cbs.read_nok = [](auto* reactor) {
     EventLoop::TriggerEvent(kListFeaturesOnReadDoneNOk, reactor);  // Signal OnReadDoneNOkCallback from gRPC thread
   };
   cbs.done = [](auto* reactor, const grpc::Status&) {

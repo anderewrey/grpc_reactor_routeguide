@@ -24,7 +24,7 @@ Servant handlers.
 `ActiveBidiReactor` is the only reactor that guards a message with a hold. The other three reactors push their
 response to a callback instead of keeping it for the application to pull, so they need no hold.
 `ActiveUnaryReactor` and `ActiveWriteReactor` move their single terminal response into the `done` callback.
-`ActiveReadReactor` moves each received message into the `ok` callback and re-arms the next read as the last
+`ActiveReadReactor` moves each received message into the `read_ok` callback and re-arms the next read as the last
 action of the same read reaction, so the next read cannot complete while that reaction runs.
 
 The implementation follows this component structure:
@@ -224,8 +224,8 @@ Each reactor type has a corresponding callback struct:
 
 **Server-streaming** (`ActiveReadCallbacks<ResponseT>`):
 
-- `ok`: called on successful read, receives ownership of the message as a `std::unique_ptr<ResponseT>`
-- `nok`: called when stream ends (no more reads)
+- `read_ok`: called on successful read, receives ownership of the message as a `std::unique_ptr<ResponseT>`
+- `read_nok`: called when stream ends (no more reads)
 - `done`: called on RPC completion
 
 **Client-streaming** (`ActiveWriteCallbacks<RequestT, ResponseT>`):
@@ -311,7 +311,7 @@ this->RemoveHold();
 ```
 
 `ActiveReadReactor` needs no equivalent. It swaps each message into a `std::unique_ptr<ResponseT>`, passes that
-pointer to the `ok` callback, and calls `StartRead()` as the last statement of the reaction, all on the gRPC
+pointer to the `read_ok` callback, and calls `StartRead()` as the last statement of the reaction, all on the gRPC
 thread. `ActiveUnaryReactor` and `ActiveWriteReactor` need no equivalent either, because their only response
 leaves in the `done` callback, at a point where the RPC is already over.
 

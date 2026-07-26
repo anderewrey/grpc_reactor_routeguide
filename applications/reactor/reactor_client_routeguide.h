@@ -133,11 +133,14 @@ using Callbacks = RpcReactor::Client::ActiveBidiCallbacks<RequestT, ResponseT>;
 /// - EventLoop integration: callbacks can trigger TriggerEvent() to dispatch to application thread
 ///
 /// Inherited methods from ActiveBidiReactor:
-/// - SendRequest(const RouteNote&): Send a message to the server
+/// - SendRequest(RouteNote&&): Send a message to the server, giving up its ownership
+/// - SendLastRequest(RouteNote&&): Send the final message and close the request stream, in one operation
 /// - CloseRequestStream(): Signal end of client requests (server may continue sending)
-/// - GetResponse(RouteNote&): Extract received response via swap
 /// - TryCancel(): Cancel the RPC from any thread
 /// - Status(): Get completion status after OnDone()
+///
+/// Received responses are not pulled from the reactor: each one is pushed to the read_ok slot as an
+/// owned message.
 class ClientReactor final : public RpcReactor::Client::ActiveBidiReactor<RequestT, ResponseT> {
  public:
   /// Constructor of the specialized class. It calls the RPC method and starts the stream reading
