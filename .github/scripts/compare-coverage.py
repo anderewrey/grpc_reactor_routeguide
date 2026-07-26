@@ -160,12 +160,15 @@ def emit_cost(metas, out):
     out.append("")
 
 
+_METRIC_LABELS = {"lines": "line", "branches": "branch", "functions": "function", "regions": "region"}
+
+
 def emit_per_file(reports, metric, out):
     """Emit one row per source file, with the metric as measured by each tool."""
     tools = list(reports)
     every_file = sorted({name for files in reports.values() for name in files})
 
-    out.append(f"## Per-file {metric[:-1] if metric.endswith('s') else metric} coverage\n")
+    out.append(f"## Per-file {_METRIC_LABELS.get(metric, metric)} coverage\n")
     out.append("| File | " + " | ".join(tools) + " | Spread |")
     out.append("| --- | " + " | ".join("---" for _ in tools) + " | --- |")
     for name in every_file:

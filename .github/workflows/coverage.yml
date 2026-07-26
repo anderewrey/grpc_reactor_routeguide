@@ -136,8 +136,12 @@ jobs:
         run: |
           mkdir -p coverage-lcov
           report_start=$(date +%s)
+          # "inconsistent" is GCC 15's geninfo reporting a mismatched end line for TEST_F bodies
+          # (GoogleTest's macro expansion confuses gcov's line tracking, not a real data problem);
+          # "mismatch" is the same false positive geninfo already reports for libstdc++/libprotobuf
+          # headers, unrelated to this project's own code.
           lcov --capture --directory build --output-file coverage-lcov/lcov.info \
-            --rc branch_coverage=1 --ignore-errors mismatch,negative,unused
+            --rc branch_coverage=1 --ignore-errors mismatch,negative,unused,inconsistent
           lcov --extract coverage-lcov/lcov.info \
             "$(pwd)/applications/*" "$(pwd)/rg_service/*" "$(pwd)/protobuf_utils/*" "$(pwd)/common/*" \
             --output-file coverage-lcov/lcov.info --rc branch_coverage=1 --ignore-errors unused
@@ -183,7 +187,7 @@ jobs:
             -ignore-filename-regex='.*/tests/.*|.*\.pb\.(h|cc)$|.*/vcpkg_installed/.*' \
             | tee coverage-llvm-cov/stdout.txt
 
-          clang --version | head -1 | awk '{print $3}' > /tmp/tool_version
+          clang --version | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 > /tmp/tool_version
           du -sk /tmp/profiles | awk '{print $1}' > /tmp/raw_kib
           du -sk coverage-llvm-cov/html | awk '{print $1}' > /tmp/html_kib
           echo "report_seconds=$(( $(date +%s) - report_start ))" >> "$GITHUB_ENV"
