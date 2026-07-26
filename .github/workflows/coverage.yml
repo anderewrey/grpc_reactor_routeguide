@@ -5,6 +5,9 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+    # "closed" doesn't need a build - it only runs cleanup-pages, removing this PR's published
+    # reports. The default types (opened, synchronize, reopened) are otherwise unchanged.
+    types: [opened, synchronize, reopened, closed]
   workflow_dispatch:
 
 permissions:
@@ -23,6 +26,7 @@ jobs:
   # formats are not cross-readable. See cmake/Coverage.cmake for why the two modes are compiler-bound.
   measure:
     name: measure (${{ matrix.tool }})
+    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     container:
       image: alpine:3.24
@@ -235,9 +239,13 @@ jobs:
   compare:
     name: compare tool reports
     needs: measure
-    if: always()
+    if: always() && github.event.action != 'closed'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # contents: write is only needed for the gh-pages push below; the rest of this job only reads.
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v5
 
@@ -253,13 +261,55 @@ jobs:
       - name: Post to job summary
         run: cat comparison.md >> "$GITHUB_STEP_SUMMARY"
 
+      # Each tool's own HTML (gcovr's source-highlighted file tree, lcov's genhtml navigation,
+      # llvm-cov's instantiation-level view) is a real interactive report with its own CSS/JS - a
+      # Check Run summary is markdown-only and can't render it, and an Actions artifact needs a
+      # manual download instead of a click-through link. Three plain per-tool pages, kept as close
+      # to what each tool already generates as possible, published under this PR's own path so the
+      # links stay meaningful for this PR specifically instead of getting overwritten by whichever
+      # branch/PR built next. cleanup-pages below removes this path once the PR closes.
+      - name: Assemble per-PR coverage pages
+        if: github.event_name == 'pull_request'
+        run: |
+          pr=${{ github.event.pull_request.number }}
+          out="pages-out/pr-$pr"
+          mkdir -p "$out"
+          for tool in gcovr lcov llvm-cov; do
+            cp -r "reports/coverage-$tool/html" "$out/$tool"
+          done
+          cat > "$out/index.html" <<HTML
+          <!doctype html>
+          <title>Coverage - PR #$pr</title>
+          <h1>Coverage - PR #$pr</h1>
+          <ul>
+            <li><a href="gcovr/">gcovr</a></li>
+            <li><a href="lcov/">lcov</a></li>
+            <li><a href="llvm-cov/">llvm-cov</a></li>
+          </ul>
+          HTML
+
+      - name: Deploy per-PR coverage pages
+        if: github.event_name == 'pull_request'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: pages-out
+          # keep_files preserves every other open PR's own pr-<n>/ directory already on gh-pages;
+          # without it each deploy would wipe the branch down to just this PR's own output.
+          keep_files: true
+
       - name: Comment on pull request
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
-            const body = fs.readFileSync('comparison.md', 'utf8');
+            const pagesUrl = `https://${context.repo.owner}.github.io/${context.repo.repo}/pr-${context.issue.number}`;
+            const body = fs.readFileSync('comparison.md', 'utf8')
+              + `\n## Full reports (per tool)\n\n`
+              + `- [gcovr](${pagesUrl}/gcovr/)\n`
+              + `- [lcov](${pagesUrl}/lcov/)\n`
+              + `- [llvm-cov](${pagesUrl}/llvm-cov/)\n`;
             const marker = '<!-- coverage-tool-comparison -->';
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
@@ -283,3 +333,33 @@ jobs:
                 body: content,
               });
             }
+
+  cleanup-pages:
+    name: remove closed PR's coverage pages
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Remove this PR's coverage pages from gh-pages
+        run: |
+          pr=${{ github.event.pull_request.number }}
+          if ! git ls-remote --exit-code --heads origin gh-pages > /dev/null 2>&1; then
+            echo "gh-pages branch does not exist yet, nothing to clean up."
+            exit 0
+          fi
+          git fetch origin gh-pages:gh-pages
+          git worktree add /tmp/gh-pages gh-pages
+          cd /tmp/gh-pages
+          if [ -d "pr-$pr" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git rm -r --quiet "pr-$pr"
+            git commit -m "Remove coverage pages for closed PR #$pr"
+            git push origin gh-pages
+          else
+            echo "No coverage pages found for PR #$pr, nothing to remove."
+          fi
