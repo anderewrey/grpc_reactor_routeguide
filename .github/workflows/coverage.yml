@@ -38,11 +38,15 @@ jobs:
           - tool: lcov
             cxx_compiler: g++
             coverage_mode: gcov
-            packages: g++ lcov
+            packages: g++ lcov gzip
           - tool: llvm-cov
             cxx_compiler: clang++
             coverage_mode: llvm
-            packages: clang compiler-rt llvm22
+            # gcc/binutils are not used to build this project's own code (CMAKE_CXX_COMPILER=clang++
+            # below), but vcpkg's own detect_compiler helper port, run while building EventLoop,
+            # needs a system `cc` to probe - matching ci.yml's clang matrix entries, which install
+            # the same pair for the same reason.
+            packages: clang compiler-rt llvm22 gcc binutils
     steps:
       - name: Install build dependencies
         run: |
@@ -106,7 +110,7 @@ jobs:
       - name: Generate gcovr report
         if: matrix.tool == 'gcovr'
         run: |
-          mkdir -p coverage-gcovr
+          mkdir -p coverage-gcovr/html
           report_start=$(date +%s)
           # --exclude-throw-branches is reported separately below, not applied to the primary
           # report: GCC's implicit exception-unwind branches have no llvm-cov counterpart, so
