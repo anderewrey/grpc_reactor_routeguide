@@ -52,4 +52,3 @@ class EventConnection {
 };
 
 }  // namespace RpcReactor
-

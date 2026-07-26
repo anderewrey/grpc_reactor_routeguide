@@ -14,4 +14,3 @@ using FeatureList = std::vector<routeguide::Feature>;
 namespace rg_db {
 FeatureList GetInitialFeatures();
 }  // namespace rg_db
-

@@ -667,4 +667,3 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   std::atomic_bool stream_no_more_{false};
 };
 }  // namespace RpcReactor::Client
-

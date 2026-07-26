@@ -20,4 +20,3 @@ constexpr underlying_type_t<Enum> to_underlying(Enum e) noexcept {
 }
 }  // namespace std
 #endif  // __cpp_lib_to_underlying
-

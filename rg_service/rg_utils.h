@@ -29,4 +29,3 @@ unsigned GetRandomTimeDelay();
 namespace routeguide {
 bool operator==(const Point& point1, const Point& point2);
 }  // namespace routeguide
-

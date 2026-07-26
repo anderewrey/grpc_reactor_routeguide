@@ -20,4 +20,3 @@ spdlog::logger& Get(RpcMethods method);
 }  // namespace logger
 
 }  // namespace routeguide
-

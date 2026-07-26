@@ -62,4 +62,3 @@ inline constexpr auto RpcKey = RpcMethods::kRouteChat;
 }  // namespace RouteChat
 
 }  // namespace routeguide
-

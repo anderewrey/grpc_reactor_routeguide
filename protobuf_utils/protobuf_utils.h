@@ -12,4 +12,3 @@ namespace google::protobuf { class Message; }
 namespace protobuf_utils {
 std::string ToString(const google::protobuf::Message& message);
 }  // namespace protobuf_utils
-

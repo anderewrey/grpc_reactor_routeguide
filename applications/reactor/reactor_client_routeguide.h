@@ -161,4 +161,3 @@ class ClientReactor final : public RpcReactor::Client::ActiveBidiReactor<Request
   }
 };
 }  // namespace routeguide::RouteChat
-

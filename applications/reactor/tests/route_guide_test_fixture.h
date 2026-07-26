@@ -55,4 +55,3 @@ class RouteGuideTestFixtureBase : public ::testing::Test {
   std::shared_ptr<grpc::Channel> channel_;
   std::unique_ptr<routeguide::RouteGuide::Stub> stub_;
 };
-
