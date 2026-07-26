@@ -6,12 +6,14 @@
 #ifndef RG_SERVICE_RG_LOGGER_H_
 #define RG_SERVICE_RG_LOGGER_H_
 
+#include <cstdint>
+
 #include <spdlog/logger.h>
 
 namespace routeguide {
 
 // Forward declaration
-enum class RpcMethods;
+enum class RpcMethods : std::uint8_t;
 
 namespace logger {
 

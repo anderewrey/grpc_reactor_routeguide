@@ -19,14 +19,18 @@ using routeguide::Point;
 using routeguide::Rectangle;
 using routeguide::RouteNote;
 
-Point rg_utils::MakePoint(const int32_t latitude, const int32_t longitude) {  // NOLINT(bugprone-easily-swappable-parameters): latitude/longitude is the coordinate pair this whole file works with.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): latitude/longitude is the coordinate pair
+// this whole file works with.
+Point rg_utils::MakePoint(const int32_t latitude, const int32_t longitude) {
   Point p;
   p.set_latitude(latitude);
   p.set_longitude(longitude);
   return p;
 }
 
-Rectangle rg_utils::MakeRectangle(const int32_t latitude_lo, const int32_t longitude_lo,  // NOLINT(bugprone-easily-swappable-parameters): two coordinate pairs, same rationale as MakePoint above.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): two coordinate pairs, same rationale as
+// MakePoint above.
+Rectangle rg_utils::MakeRectangle(const int32_t latitude_lo, const int32_t longitude_lo,
                                           const int32_t latitude_hi, const int32_t longitude_hi) {
   Rectangle rect;
   *rect.mutable_lo() = MakePoint(latitude_lo, longitude_lo);
