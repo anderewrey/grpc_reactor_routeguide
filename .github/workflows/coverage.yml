@@ -162,13 +162,28 @@ jobs:
           report_start=$(date +%s)
           llvm22-profdata merge -sparse /tmp/profiles/*.profraw -o coverage-llvm-cov/merged.profdata
 
-          # A merged profdata has no record of which binaries produced it, so llvm-cov needs each
-          # ctest binary passed explicitly. Same five names as REACTOR_TESTS in
-          # applications/reactor/tests/CMakeLists.txt.
+          # A merged profdata has no record of which binaries produced it, so llvm-cov needs every
+          # instrumented binary passed explicitly. gcovr/lcov instead scan the whole build/ tree for
+          # .gcno files, so they see every compiled translation unit regardless of which binary it
+          # ended up in - including the four standalone example apps ctest never runs. Passing those
+          # four here too (all built with the same instrumentation, just never executed) keeps
+          # llvm-cov's file set the same as gcovr/lcov's: without them, this project's ~800 lines of
+          # untested example-app code would silently vanish from llvm-cov's denominator instead of
+          # showing up as 0%, making the tools look further apart than they actually are.
           object_args=""
-          for name in active_unary_reactor_test active_read_reactor_test active_write_reactor_test \
-                      active_bidi_reactor_test client_reactor_integration_test; do
-            object_args="$object_args -object=build/applications/reactor/tests/$name"
+          for path in \
+            applications/reactor/tests/active_unary_reactor_test \
+            applications/reactor/tests/active_read_reactor_test \
+            applications/reactor/tests/active_write_reactor_test \
+            applications/reactor/tests/active_bidi_reactor_test \
+            applications/reactor/tests/client_reactor_integration_test \
+            applications/blocking/route_guide_sync_client \
+            applications/blocking/route_guide_sync_server \
+            applications/callback/route_guide_callback_client \
+            applications/callback/route_guide_callback_server \
+            applications/reactor/route_guide_active_reactor_client \
+          ; do
+            object_args="$object_args -object=build/$path"
           done
 
           llvm22-cov export $object_args \
