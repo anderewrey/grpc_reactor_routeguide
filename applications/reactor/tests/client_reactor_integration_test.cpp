@@ -136,7 +136,6 @@ class ClientReactorIntegrationTest : public RouteGuideTestFixtureBase<TestRouteG
 /// 4. The handler reclaims the response ownership the callback released into the queue
 ///
 /// Thread assertions confirm callbacks do NOT run on the main thread.
-// NOLINTNEXTLINE(readability-function-cognitive-complexity): one end-to-end dispatch scenario.
 TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop) {
   // Configure expected response
   routeguide::Feature expected_feature;
@@ -217,7 +216,6 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop
 /// - Thread assertions confirm gRPC → EventLoop thread transition
 /// - Response data integrity across thread boundaries
 /// - Network-order delivery, and `OnDone` handled behind every message, since both ride one queue
-// NOLINTNEXTLINE(readability-function-cognitive-complexity): one end-to-end dispatch scenario.
 TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesToEventLoop) {
   // Configure server to return multiple features
   std::vector<routeguide::Feature> expected_features;

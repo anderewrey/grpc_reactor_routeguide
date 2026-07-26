@@ -3,8 +3,7 @@
 /// Copyright 2024 anderewrey
 ///
 
-#ifndef RG_SERVICE_RG_UTILS_H_
-#define RG_SERVICE_RG_UTILS_H_
+#pragma once
 
 #include <string_view>
 #include <vector>
@@ -31,4 +30,3 @@ namespace routeguide {
 bool operator==(const Point& point1, const Point& point2);
 }  // namespace routeguide
 
-#endif  // RG_SERVICE_RG_UTILS_H_

@@ -3,8 +3,7 @@
 /// Copyright 2024 anderewrey
 ///
 
-#ifndef APPLICATIONS_REACTOR_REACTOR_CLIENT_H_
-#define APPLICATIONS_REACTOR_REACTOR_CLIENT_H_
+#pragma once
 
 #include <grpcpp/channel.h>
 #include <grpcpp/client_context.h>
@@ -92,6 +91,7 @@ class ActiveUnaryReactor : public grpc::ClientUnaryReactor {
   /// is also copied into the reactor.
   /// This OnDone is also the relevent event acknowledging the response reception.
   /// @param status info coming from gRPC
+  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnDone(const grpc::Status& status) override {
     // (Point 3.1, 3.2, 3.3) RPC termination
     if (cbs_.done) {
@@ -190,13 +190,12 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
   /// is called.
   /// @param ok true: a response is received. false: the stream reader is closed
   ///           (but not the RPC itself).
+  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnReadDone(const bool ok) override {
     // (Point 2.3, 4.2) Event received from stream
     if (!ok) {
       // (Point 4.3) OnReadDone: False
-      if (cbs_.read_nok) {
-        cbs_.read_nok(this);
-      }
+      if (cbs_.read_nok) cbs_.read_nok(this);
       return;
     }
     // (Point 2.3) OnReadDone: true
@@ -215,6 +214,7 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
   /// instance. The OnDoneCallback is then called, but on the same gRPC thread. The received status
   /// is also copied into the reactor.
   /// @param status info coming from gRPC
+  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnDone(const grpc::Status& status) override {
     // (Point 4.4, 4.5) RPC termination
     if (cbs_.done) {
@@ -308,15 +308,9 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
     // right after this check passes. Closing it needs a hold covering the write flow, taken
     // before StartCall(), which is the UseMultipleHolds() sketch below. Which reactions set the
     // flag is listed at its declaration.
-    if (stream_no_more_) {
-      return false;  // RPC already finished (or finishing)
-    }
-    if (writes_done_) {
-      return false;  // Stream already closed
-    }
-    if (write_pending_) {
-      return false;  // Write already in progress
-    }
+    if (stream_no_more_) return false;  // RPC already finished (or finishing)
+    if (writes_done_) return false;  // Stream already closed
+    if (write_pending_) return false;  // Write already in progress
     pending_request_ = std::move(request);
     write_pending_ = true;
     this->StartWrite(&pending_request_);
@@ -330,15 +324,9 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// @return true if the write was initiated, false if rejected (stream closed, write pending,
   ///         or the RPC has already finished/is finishing)
   bool SendLastRequest(RequestT&& request) {
-    if (stream_no_more_) {
-      return false;  // RPC already finished (or finishing)
-    }
-    if (writes_done_) {
-      return false;  // Stream already closed
-    }
-    if (write_pending_) {
-      return false;  // Write already in progress
-    }
+    if (stream_no_more_) return false;  // RPC already finished (or finishing)
+    if (writes_done_) return false;  // Stream already closed
+    if (write_pending_) return false;  // Write already in progress
     pending_request_ = std::move(request);
     write_pending_ = true;
     // Per gRPC's contract, calling this already forbids any further StartWrite/StartWriteLast/
@@ -354,15 +342,9 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   ///         or the RPC has already finished/is finishing). Callers should wait for OnWriteDone()
   ///         and retry.
   bool CloseRequestStream() {
-    if (stream_no_more_) {
-      return false;  // Same race-narrowing guard as SendRequest(), see above
-    }
-    if (writes_done_) {
-      return false;  // Already closed
-    }
-    if (write_pending_) {
-      return false;  // Wait for the in-flight write to complete first
-    }
+    if (stream_no_more_) return false;  // Same race-narrowing guard as SendRequest(), see above
+    if (writes_done_) return false;  // Already closed
+    if (write_pending_) return false;  // Wait for the in-flight write to complete first
     writes_done_ = true;
     this->StartWritesDone();
     return true;
@@ -393,14 +375,11 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// This event function is called by gRPC when a write operation completes.
   /// The OnWriteDoneCallback is then called, but on the same gRPC thread.
   /// @param ok true if the write was successful
+  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnWriteDone(bool ok) override {
     write_pending_ = false;
-    if (!ok) {
-      stream_no_more_ = true;
-    }
-    if (cbs_.write_done) {
-      cbs_.write_done(this, ok);
-    }
+    if (!ok) stream_no_more_ = true;
+    if (cbs_.write_done) cbs_.write_done(this, ok);
   }
 
   /// This event function is called by gRPC when an explicit StartWritesDone() operation (i.e.
@@ -408,12 +387,14 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// SendLastRequest()). Either way, the write side is conclusively over once this fires, so it
   /// is tracked the same as OnDone() for that purpose.
   /// @param ok true if the close was successful
+  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnWritesDoneDone(bool /*ok*/) override { stream_no_more_ = true; }
 
   /// This event function is called by gRPC when the RPC is done. The OnDoneCallback
   /// callback is then called, but on the same gRPC thread. The received status
   /// is also copied into the reactor.
   /// @param status info coming from gRPC
+  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnDone(const grpc::Status& status) override {
     stream_no_more_ = true;
     if (cbs_.done) {
@@ -537,15 +518,9 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
     // right after this check passes. Closing it needs a hold covering the write flow, taken
     // before StartCall(), which is the UseMultipleHolds() sketch below. Which reactions set the
     // flag is listed at its declaration.
-    if (stream_no_more_) {
-      return false;  // RPC already finished (or finishing)
-    }
-    if (writes_done_) {
-      return false;  // Stream already closed
-    }
-    if (write_pending_) {
-      return false;  // Write already in progress
-    }
+    if (stream_no_more_) return false;  // RPC already finished (or finishing)
+    if (writes_done_) return false;  // Stream already closed
+    if (write_pending_) return false;  // Write already in progress
     pending_request_ = std::move(request);
     write_pending_ = true;
     this->StartWrite(&pending_request_);
@@ -560,15 +535,9 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// @return true if the write was initiated, false if rejected (stream closed, write pending,
   ///         or the RPC has already finished/is finishing)
   bool SendLastRequest(RequestT&& request) {
-    if (stream_no_more_) {
-      return false;  // RPC already finished (or finishing)
-    }
-    if (writes_done_) {
-      return false;  // Stream already closed
-    }
-    if (write_pending_) {
-      return false;  // Write already in progress
-    }
+    if (stream_no_more_) return false;  // RPC already finished (or finishing)
+    if (writes_done_) return false;  // Stream already closed
+    if (write_pending_) return false;  // Write already in progress
     pending_request_ = std::move(request);
     write_pending_ = true;
     // Per gRPC's contract, calling this already forbids any further StartWrite/StartWriteLast/
@@ -585,15 +554,9 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   ///         or the RPC has already finished/is finishing). Callers should wait for OnWriteDone()
   ///         and retry.
   bool CloseRequestStream() {
-    if (stream_no_more_) {
-      return false;  // Same race-narrowing guard as SendRequest(), see above
-    }
-    if (writes_done_) {
-      return false;  // Already closed
-    }
-    if (write_pending_) {
-      return false;  // Wait for the in-flight write to complete first
-    }
+    if (stream_no_more_) return false;  // Same race-narrowing guard as SendRequest(), see above
+    if (writes_done_) return false;  // Already closed
+    if (write_pending_) return false;  // Wait for the in-flight write to complete first
     writes_done_ = true;
     this->StartWritesDone();
     return true;
@@ -626,12 +589,11 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// Based on the value of the `ok` flag, the OnReadDoneOkCallback or OnReadDoneNOkCallback
   /// is called.
   /// @param ok true: a response is received. false: the read stream is closed.
+  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnReadDone(const bool ok) override {
     if (!ok) {
       stream_no_more_ = true;
-      if (cbs_.read_nok) {
-        cbs_.read_nok(this);
-      }
+      if (cbs_.read_nok) cbs_.read_nok(this);
       return;
     }
     if (cbs_.read_ok) {
@@ -648,14 +610,11 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// This event function is called by gRPC when a write operation completes.
   /// The OnWriteDoneCallback is then called, but on the same gRPC thread.
   /// @param ok true if the write was successful
+  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnWriteDone(bool ok) override {
     write_pending_ = false;
-    if (!ok) {
-      stream_no_more_ = true;
-    }
-    if (cbs_.write_done) {
-      cbs_.write_done(this, ok);
-    }
+    if (!ok) stream_no_more_ = true;
+    if (cbs_.write_done) cbs_.write_done(this, ok);
   }
 
   /// This event function is called by gRPC when an explicit StartWritesDone() operation (i.e.
@@ -663,12 +622,14 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// SendLastRequest()). Either way, the write side is conclusively over once this fires, so it
   /// is tracked the same as OnDone() for that purpose.
   /// @param ok true if the close was successful
+  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnWritesDoneDone(bool /*ok*/) override { stream_no_more_ = true; }
 
   /// This event function is called by gRPC when the RPC is done and no more operation is possible
   /// with that reactor instance. The OnDoneCallback is then called, but on the same gRPC thread.
   /// The received status is also copied into the reactor.
   /// @param status info coming from gRPC
+  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnDone(const grpc::Status& status) override {
     stream_no_more_ = true;
     if (cbs_.done) {
@@ -707,4 +668,3 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
 };
 }  // namespace RpcReactor::Client
 
-#endif  // APPLICATIONS_REACTOR_REACTOR_CLIENT_H_

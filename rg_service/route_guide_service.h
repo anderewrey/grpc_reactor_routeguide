@@ -3,8 +3,7 @@
 /// Copyright 2025 anderewrey
 ///
 
-#ifndef RG_SERVICE_ROUTE_GUIDE_SERVICE_H_
-#define RG_SERVICE_ROUTE_GUIDE_SERVICE_H_
+#pragma once
 
 #include "generated/route_guide.grpc.pb.h"
 #include "generated/route_guide.pb.h"
@@ -66,4 +65,3 @@ inline constexpr auto RpcKey = RpcMethods::kRouteChat;
 
 }  // namespace routeguide
 
-#endif  // RG_SERVICE_ROUTE_GUIDE_SERVICE_H_

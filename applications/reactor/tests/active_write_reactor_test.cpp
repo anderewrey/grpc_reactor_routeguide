@@ -192,7 +192,6 @@ class ActiveWriteReactorTest : public RouteGuideTestFixtureBase<TestRouteGuideSe
 ///
 /// Note: gRPC requires waiting for OnWriteDone() before calling SendRequest() again.
 /// Overlapping writes cause GRPC_CALL_ERROR_TOO_MANY_OPERATIONS.
-// NOLINTNEXTLINE(readability-function-cognitive-complexity): one end-to-end streaming scenario.
 TEST_F(ActiveWriteReactorTest, RecordRoute_MultiplePoints_ReturnsCorrectSummary) {
   std::promise<RecordRouteResult> result_promise;
   std::future<RecordRouteResult> result_future = result_promise.get_future();
@@ -551,7 +550,6 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_TryCancel_TerminatesStream) {
 /// - Status is not OK
 /// - Error code is INTERNAL (as configured)
 /// - Error message matches "Server test error"
-// NOLINTNEXTLINE(readability-function-cognitive-complexity): one end-to-end streaming scenario.
 TEST_F(ActiveWriteReactorTest, RecordRoute_ServerError_PropagatesStatus) {
   // Configure server to return error after receiving stream
   test_service_.SetErrorResponse(grpc::StatusCode::INTERNAL, "Server test error");
@@ -606,9 +604,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_NoDoneCallbackBound_RpcStillCompletes
   routeguide::RecordRoute::Callbacks cbs;
   // cbs.done deliberately left unbound.
   cbs.write_done = [&write_done_count](grpc::ClientWriteReactor<routeguide::Point>*, bool ok) {
-    if (ok) {
-      ++write_done_count;
-    }
+    if (ok) ++write_done_count;
   };
 
   auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor>(

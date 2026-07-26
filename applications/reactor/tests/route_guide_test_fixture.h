@@ -3,8 +3,7 @@
 /// Copyright 2026 anderewrey
 ///
 
-#ifndef APPLICATIONS_REACTOR_TESTS_ROUTE_GUIDE_TEST_FIXTURE_H_
-#define APPLICATIONS_REACTOR_TESTS_ROUTE_GUIDE_TEST_FIXTURE_H_
+#pragma once
 
 #include <gtest/gtest.h>
 
@@ -57,4 +56,3 @@ class RouteGuideTestFixtureBase : public ::testing::Test {
   std::unique_ptr<routeguide::RouteGuide::Stub> stub_;
 };
 
-#endif  // APPLICATIONS_REACTOR_TESTS_ROUTE_GUIDE_TEST_FIXTURE_H_

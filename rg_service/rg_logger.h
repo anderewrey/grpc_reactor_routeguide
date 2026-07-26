@@ -3,8 +3,7 @@
 /// Copyright 2025 anderewrey
 ///
 
-#ifndef RG_SERVICE_RG_LOGGER_H_
-#define RG_SERVICE_RG_LOGGER_H_
+#pragma once
 
 #include <spdlog/logger.h>
 
@@ -24,4 +23,3 @@ spdlog::logger& Get(RpcMethods method);
 
 }  // namespace routeguide
 
-#endif  // RG_SERVICE_RG_LOGGER_H_

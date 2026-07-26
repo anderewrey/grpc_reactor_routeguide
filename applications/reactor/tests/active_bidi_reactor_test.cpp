@@ -603,9 +603,6 @@ TEST_F(ActiveBidiReactorTest, RouteChat_DeadlineExceeded_PropagatesStatus) {
 /// - Each exchanges different messages
 /// - Wait for all OnDone callbacks
 /// - Verify all complete successfully
-// Exercises kNumStreams concurrent streams end-to-end; splitting it would scatter one scenario
-// across several helpers.
-// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 TEST_F(ActiveBidiReactorTest, RouteChat_MultipleConcurrent_AllComplete) {
   const int kNumStreams = 3;
 
@@ -713,8 +710,6 @@ TEST_F(ActiveBidiReactorTest, RouteChat_MultipleConcurrent_AllComplete) {
 /// until GetResponse() released it, so a consumer that deferred stalled the RPC. Sending kNoteCount
 /// notes to one location makes the server echo every note it stored earlier, so note i comes back
 /// once per later note and the total is kNoteCount*(kNoteCount-1)/2.
-// Same rationale as the RouteChat_MultipleConcurrent_AllComplete NOLINT above: one end-to-end flow.
-// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 TEST_F(ActiveBidiReactorTest, RouteChat_DeferredConsumer_StreamCompletesWithoutConsumerAction) {
   constexpr int kNoteCount = 8;
   constexpr size_t kExpectedResponses = kNoteCount * (kNoteCount - 1) / 2;
@@ -784,9 +779,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_DeferredConsumer_StreamCompletesWithoutC
   {
     const std::lock_guard<std::mutex> lock(parked_mutex);
     ASSERT_EQ(parked.size(), kExpectedResponses);
-    for (const auto& note : parked) {
-      counts[note->message()]++;
-    }
+    for (const auto& note : parked) counts[note->message()]++;
   }
   for (int i = 0; i < kNoteCount - 1; ++i) {
     EXPECT_EQ(counts["note-" + std::to_string(i)], kNoteCount - 1 - i)

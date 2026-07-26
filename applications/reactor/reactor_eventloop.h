@@ -3,8 +3,7 @@
 /// Copyright 2026 anderewrey
 ///
 
-#ifndef APPLICATIONS_REACTOR_REACTOR_EVENTLOOP_H_
-#define APPLICATIONS_REACTOR_REACTOR_EVENTLOOP_H_
+#pragma once
 
 #include <Event.h>
 #include <EventLoop.h>
@@ -54,4 +53,3 @@ class EventConnection {
 
 }  // namespace RpcReactor
 
-#endif  // APPLICATIONS_REACTOR_REACTOR_EVENTLOOP_H_

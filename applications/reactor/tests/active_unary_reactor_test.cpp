@@ -97,7 +97,6 @@ class ActiveUnaryReactorTest : public RouteGuideTestFixtureBase<TestRouteGuideSe
 /// - Status is OK for successful responses
 /// - Feature name and location match expected values
 /// - Response data is correctly transferred through reactor
-// NOLINTNEXTLINE(readability-function-cognitive-complexity): one end-to-end RPC scenario.
 TEST_F(ActiveUnaryReactorTest, GetFeature_ValidPoint_ReturnsFeature) {
   // Configure expected response
   routeguide::Feature expected_feature;
@@ -361,7 +360,6 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_DeadlineExceeded_PropagatesStatus) {
 /// 2. Each RPC has its own reactor instance and callbacks
 /// 3. gRPC thread pool processes requests in parallel
 /// 4. Atomic counter tracks completions
-// NOLINTNEXTLINE(readability-function-cognitive-complexity): one end-to-end RPC scenario.
 TEST_F(ActiveUnaryReactorTest, GetFeature_MultipleConcurrent_AllComplete) {
   routeguide::Feature feature;
   feature.set_name("Concurrent feature");

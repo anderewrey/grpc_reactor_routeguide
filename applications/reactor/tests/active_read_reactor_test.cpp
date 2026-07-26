@@ -132,7 +132,6 @@ class ActiveReadReactorTest : public RouteGuideTestFixtureBase<TestRouteGuideSer
 /// - All 5 features are received in order
 /// - Each feature's name and location match expected values
 /// - Final status is OK
-// NOLINTNEXTLINE(readability-function-cognitive-complexity): one end-to-end streaming scenario.
 TEST_F(ActiveReadReactorTest, ListFeatures_MultipleResponses_ReceivesAll) {
   // Configure server to return multiple features
   std::vector<routeguide::Feature> expected_features;
@@ -470,7 +469,6 @@ TEST_F(ActiveReadReactorTest, ListFeatures_DeadlineExceeded_PropagatesStatus) {
 /// 1. Start 5 concurrent ListFeatures streams
 /// 2. Each configured with different feature counts
 /// 3. All complete successfully
-// NOLINTNEXTLINE(readability-function-cognitive-complexity): one end-to-end streaming scenario.
 TEST_F(ActiveReadReactorTest, ListFeatures_MultipleConcurrent_AllComplete) {
   // Configure server with features
   std::vector<routeguide::Feature> features;

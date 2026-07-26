@@ -3,8 +3,7 @@
 /// Copyright 2025 anderewrey
 ///
 
-#ifndef COMMON_COMPAT_H_
-#define COMMON_COMPAT_H_
+#pragma once
 
 #include <type_traits>
 
@@ -22,4 +21,3 @@ constexpr underlying_type_t<Enum> to_underlying(Enum e) noexcept {
 }  // namespace std
 #endif  // __cpp_lib_to_underlying
 
-#endif  // COMMON_COMPAT_H_
