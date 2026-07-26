@@ -6,9 +6,9 @@
 #ifndef RG_SERVICE_RG_LOGGER_H_
 #define RG_SERVICE_RG_LOGGER_H_
 
-#include <cstdint>
-
 #include <spdlog/logger.h>
+
+#include <cstdint>
 
 namespace routeguide {
 
