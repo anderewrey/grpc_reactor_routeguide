@@ -3,7 +3,8 @@
 /// Copyright 2026 anderewrey
 ///
 
-#pragma once
+#ifndef APPLICATIONS_REACTOR_TESTS_ROUTE_GUIDE_TEST_FIXTURE_H_
+#define APPLICATIONS_REACTOR_TESTS_ROUTE_GUIDE_TEST_FIXTURE_H_
 
 #include <gtest/gtest.h>
 
@@ -35,7 +36,7 @@ class RouteGuideTestFixtureBase : public ::testing::Test {
     ASSERT_NE(server_, nullptr) << "Failed to start in-process server";
     ASSERT_GT(selected_port, 0) << "Failed to get dynamic port";
 
-    std::string server_address = "localhost:" + std::to_string(selected_port);
+    const std::string server_address = "localhost:" + std::to_string(selected_port);
     channel_ = grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
     stub_ = routeguide::RouteGuide::NewStub(channel_);
   }
@@ -55,3 +56,5 @@ class RouteGuideTestFixtureBase : public ::testing::Test {
   std::shared_ptr<grpc::Channel> channel_;
   std::unique_ptr<routeguide::RouteGuide::Stub> stub_;
 };
+
+#endif  // APPLICATIONS_REACTOR_TESTS_ROUTE_GUIDE_TEST_FIXTURE_H_

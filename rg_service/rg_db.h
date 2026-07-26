@@ -3,7 +3,8 @@
 /// Copyright 2024 anderewrey
 ///
 
-#pragma once
+#ifndef RG_SERVICE_RG_DB_H_
+#define RG_SERVICE_RG_DB_H_
 
 #include <vector>
 
@@ -14,3 +15,5 @@ using FeatureList = std::vector<routeguide::Feature>;
 namespace rg_db {
 FeatureList GetInitialFeatures();
 }  // namespace rg_db
+
+#endif  // RG_SERVICE_RG_DB_H_

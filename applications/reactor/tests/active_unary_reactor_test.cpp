@@ -52,7 +52,7 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
   }
 
   grpc::ServerUnaryReactor* GetFeature(grpc::CallbackServerContext* context,
-                                       const routeguide::Point* point,
+                                       const routeguide::Point* /*point*/,
                                        routeguide::Feature* feature) override {
     auto* reactor = context->DefaultReactor();
     if (return_error_) {
@@ -97,6 +97,7 @@ class ActiveUnaryReactorTest : public RouteGuideTestFixtureBase<TestRouteGuideSe
 /// - Status is OK for successful responses
 /// - Feature name and location match expected values
 /// - Response data is correctly transferred through reactor
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): one end-to-end RPC scenario.
 TEST_F(ActiveUnaryReactorTest, GetFeature_ValidPoint_ReturnsFeature) {
   // Configure expected response
   routeguide::Feature expected_feature;
@@ -109,7 +110,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_ValidPoint_ReturnsFeature) {
   std::future<GetFeatureResult> result_future = result_promise.get_future();
 
   // Create request
-  routeguide::Point request = rg_utils::MakePoint(407128000, -740060000);
+  const routeguide::Point request = rg_utils::MakePoint(407128000, -740060000);
 
   // Create callbacks
   routeguide::GetFeature::Callbacks cbs;
@@ -133,7 +134,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_ValidPoint_ReturnsFeature) {
   auto wait_result = result_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready) << "Timeout waiting for RPC completion";
 
-  GetFeatureResult result = result_future.get();
+  const GetFeatureResult result = result_future.get();
 
   // Verify results
   EXPECT_TRUE(result.completed);
@@ -155,13 +156,13 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_ValidPoint_ReturnsFeature) {
 /// not in the database returns a Feature with an empty name.
 TEST_F(ActiveUnaryReactorTest, GetFeature_UnknownPoint_ReturnsEmptyFeature) {
   // Configure empty response (simulating unknown point)
-  routeguide::Feature empty_feature;
+  const routeguide::Feature empty_feature;
   test_service_.SetGetFeatureResponse(empty_feature);
 
   std::promise<GetFeatureResult> result_promise;
   std::future<GetFeatureResult> result_future = result_promise.get_future();
 
-  routeguide::Point request = rg_utils::MakePoint(0, 0);
+  const routeguide::Point request = rg_utils::MakePoint(0, 0);
 
   routeguide::GetFeature::Callbacks cbs;
   cbs.done = [&result_promise](grpc::ClientUnaryReactor*,
@@ -182,7 +183,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_UnknownPoint_ReturnsEmptyFeature) {
   auto wait_result = result_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
 
-  GetFeatureResult result = result_future.get();
+  const GetFeatureResult result = result_future.get();
 
   EXPECT_TRUE(result.status.ok());
   EXPECT_TRUE(result.feature.name().empty());
@@ -206,7 +207,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_ServerError_PropagatesStatus) {
   std::promise<GetFeatureResult> result_promise;
   std::future<GetFeatureResult> result_future = result_promise.get_future();
 
-  routeguide::Point request = rg_utils::MakePoint(123, 456);
+  const routeguide::Point request = rg_utils::MakePoint(123, 456);
 
   routeguide::GetFeature::Callbacks cbs;
   cbs.done = [&result_promise](grpc::ClientUnaryReactor*,
@@ -224,7 +225,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_ServerError_PropagatesStatus) {
   auto wait_result = result_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
 
-  GetFeatureResult result = result_future.get();
+  const GetFeatureResult result = result_future.get();
 
   EXPECT_FALSE(result.status.ok());
   EXPECT_EQ(result.status.error_code(), grpc::StatusCode::INTERNAL);
@@ -243,7 +244,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_NotFoundError_PropagatesStatus) {
   std::promise<GetFeatureResult> result_promise;
   std::future<GetFeatureResult> result_future = result_promise.get_future();
 
-  routeguide::Point request = rg_utils::MakePoint(999999999, 999999999);
+  const routeguide::Point request = rg_utils::MakePoint(999999999, 999999999);
 
   routeguide::GetFeature::Callbacks cbs;
   cbs.done = [&result_promise](grpc::ClientUnaryReactor*,
@@ -261,7 +262,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_NotFoundError_PropagatesStatus) {
   auto wait_result = result_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
 
-  GetFeatureResult result = result_future.get();
+  const GetFeatureResult result = result_future.get();
 
   EXPECT_FALSE(result.status.ok());
   EXPECT_EQ(result.status.error_code(), grpc::StatusCode::NOT_FOUND);
@@ -287,7 +288,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_TryCancel_TriggersOnDone) {
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::Point request = rg_utils::MakePoint(123, 456);
+  const routeguide::Point request = rg_utils::MakePoint(123, 456);
 
   routeguide::GetFeature::Callbacks cbs;
   cbs.done = [&done_promise](grpc::ClientUnaryReactor*,
@@ -305,7 +306,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_TryCancel_TriggersOnDone) {
   auto wait_result = done_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   // Cancel may result in CANCELLED or OK (if response arrived before cancel)
   EXPECT_TRUE(status.error_code() == grpc::StatusCode::CANCELLED ||
@@ -328,7 +329,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_DeadlineExceeded_PropagatesStatus) {
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::Point request = rg_utils::MakePoint(123, 456);
+  const routeguide::Point request = rg_utils::MakePoint(123, 456);
 
   routeguide::GetFeature::Callbacks cbs;
   cbs.done = [&done_promise](grpc::ClientUnaryReactor*,
@@ -347,7 +348,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_DeadlineExceeded_PropagatesStatus) {
   auto wait_result = done_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   EXPECT_EQ(status.error_code(), grpc::StatusCode::DEADLINE_EXCEEDED)
       << "Expected DEADLINE_EXCEEDED, got: " << status.error_code();
@@ -360,6 +361,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_DeadlineExceeded_PropagatesStatus) {
 /// 2. Each RPC has its own reactor instance and callbacks
 /// 3. gRPC thread pool processes requests in parallel
 /// 4. Atomic counter tracks completions
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): one end-to-end RPC scenario.
 TEST_F(ActiveUnaryReactorTest, GetFeature_MultipleConcurrent_AllComplete) {
   routeguide::Feature feature;
   feature.set_name("Concurrent feature");
@@ -369,15 +371,16 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_MultipleConcurrent_AllComplete) {
 
   std::atomic<int> completed_count{0};
   std::promise<void> all_done_promise;
-  std::future<void> all_done_future = all_done_promise.get_future();
+  const std::future<void> all_done_future = all_done_promise.get_future();
 
   std::vector<std::unique_ptr<routeguide::GetFeature::ClientReactor>> reactors;
+  reactors.reserve(kNumConcurrentRpcs);
   std::vector<grpc::Status> statuses(kNumConcurrentRpcs);
   // Each callback parks its own response, so the addresses can be compared for aliasing afterwards.
   std::vector<std::unique_ptr<routeguide::Feature>> parked(kNumConcurrentRpcs);
 
   for (int i = 0; i < kNumConcurrentRpcs; ++i) {
-    routeguide::Point request = rg_utils::MakePoint(i * 100, i * -100);
+    const routeguide::Point request = rg_utils::MakePoint(i * 100, i * -100);
 
     routeguide::GetFeature::Callbacks cbs;
     cbs.done = [&completed_count, &all_done_promise, &statuses, &parked, i, kNumConcurrentRpcs](
@@ -425,12 +428,12 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_FailedRpc_DeliversNonNullEmptyResponse
   test_service_.SetErrorResponse(grpc::StatusCode::PERMISSION_DENIED, "Denied");
 
   std::promise<void> done_promise;
-  std::future<void> done_future = done_promise.get_future();
+  const std::future<void> done_future = done_promise.get_future();
   bool response_was_non_null = false;
   bool response_was_empty = false;
   grpc::Status received_status;
 
-  routeguide::Point request = rg_utils::MakePoint(123, 456);
+  const routeguide::Point request = rg_utils::MakePoint(123, 456);
 
   routeguide::GetFeature::Callbacks cbs;
   cbs.done = [&done_promise, &received_status, &response_was_non_null, &response_was_empty](

@@ -3,17 +3,20 @@
 /// Copyright 2025 anderewrey
 ///
 
-#pragma once
+#ifndef RG_SERVICE_ROUTE_GUIDE_SERVICE_H_
+#define RG_SERVICE_ROUTE_GUIDE_SERVICE_H_
 
 #include "generated/route_guide.grpc.pb.h"
 #include "generated/route_guide.pb.h"
+
+#include <cstdint>
 
 #include "rg_service/rg_logger.h"
 
 namespace routeguide {
 
 // RPC method enumeration
-enum class RpcMethods {
+enum class RpcMethods : std::uint8_t {
   kGetFeature,
   kListFeatures,
   kRecordRoute,
@@ -62,3 +65,5 @@ inline constexpr auto RpcKey = RpcMethods::kRouteChat;
 }  // namespace RouteChat
 
 }  // namespace routeguide
+
+#endif  // RG_SERVICE_ROUTE_GUIDE_SERVICE_H_

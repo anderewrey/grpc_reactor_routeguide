@@ -7,6 +7,10 @@
 // Not standalone: expects <array>/<cstdint>/<string_view> already included by rg_db.cpp.
 namespace rg_db {
 
+// Anonymous namespace: this data is private to rg_db.cpp, the only translation unit that includes
+// this file, so it needs no external linkage.
+namespace {
+
 // Field order matches Feature's wire layout and MakeFeature's params: name, latitude, longitude.
 struct FeatureData {
   std::string_view name;
@@ -116,5 +120,7 @@ constexpr auto kInitialFeatures = std::to_array<FeatureData>({
     {"", 411733222, -744228360},
     {"3 Hasta Way, Newton, NJ 07860, USA", 410248224, -747127767},
 });
+
+}  // namespace
 
 }  // namespace rg_db

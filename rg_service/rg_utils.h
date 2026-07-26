@@ -3,7 +3,8 @@
 /// Copyright 2024 anderewrey
 ///
 
-#pragma once
+#ifndef RG_SERVICE_RG_UTILS_H_
+#define RG_SERVICE_RG_UTILS_H_
 
 #include <string_view>
 #include <vector>
@@ -29,3 +30,5 @@ unsigned GetRandomTimeDelay();
 namespace routeguide {
 bool operator==(const Point& point1, const Point& point2);
 }  // namespace routeguide
+
+#endif  // RG_SERVICE_RG_UTILS_H_

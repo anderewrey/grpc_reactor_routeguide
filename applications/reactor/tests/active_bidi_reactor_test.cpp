@@ -198,14 +198,14 @@ TEST_F(ActiveBidiReactorTest, RouteChat_SendReceive_MatchesNotes) {
   cbs.read_ok = [&received_notes, &notes_mutex](
                     grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                     std::unique_ptr<routeguide::RouteNote> note) {
-    std::lock_guard<std::mutex> lock(notes_mutex);
+    const std::lock_guard<std::mutex> lock(notes_mutex);
     received_notes.push_back(std::move(*note));
   };
   cbs.read_nok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {};
   cbs.write_done = [&write_mutex, &write_cv, &write_ready](
                        grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                        bool ok) {
-    std::lock_guard<std::mutex> lock(write_mutex);
+    const std::lock_guard<std::mutex> lock(write_mutex);
     write_ready = true;
     write_cv.notify_one();
   };
@@ -215,7 +215,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_SendReceive_MatchesNotes) {
     RouteChatResult result;
     result.status = status;
     {
-      std::lock_guard<std::mutex> lock(notes_mutex);
+      const std::lock_guard<std::mutex> lock(notes_mutex);
       result.received_notes = received_notes;
     }
     result.completed = true;
@@ -255,7 +255,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_SendReceive_MatchesNotes) {
   auto wait_result = result_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready) << "Timeout waiting for RPC completion";
 
-  RouteChatResult result = result_future.get();
+  const RouteChatResult result = result_future.get();
 
   EXPECT_TRUE(result.completed);
   EXPECT_TRUE(result.status.ok()) << "Status: " << result.status.error_message();
@@ -287,14 +287,14 @@ TEST_F(ActiveBidiReactorTest, RouteChat_InterleavedMessages_AllReceived) {
                     grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                     std::unique_ptr<routeguide::RouteNote> note) {
     received_count++;
-    std::lock_guard<std::mutex> lock(notes_mutex);
+    const std::lock_guard<std::mutex> lock(notes_mutex);
     received_notes.push_back(std::move(*note));
   };
   cbs.read_nok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {};
   cbs.write_done = [&write_mutex, &write_cv, &write_ready](
                        grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                        bool) {
-    std::lock_guard<std::mutex> lock(write_mutex);
+    const std::lock_guard<std::mutex> lock(write_mutex);
     write_ready = true;
     write_cv.notify_one();
   };
@@ -304,7 +304,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_InterleavedMessages_AllReceived) {
     RouteChatResult result;
     result.status = status;
     {
-      std::lock_guard<std::mutex> lock(notes_mutex);
+      const std::lock_guard<std::mutex> lock(notes_mutex);
       result.received_notes = received_notes;
     }
     result.completed = true;
@@ -345,7 +345,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_InterleavedMessages_AllReceived) {
   auto wait_result = result_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
 
-  RouteChatResult result = result_future.get();
+  const RouteChatResult result = result_future.get();
 
   EXPECT_TRUE(result.status.ok()) << "Status: " << result.status.error_message();
   ASSERT_EQ(received_count.load(), 2);  // A2 gets A1, B2 gets B1
@@ -383,14 +383,14 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ClientClosesFirst_ServerContinues) {
   cbs.read_ok = [&received_notes, &notes_mutex](
                     grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                     std::unique_ptr<routeguide::RouteNote> note) {
-    std::lock_guard<std::mutex> lock(notes_mutex);
+    const std::lock_guard<std::mutex> lock(notes_mutex);
     received_notes.push_back(std::move(*note));
   };
   cbs.read_nok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {};
   cbs.write_done = [&write_mutex, &write_cv, &write_ready](
                        grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                        bool) {
-    std::lock_guard<std::mutex> lock(write_mutex);
+    const std::lock_guard<std::mutex> lock(write_mutex);
     write_ready = true;
     write_cv.notify_one();
   };
@@ -400,7 +400,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ClientClosesFirst_ServerContinues) {
     RouteChatResult result;
     result.status = status;
     {
-      std::lock_guard<std::mutex> lock(notes_mutex);
+      const std::lock_guard<std::mutex> lock(notes_mutex);
       result.received_notes = received_notes;
     }
     result.completed = true;
@@ -439,7 +439,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ClientClosesFirst_ServerContinues) {
   auto wait_result = result_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
 
-  RouteChatResult result = result_future.get();
+  const RouteChatResult result = result_future.get();
 
   EXPECT_TRUE(result.status.ok()) << "Status: " << result.status.error_message();
   // Note 2 should receive Note 1 as response
@@ -467,7 +467,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ServerClosesFirst_ClientContinues) {
   cbs.read_ok = [&received_notes, &notes_mutex](
                     grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                     std::unique_ptr<routeguide::RouteNote> note) {
-    std::lock_guard<std::mutex> lock(notes_mutex);
+    const std::lock_guard<std::mutex> lock(notes_mutex);
     received_notes.push_back(std::move(*note));
   };
   cbs.read_nok = [&read_nok_fired](
@@ -501,7 +501,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ServerClosesFirst_ClientContinues) {
   auto wait_result = result_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
 
-  RouteChatResult result = result_future.get();
+  const RouteChatResult result = result_future.get();
 
   // Server should have closed after 2 messages
   EXPECT_TRUE(result.completed);
@@ -542,7 +542,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_TryCancel_TriggersOnDone) {
   auto wait_result = done_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   // Cancel may result in CANCELLED or OK (if processed before cancel)
   EXPECT_TRUE(status.error_code() == grpc::StatusCode::CANCELLED ||
@@ -587,7 +587,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_DeadlineExceeded_PropagatesStatus) {
   auto wait_result = done_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   // Should get DEADLINE_EXCEEDED, but may also get CANCELLED or OK depending on timing
   EXPECT_TRUE(status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED ||
@@ -603,11 +603,14 @@ TEST_F(ActiveBidiReactorTest, RouteChat_DeadlineExceeded_PropagatesStatus) {
 /// - Each exchanges different messages
 /// - Wait for all OnDone callbacks
 /// - Verify all complete successfully
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): exercises kNumStreams concurrent
+// streams end-to-end; splitting it would scatter one scenario across several helpers.
 TEST_F(ActiveBidiReactorTest, RouteChat_MultipleConcurrent_AllComplete) {
   const int kNumStreams = 3;
 
   std::vector<std::promise<RouteChatResult>> promises(kNumStreams);
   std::vector<std::future<RouteChatResult>> futures;
+  futures.reserve(kNumStreams);
   for (auto& p : promises) {
     futures.push_back(p.get_future());
   }
@@ -637,7 +640,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_MultipleConcurrent_AllComplete) {
     cbs.write_done = [&write_mutexes, &write_cvs, &write_readies, i](
                          grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                          bool) {
-      std::lock_guard<std::mutex> lock(write_mutexes[i]);
+      const std::lock_guard<std::mutex> lock(write_mutexes[i]);
       write_readies[i] = true;
       write_cvs[i].notify_one();
     };
@@ -693,7 +696,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_MultipleConcurrent_AllComplete) {
 
   // Verify all completed successfully
   for (int i = 0; i < kNumStreams; ++i) {
-    RouteChatResult result = futures[i].get();
+    const RouteChatResult result = futures[i].get();
     EXPECT_TRUE(result.completed) << "Stream " << i << " did not complete";
     EXPECT_TRUE(result.status.ok()) << "Stream " << i << " failed: " << result.status.error_message();
     // Second note should receive first note as response
@@ -709,6 +712,9 @@ TEST_F(ActiveBidiReactorTest, RouteChat_MultipleConcurrent_AllComplete) {
 /// until GetResponse() released it, so a consumer that deferred stalled the RPC. Sending kNoteCount
 /// notes to one location makes the server echo every note it stored earlier, so note i comes back
 /// once per later note and the total is kNoteCount*(kNoteCount-1)/2.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): see rationale on the
+// RouteChat_MultipleConcurrent_AllComplete NOLINT above; this scenario is likewise one
+// end-to-end flow.
 TEST_F(ActiveBidiReactorTest, RouteChat_DeferredConsumer_StreamCompletesWithoutConsumerAction) {
   constexpr int kNoteCount = 8;
   constexpr size_t kExpectedResponses = kNoteCount * (kNoteCount - 1) / 2;
@@ -729,7 +735,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_DeferredConsumer_StreamCompletesWithoutC
   cbs.read_ok = [&parked, &parked_mutex, &parked_cv](
                     grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                     std::unique_ptr<routeguide::RouteNote> note) {
-    std::lock_guard<std::mutex> lock(parked_mutex);
+    const std::lock_guard<std::mutex> lock(parked_mutex);
     parked.push_back(std::move(note));  // Defer everything: no processing, no reactor call
     parked_cv.notify_one();
   };
@@ -737,7 +743,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_DeferredConsumer_StreamCompletesWithoutC
   cbs.write_done = [&write_mutex, &write_cv, &write_ready](
                        grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                        bool) {
-    std::lock_guard<std::mutex> lock(write_mutex);
+    const std::lock_guard<std::mutex> lock(write_mutex);
     write_ready = true;
     write_cv.notify_one();
   };
@@ -776,9 +782,11 @@ TEST_F(ActiveBidiReactorTest, RouteChat_DeferredConsumer_StreamCompletesWithoutC
   // Each parked message must still hold its own content, not a later message's.
   std::map<std::string, int> counts;
   {
-    std::lock_guard<std::mutex> lock(parked_mutex);
+    const std::lock_guard<std::mutex> lock(parked_mutex);
     ASSERT_EQ(parked.size(), kExpectedResponses);
-    for (const auto& note : parked) counts[note->message()]++;
+    for (const auto& note : parked) {
+      counts[note->message()]++;
+    }
   }
   for (int i = 0; i < kNoteCount - 1; ++i) {
     EXPECT_EQ(counts["note-" + std::to_string(i)], kNoteCount - 1 - i)
@@ -808,7 +816,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_NoReadOkCallbackBound_StreamStillDrains)
   cbs.write_done = [&write_mutex, &write_cv, &write_ready](
                        grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                        bool) {
-    std::lock_guard<std::mutex> lock(write_mutex);
+    const std::lock_guard<std::mutex> lock(write_mutex);
     write_ready = true;
     write_cv.notify_one();
   };

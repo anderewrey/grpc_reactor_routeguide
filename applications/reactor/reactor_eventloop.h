@@ -3,7 +3,8 @@
 /// Copyright 2026 anderewrey
 ///
 
-#pragma once
+#ifndef APPLICATIONS_REACTOR_REACTOR_EVENTLOOP_H_
+#define APPLICATIONS_REACTOR_REACTOR_EVENTLOOP_H_
 
 #include <Event.h>
 #include <EventLoop.h>
@@ -32,7 +33,7 @@ class EventConnection {
   /// Registers a callback for evt_name for the lifetime of this object.
   /// @param evt_name event name to register with EventLoop
   /// @param callback function invoked by EventLoop::TriggerEvent(evt_name, ...)
-  EventConnection(std::string evt_name, std::function<void(EventLoop::Event*)> callback)
+  EventConnection(std::string evt_name, const std::function<void(EventLoop::Event*)>& callback)
       : evt_name_(std::move(evt_name)) {
     EventLoop::RegisterEvent(evt_name_, callback);
   }
@@ -52,3 +53,5 @@ class EventConnection {
 };
 
 }  // namespace RpcReactor
+
+#endif  // APPLICATIONS_REACTOR_REACTOR_EVENTLOOP_H_

@@ -55,8 +55,8 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
   }
 
   grpc::ServerWriteReactor<routeguide::Feature>* ListFeatures(
-      grpc::CallbackServerContext* context,
-      const routeguide::Rectangle* request) override {
+      grpc::CallbackServerContext* /*context*/,
+      const routeguide::Rectangle* /*request*/) override {
     class ListFeaturesReactor : public grpc::ServerWriteReactor<routeguide::Feature> {
      public:
       ListFeaturesReactor(std::vector<routeguide::Feature> features,
@@ -132,12 +132,14 @@ class ActiveReadReactorTest : public RouteGuideTestFixtureBase<TestRouteGuideSer
 /// - All 5 features are received in order
 /// - Each feature's name and location match expected values
 /// - Final status is OK
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): one end-to-end streaming scenario.
 TEST_F(ActiveReadReactorTest, ListFeatures_MultipleResponses_ReceivesAll) {
   // Configure server to return multiple features
   std::vector<routeguide::Feature> expected_features;
+  expected_features.reserve(5);
   for (int i = 0; i < 5; ++i) {
     expected_features.push_back(
-        rg_utils::MakeFeature("Feature " + std::to_string(i), 400000000 + i * 1000000, -740000000 + i * 1000000));
+        rg_utils::MakeFeature("Feature " + std::to_string(i), 400000000 + (i * 1000000), -740000000 + (i * 1000000)));
   }
   test_service_.SetListFeaturesResponse(expected_features);
 
@@ -147,7 +149,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleResponses_ReceivesAll) {
   std::future<grpc::Status> done_future = done_promise.get_future();
 
   // Create request (bounding rectangle)
-  routeguide::Rectangle request = rg_utils::MakeRectangle(0, -800000000, 500000000, 0);
+  const routeguide::Rectangle request = rg_utils::MakeRectangle(0, -800000000, 500000000, 0);
 
   // Create callbacks - each message arrives owned by the ok callback
   routeguide::ListFeatures::Callbacks cbs;
@@ -171,7 +173,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleResponses_ReceivesAll) {
   auto wait_result = done_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready) << "Timeout waiting for stream completion";
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   // Verify results
   EXPECT_TRUE(status.ok()) << "Status: " << status.error_message();
@@ -201,7 +203,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_EmptyStream_CompletesSuccessfully) {
   std::future<grpc::Status> done_future = done_promise.get_future();
   int read_count = 0;
 
-  routeguide::Rectangle request = rg_utils::MakeRectangle(0, 0, 0, 0);
+  const routeguide::Rectangle request = rg_utils::MakeRectangle(0, 0, 0, 0);
 
   routeguide::ListFeatures::Callbacks cbs;
   cbs.read_ok = [&read_count](grpc::ClientReadReactor<routeguide::Feature>*,
@@ -222,7 +224,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_EmptyStream_CompletesSuccessfully) {
   auto wait_result = done_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   EXPECT_TRUE(status.ok()) << "Status: " << status.error_message();
   EXPECT_EQ(read_count, 0) << "Expected no reads for empty stream";
@@ -244,7 +246,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_SingleFeature_ReceivesOne) {
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::Rectangle request;
+  const routeguide::Rectangle request;
 
   routeguide::ListFeatures::Callbacks cbs;
   cbs.read_ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
@@ -263,10 +265,10 @@ TEST_F(ActiveReadReactorTest, ListFeatures_SingleFeature_ReceivesOne) {
   auto wait_result = done_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   EXPECT_TRUE(status.ok()) << "Status: " << status.error_message();
-  ASSERT_EQ(received_features.size(), 1u);
+  ASSERT_EQ(received_features.size(), 1U);
   EXPECT_EQ(received_features[0].name(), "Single Feature");
 }
 
@@ -285,6 +287,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_SingleFeature_ReceivesOne) {
 TEST_F(ActiveReadReactorTest, ListFeatures_ServerErrorMidStream_PropagatesStatus) {
   // Configure server to return 2 features then error
   std::vector<routeguide::Feature> features;
+  features.reserve(5);
   for (int i = 0; i < 5; ++i) {
     features.push_back(rg_utils::MakeFeature("Feature " + std::to_string(i), i * 100, i * -100));
   }
@@ -295,7 +298,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ServerErrorMidStream_PropagatesStatus
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::Rectangle request;
+  const routeguide::Rectangle request;
 
   routeguide::ListFeatures::Callbacks cbs;
   cbs.read_ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
@@ -314,10 +317,10 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ServerErrorMidStream_PropagatesStatus
   auto wait_result = done_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   // Should have received 2 features before error
-  EXPECT_EQ(received_features.size(), 2u);
+  EXPECT_EQ(received_features.size(), 2U);
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL);
   EXPECT_EQ(status.error_message(), "Mid-stream error");
@@ -339,7 +342,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ImmediateError_PropagatesStatus) {
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::Rectangle request;
+  const routeguide::Rectangle request;
 
   routeguide::ListFeatures::Callbacks cbs;
   cbs.read_ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
@@ -358,9 +361,9 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ImmediateError_PropagatesStatus) {
   auto wait_result = done_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
-  EXPECT_EQ(received_features.size(), 0u);
+  EXPECT_EQ(received_features.size(), 0U);
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAVAILABLE);
 }
@@ -375,6 +378,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ImmediateError_PropagatesStatus) {
 TEST_F(ActiveReadReactorTest, ListFeatures_TryCancel_TerminatesStream) {
   // Configure server to return many features
   std::vector<routeguide::Feature> features;
+  features.reserve(100);
   for (int i = 0; i < 100; ++i) {
     features.push_back(rg_utils::MakeFeature("Feature " + std::to_string(i), i * 100, i * -100));
   }
@@ -384,7 +388,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_TryCancel_TerminatesStream) {
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::Rectangle request;
+  const routeguide::Rectangle request;
 
   routeguide::ListFeatures::Callbacks cbs;
   cbs.read_ok = [&read_count](grpc::ClientReadReactor<routeguide::Feature>*,
@@ -407,7 +411,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_TryCancel_TerminatesStream) {
   auto wait_result = done_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   EXPECT_TRUE(status.error_code() == grpc::StatusCode::CANCELLED ||
               status.error_code() == grpc::StatusCode::OK)
@@ -435,7 +439,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_DeadlineExceeded_PropagatesStatus) {
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::Rectangle request;
+  const routeguide::Rectangle request;
 
   routeguide::ListFeatures::Callbacks cbs;
   cbs.read_ok = [](grpc::ClientReadReactor<routeguide::Feature>*, std::unique_ptr<routeguide::Feature>) {};
@@ -454,7 +458,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_DeadlineExceeded_PropagatesStatus) {
   auto wait_result = done_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   EXPECT_EQ(status.error_code(), grpc::StatusCode::DEADLINE_EXCEEDED)
       << "Expected DEADLINE_EXCEEDED, got: " << status.error_code();
@@ -466,9 +470,11 @@ TEST_F(ActiveReadReactorTest, ListFeatures_DeadlineExceeded_PropagatesStatus) {
 /// 1. Start 5 concurrent ListFeatures streams
 /// 2. Each configured with different feature counts
 /// 3. All complete successfully
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): one end-to-end streaming scenario.
 TEST_F(ActiveReadReactorTest, ListFeatures_MultipleConcurrent_AllComplete) {
   // Configure server with features
   std::vector<routeguide::Feature> features;
+  features.reserve(10);
   for (int i = 0; i < 10; ++i) {
     features.push_back(rg_utils::MakeFeature("Feature " + std::to_string(i), i * 100, i * -100));
   }
@@ -478,14 +484,15 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleConcurrent_AllComplete) {
 
   std::atomic<int> completed_count{0};
   std::promise<void> all_done_promise;
-  std::future<void> all_done_future = all_done_promise.get_future();
+  const std::future<void> all_done_future = all_done_promise.get_future();
 
   std::vector<std::unique_ptr<routeguide::ListFeatures::ClientReactor>> reactors;
+  reactors.reserve(kNumConcurrentStreams);
   std::vector<grpc::Status> statuses(kNumConcurrentStreams);
   std::vector<int> feature_counts(kNumConcurrentStreams, 0);
 
   for (int i = 0; i < kNumConcurrentStreams; ++i) {
-    routeguide::Rectangle request;
+    const routeguide::Rectangle request;
 
     routeguide::ListFeatures::Callbacks cbs;
     cbs.read_ok = [&feature_counts, i](grpc::ClientReadReactor<routeguide::Feature>*,
@@ -532,7 +539,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_NokCallback_FiresOnStreamEnd) {
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::Rectangle request;
+  const routeguide::Rectangle request;
 
   routeguide::ListFeatures::Callbacks cbs;
   cbs.read_ok = [&ok_count](grpc::ClientReadReactor<routeguide::Feature>*,
@@ -553,7 +560,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_NokCallback_FiresOnStreamEnd) {
   auto wait_result = done_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready);
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   EXPECT_TRUE(status.ok());
   EXPECT_EQ(ok_count, 2);
@@ -568,6 +575,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_NokCallback_FiresOnStreamEnd) {
 /// 2. OnReadDone(false) ends the stream, then OnDone fires with OK
 TEST_F(ActiveReadReactorTest, ListFeatures_NoReadOkCallbackBound_StreamStillDrains) {
   std::vector<routeguide::Feature> features;
+  features.reserve(5);
   for (int i = 0; i < 5; ++i) {
     features.push_back(rg_utils::MakeFeature("Feature " + std::to_string(i), 100 + i, -100 - i));
   }
@@ -577,7 +585,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_NoReadOkCallbackBound_StreamStillDrai
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::Rectangle request;
+  const routeguide::Rectangle request;
 
   routeguide::ListFeatures::Callbacks cbs;
   // cbs.read_ok deliberately left unbound.
@@ -595,7 +603,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_NoReadOkCallbackBound_StreamStillDrai
   auto wait_result = done_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(wait_result, std::future_status::ready) << "Stream stalled with no ok callback bound";
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   EXPECT_TRUE(status.ok()) << "Status: " << status.error_message();
   EXPECT_TRUE(nok_called) << "nok callback should fire when stream ends";
@@ -613,9 +621,10 @@ TEST_F(ActiveReadReactorTest, ListFeatures_NoReadOkCallbackBound_StreamStillDrai
 TEST_F(ActiveReadReactorTest, ListFeatures_DeferredConsumer_StreamCompletesWithoutConsumerAction) {
   constexpr int kFeatureCount = 25;
   std::vector<routeguide::Feature> expected_features;
+  expected_features.reserve(kFeatureCount);
   for (int i = 0; i < kFeatureCount; ++i) {
     expected_features.push_back(
-        rg_utils::MakeFeature("Feature " + std::to_string(i), 400000000 + i * 1000, -740000000 + i * 1000));
+        rg_utils::MakeFeature("Feature " + std::to_string(i), 400000000 + (i * 1000), -740000000 + (i * 1000)));
   }
   test_service_.SetListFeaturesResponse(expected_features);
 
@@ -625,7 +634,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_DeferredConsumer_StreamCompletesWitho
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::Rectangle request = rg_utils::MakeRectangle(0, -800000000, 500000000, 0);
+  const routeguide::Rectangle request = rg_utils::MakeRectangle(0, -800000000, 500000000, 0);
 
   routeguide::ListFeatures::Callbacks cbs;
   cbs.read_ok = [&parked](grpc::ClientReadReactor<routeguide::Feature>*,
@@ -647,7 +656,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_DeferredConsumer_StreamCompletesWitho
   ASSERT_EQ(wait_result, std::future_status::ready)
       << "Stream stalled while the consumer deferred processing";
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   EXPECT_TRUE(status.ok()) << "Status: " << status.error_message();
   EXPECT_TRUE(nok_called) << "nok callback should fire when stream ends";

@@ -3,7 +3,8 @@
 /// Copyright 2024 anderewrey
 ///
 
-#pragma once
+#ifndef APPLICATIONS_REACTOR_REACTOR_CLIENT_ROUTEGUIDE_H_
+#define APPLICATIONS_REACTOR_REACTOR_CLIENT_ROUTEGUIDE_H_
 
 #include <grpcpp/client_context.h>
 
@@ -161,3 +162,5 @@ class ClientReactor final : public RpcReactor::Client::ActiveBidiReactor<Request
   }
 };
 }  // namespace routeguide::RouteChat
+
+#endif  // APPLICATIONS_REACTOR_REACTOR_CLIENT_ROUTEGUIDE_H_
