@@ -1,0 +1,259 @@
+name: coverage
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  # Three tools measuring the exact same test suite, so the compare job can attribute any
+  # difference in the reported numbers to the tool, not to a difference in what ran. gcovr and lcov
+  # share the gcc-debug instrumentation (both read the same .gcno/.gcda counters, gcovr in Python
+  # and lcov in Perl); llvm-cov needs its own Clang-instrumented build, since GCC and Clang counter
+  # formats are not cross-readable. See cmake/Coverage.cmake for why the two modes are compiler-bound.
+  measure:
+    name: measure (${{ matrix.tool }})
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.24
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tool: gcovr
+            cxx_compiler: g++
+            coverage_mode: gcov
+            packages: g++ py3-pip
+          - tool: lcov
+            cxx_compiler: g++
+            coverage_mode: gcov
+            packages: g++ lcov
+          - tool: llvm-cov
+            cxx_compiler: clang++
+            coverage_mode: llvm
+            packages: clang compiler-rt llvm22
+    steps:
+      - name: Install build dependencies
+        run: |
+          apk add --no-cache \
+            cmake ninja git curl zip unzip tar bash ${{ matrix.packages }} \
+            protobuf-dev \
+            grpc-dev \
+            abseil-cpp-dev \
+            c-ares-dev \
+            re2-dev \
+            openssl-dev \
+            zlib-dev \
+            spdlog-dev \
+            gflags-dev \
+            gtest-dev
+          if [ "${{ matrix.tool }}" = "gcovr" ]; then
+            pip install --break-system-packages gcovr==8.6
+          fi
+
+      - uses: actions/checkout@v5
+
+      # See ci.yml's build-test-alpine job for the same EventLoop-via-vcpkg approach and rationale.
+      - name: Build and install EventLoop via vcpkg
+        env:
+          VCPKG_FORCE_SYSTEM_BINARIES: "1"
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          /tmp/vcpkg/bootstrap-vcpkg.sh -musl -disableMetrics
+          case "${{ matrix.cxx_compiler }}" in
+            clang++) triplet=x64-linux-clang-release ;;
+            *) triplet=x64-linux-gcc-release ;;
+          esac
+          /tmp/vcpkg/vcpkg install eventloop --classic --triplet="$triplet" \
+            --overlay-triplets=vcpkg/triplets --overlay-ports=vcpkg/ports
+          cp -r /tmp/vcpkg/packages/eventloop_$triplet/* /usr/local/
+          rm -rf /tmp/vcpkg
+
+      - name: Configure
+        run: |
+          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=${{ matrix.cxx_compiler }} \
+            -DENABLE_COVERAGE=${{ matrix.coverage_mode }}
+
+      - name: Build
+        run: |
+          date +%s > /tmp/build_start
+          cmake --build build
+
+      # llvm-cov needs one profile per test PROCESS, not one for the whole ctest run: gtest_discover_tests
+      # registers one ctest entry per TEST_F, so each is its own process and %m (this binary's own build-ID
+      # hash) plus %p (pid) keeps every one of them from overwriting the last, the same problem gcov's
+      # per-process .gcda files solve by construction (one file per translation unit, updated in place).
+      - name: Test
+        env:
+          LLVM_PROFILE_FILE: "/tmp/profiles/%m-%p.profraw"
+        run: |
+          mkdir -p /tmp/profiles
+          ctest --test-dir build --output-on-failure
+          echo "test_end=$(date +%s)" >> "$GITHUB_ENV"
+          echo "build_start=$(cat /tmp/build_start)" >> "$GITHUB_ENV"
+
+      - name: Generate gcovr report
+        if: matrix.tool == 'gcovr'
+        run: |
+          mkdir -p coverage-gcovr
+          report_start=$(date +%s)
+          # --exclude-throw-branches is reported separately below, not applied to the primary
+          # report: GCC's implicit exception-unwind branches have no llvm-cov counterpart, so
+          # dropping them from the default report would make gcovr's branch % look closer to
+          # llvm-cov's for the wrong reason (an arbitrary exclusion), not a real agreement.
+          filters="--filter applications/ --filter rg_service/ --filter protobuf_utils/ --filter common/"
+          gcovr --root . build $filters --exclude '.*/tests/.*' --exclude '.*\.pb\.(h|cc)$' \
+            --json-summary-pretty --json-summary coverage-gcovr/summary.json \
+            --html-details coverage-gcovr/html/index.html --print-summary > coverage-gcovr/stdout.txt
+          gcovr --root . build $filters --exclude '.*/tests/.*' --exclude '.*\.pb\.(h|cc)$' \
+            --exclude-throw-branches --json-summary coverage-gcovr/summary-nothrow.json --json-summary-pretty
+          gcovr --version | head -1 | awk '{print $2}' > /tmp/tool_version
+          find build -name '*.gcda' -o -name '*.gcno' | xargs du -ck 2>/dev/null | tail -1 | awk '{print $1}' \
+            > /tmp/raw_kib
+          du -sk coverage-gcovr/html | awk '{print $1}' > /tmp/html_kib
+          echo "report_seconds=$(( $(date +%s) - report_start ))" >> "$GITHUB_ENV"
+
+      # geninfo/genhtml (lcov's own tools) read the same .gcno/.gcda gcovr just consumed above -
+      # same GCC counter format, different report generator, which is the whole point of running
+      # both against one build instead of two separate instrumented builds.
+      - name: Generate lcov report
+        if: matrix.tool == 'lcov'
+        run: |
+          mkdir -p coverage-lcov
+          report_start=$(date +%s)
+          lcov --capture --directory build --output-file coverage-lcov/lcov.info \
+            --rc branch_coverage=1 --ignore-errors mismatch,negative,unused
+          lcov --extract coverage-lcov/lcov.info \
+            "$(pwd)/applications/*" "$(pwd)/rg_service/*" "$(pwd)/protobuf_utils/*" "$(pwd)/common/*" \
+            --output-file coverage-lcov/lcov.info --rc branch_coverage=1 --ignore-errors unused
+          lcov --remove coverage-lcov/lcov.info '*/tests/*' '*.pb.h' '*.pb.cc' \
+            --output-file coverage-lcov/lcov.info --rc branch_coverage=1 --ignore-errors unused
+          genhtml coverage-lcov/lcov.info --output-directory coverage-lcov/html --branch-coverage
+          lcov --summary coverage-lcov/lcov.info --rc branch_coverage=1 | tee coverage-lcov/stdout.txt
+          lcov --version | grep -oE '[0-9]+\.[0-9]+' | head -1 > /tmp/tool_version
+          find build -name '*.gcda' -o -name '*.gcno' | xargs du -ck 2>/dev/null | tail -1 | awk '{print $1}' \
+            > /tmp/raw_kib
+          du -sk coverage-lcov/html | awk '{print $1}' > /tmp/html_kib
+          echo "report_seconds=$(( $(date +%s) - report_start ))" >> "$GITHUB_ENV"
+
+      - name: Generate llvm-cov report
+        if: matrix.tool == 'llvm-cov'
+        run: |
+          mkdir -p coverage-llvm-cov
+          report_start=$(date +%s)
+          llvm22-profdata merge -sparse /tmp/profiles/*.profraw -o coverage-llvm-cov/merged.profdata
+
+          # A merged profdata has no record of which binaries produced it, so llvm-cov needs each
+          # ctest binary passed explicitly. Same five names as REACTOR_TESTS in
+          # applications/reactor/tests/CMakeLists.txt.
+          object_args=""
+          for name in active_unary_reactor_test active_read_reactor_test active_write_reactor_test \
+                      active_bidi_reactor_test client_reactor_integration_test; do
+            object_args="$object_args -object=build/applications/reactor/tests/$name"
+          done
+
+          llvm22-cov export $object_args \
+            -instr-profile=coverage-llvm-cov/merged.profdata \
+            -ignore-filename-regex='.*/tests/.*|.*\.pb\.(h|cc)$|.*/vcpkg_installed/.*' \
+            > coverage-llvm-cov/llvm-cov.json
+
+          llvm22-cov show $object_args \
+            -instr-profile=coverage-llvm-cov/merged.profdata \
+            -ignore-filename-regex='.*/tests/.*|.*\.pb\.(h|cc)$|.*/vcpkg_installed/.*' \
+            -format=html -show-instantiations -show-branches=count \
+            -output-dir=coverage-llvm-cov/html
+
+          llvm22-cov report $object_args \
+            -instr-profile=coverage-llvm-cov/merged.profdata \
+            -ignore-filename-regex='.*/tests/.*|.*\.pb\.(h|cc)$|.*/vcpkg_installed/.*' \
+            | tee coverage-llvm-cov/stdout.txt
+
+          clang --version | head -1 | awk '{print $3}' > /tmp/tool_version
+          du -sk /tmp/profiles | awk '{print $1}' > /tmp/raw_kib
+          du -sk coverage-llvm-cov/html | awk '{print $1}' > /tmp/html_kib
+          echo "report_seconds=$(( $(date +%s) - report_start ))" >> "$GITHUB_ENV"
+
+      - name: Write metadata
+        run: |
+          dir="coverage-${{ matrix.tool }}"
+          cat > "$dir/meta.json" <<JSON
+          {
+            "tool": "${{ matrix.tool }}",
+            "version": "$(cat /tmp/tool_version)",
+            "build_test_seconds": $(( test_end - build_start )),
+            "report_seconds": $report_seconds,
+            "raw_kib": $(cat /tmp/raw_kib),
+            "html_kib": $(cat /tmp/html_kib)
+          }
+          JSON
+          cat "$dir/meta.json"
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.tool }}
+          path: coverage-${{ matrix.tool }}
+          retention-days: 14
+
+  compare:
+    name: compare tool reports
+    needs: measure
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: reports
+
+      - name: Build comparison
+        run: |
+          python3 .github/scripts/compare-coverage.py reports | tee comparison.md
+
+      - name: Post to job summary
+        run: cat comparison.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment on pull request
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('comparison.md', 'utf8');
+            const marker = '<!-- coverage-tool-comparison -->';
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            const content = `${marker}\n${body}`;
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: content,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: content,
+              });
+            }

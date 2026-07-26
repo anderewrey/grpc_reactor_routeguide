@@ -24,6 +24,10 @@ include(ConfigureRPath)
 # Apply binary size optimizations for Release builds
 include(BuildOptimizations)
 
+# Apply coverage instrumentation when ENABLE_COVERAGE is set (must follow BuildOptimizations, which
+# it checks against)
+include(Coverage)
+
 # Configure and report the compiler launcher (ccache when available)
 include(CompilerLauncher)
 
