@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    # TEMPORARY: claude/workflow-branch-failures-wtyaq7 added to get the clang-asan-ubsan variant
+    # to run on this branch directly (no PR yet) while proving out a use-after-free repro test.
+    # Revert this line once that's done.
+    branches: [master, claude/workflow-branch-failures-wtyaq7]
   pull_request:
     branches: [master]
   workflow_dispatch:
