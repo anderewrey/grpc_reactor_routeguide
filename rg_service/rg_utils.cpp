@@ -17,9 +17,9 @@
 using routeguide::Feature;
 using routeguide::Point;
 using routeguide::Rectangle;
-using routeguide::RouteGuide;     // NOLINT(misc-unused-using-decls): reserved for planned use.
+using routeguide::RouteGuide;
 using routeguide::RouteNote;
-using routeguide::RouteSummary;   // NOLINT(misc-unused-using-decls): reserved for planned use.
+using routeguide::RouteSummary;
 
 // latitude/longitude is the coordinate pair this whole file works with.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)

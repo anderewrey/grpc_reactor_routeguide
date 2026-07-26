@@ -7,12 +7,10 @@
 
 #include <spdlog/logger.h>
 
-#include <cstdint>
-
 namespace routeguide {
 
 // Forward declaration
-enum class RpcMethods : std::uint8_t;
+enum class RpcMethods;
 
 namespace logger {
 

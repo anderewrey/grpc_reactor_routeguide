@@ -8,14 +8,12 @@
 #include "generated/route_guide.grpc.pb.h"
 #include "generated/route_guide.pb.h"
 
-#include <cstdint>
-
 #include "rg_service/rg_logger.h"
 
 namespace routeguide {
 
 // RPC method enumeration
-enum class RpcMethods : std::uint8_t {
+enum class RpcMethods {
   kGetFeature,
   kListFeatures,
   kRecordRoute,

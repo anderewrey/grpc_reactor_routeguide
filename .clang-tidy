@@ -14,8 +14,10 @@ Checks: >
   -readability-identifier-length,
   -misc-non-private-member-variables-in-classes,
   -misc-include-cleaner,
+  -misc-unused-using-decls,
   -portability-avoid-pragma-once,
-  -readability-braces-around-statements
+  -readability-braces-around-statements,
+  -performance-enum-size
 # reactor_client.h's protected reactor members are intentional (see architecture.md), not a defect.
 # misc-include-cleaner is disabled: it flagged umbrella-header symbol use as 63 of 99 diagnostics.
 # misc-override-with-different-visibility is kept enabled: the four Active*Reactor classes'
@@ -23,10 +25,14 @@ Checks: >
 # it (see "gRPC callbacks (protected overrides)" in reactor_client.md), suppressed there with
 # targeted NOLINT comments rather than disabled project-wide, so the check still catches an
 # accidental visibility narrowing anywhere else.
+# misc-unused-using-decls is disabled: rg_utils.cpp keeps a couple of using-decls reserved for
+# planned, not-yet-written code.
 # portability-avoid-pragma-once is disabled: #pragma once is this project's chosen header-guard
 # style, not a portability defect worth flagging (all supported toolchains here support it).
 # readability-braces-around-statements is disabled: single-line, brace-free if/loop bodies are an
 # accepted style in this codebase; braces are still used freely where they aid readability.
+# performance-enum-size is disabled: shrinking an enum's underlying type below int is not worth
+# the noise outside of embedded/memory-constrained targets, which this project is not.
 # clang-analyzer-* and bugprone-* both target similar defect classes (e.g. use-after-free); kept as
 # occasional double-reporting, not disabled, since no concrete pair of checks is confirmed to
 # always co-fire on the same code.
