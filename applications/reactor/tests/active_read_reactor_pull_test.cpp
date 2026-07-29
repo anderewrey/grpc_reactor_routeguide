@@ -36,6 +36,10 @@
 
 namespace {
 
+/// Every reactor in this file is instantiated with Delivery::kPull; its push counterpart is
+/// covered by active_read_reactor_push_test.cpp.
+constexpr auto kDelivery = RpcReactor::Client::Delivery::kPull;
+
 /// Controllable test service for server-side streaming RPC testing
 class TestRouteGuideService final : public routeguide::RouteGuide::CallbackService {
  public:
@@ -151,13 +155,13 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleResponses_ReceivesAll) {
   const routeguide::Rectangle request = rg_utils::MakeRectangle(0, -800000000, 500000000, 0);
 
   // Create callbacks - use false to let reactor auto-continue reads
-  routeguide::ListFeatures::Callbacks cbs;
-  cbs.ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
+  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
+  cbs.read_ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
                                  const routeguide::Feature& response) {
     received_features.push_back(response);
     return false;  // Don't hold - let reactor auto-continue to next read
   };
-  cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {
+  cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {
     // Stream ended - no more reads
   };
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
@@ -166,7 +170,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleResponses_ReceivesAll) {
   };
 
   // Create reactor
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   // Wait for completion
@@ -204,13 +208,13 @@ TEST_F(ActiveReadReactorTest, ListFeatures_EmptyStream_CompletesSuccessfully) {
 
   const routeguide::Rectangle request = rg_utils::MakeRectangle(0, 0, 0, 0);
 
-  routeguide::ListFeatures::Callbacks cbs;
-  cbs.ok = [&read_count](grpc::ClientReadReactor<routeguide::Feature>*,
+  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
+  cbs.read_ok = [&read_count](grpc::ClientReadReactor<routeguide::Feature>*,
                           const routeguide::Feature&) {
     ++read_count;  // Should never be called for empty stream
     return false;
   };
-  cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {
+  cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {
     // Expected: stream ends immediately
   };
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
@@ -218,7 +222,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_EmptyStream_CompletesSuccessfully) {
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
@@ -247,19 +251,19 @@ TEST_F(ActiveReadReactorTest, ListFeatures_SingleFeature_ReceivesOne) {
 
   const routeguide::Rectangle request;
 
-  routeguide::ListFeatures::Callbacks cbs;
-  cbs.ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
+  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
+  cbs.read_ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
                                  const routeguide::Feature& response) {
     received_features.push_back(response);
     return false;
   };
-  cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
+  cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
                               const grpc::Status& status) {
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
@@ -299,19 +303,19 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ServerErrorMidStream_PropagatesStatus
 
   const routeguide::Rectangle request;
 
-  routeguide::ListFeatures::Callbacks cbs;
-  cbs.ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
+  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
+  cbs.read_ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
                                  const routeguide::Feature& response) {
     received_features.push_back(response);
     return false;
   };
-  cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
+  cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
                               const grpc::Status& status) {
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
@@ -343,19 +347,19 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ImmediateError_PropagatesStatus) {
 
   const routeguide::Rectangle request;
 
-  routeguide::ListFeatures::Callbacks cbs;
-  cbs.ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
+  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
+  cbs.read_ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
                                  const routeguide::Feature& response) {
     received_features.push_back(response);
     return false;
   };
-  cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
+  cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
                               const grpc::Status& status) {
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
@@ -389,19 +393,19 @@ TEST_F(ActiveReadReactorTest, ListFeatures_TryCancel_TerminatesStream) {
 
   const routeguide::Rectangle request;
 
-  routeguide::ListFeatures::Callbacks cbs;
-  cbs.ok = [&read_count](grpc::ClientReadReactor<routeguide::Feature>*,
+  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
+  cbs.read_ok = [&read_count](grpc::ClientReadReactor<routeguide::Feature>*,
                           const routeguide::Feature&) {
     ++read_count;
     return false;
   };
-  cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
+  cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
                               const grpc::Status& status) {
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   // Cancel after a brief moment
@@ -440,11 +444,11 @@ TEST_F(ActiveReadReactorTest, ListFeatures_DeadlineExceeded_PropagatesStatus) {
 
   const routeguide::Rectangle request;
 
-  routeguide::ListFeatures::Callbacks cbs;
-  cbs.ok = [](grpc::ClientReadReactor<routeguide::Feature>*, const routeguide::Feature&) {
+  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
+  cbs.read_ok = [](grpc::ClientReadReactor<routeguide::Feature>*, const routeguide::Feature&) {
     return false;
   };
-  cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
+  cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
                               const grpc::Status& status) {
     done_promise.set_value(status);
@@ -453,7 +457,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_DeadlineExceeded_PropagatesStatus) {
   auto context = std::make_unique<grpc::ClientContext>();
   context->set_deadline(std::chrono::system_clock::now() - std::chrono::milliseconds(100));
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
       *stub_, std::move(context), request, std::move(cbs));
 
   ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
@@ -485,7 +489,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleConcurrent_AllComplete) {
   std::promise<void> all_done_promise;
   const std::future<void> all_done_future = all_done_promise.get_future();
 
-  std::vector<std::unique_ptr<routeguide::ListFeatures::ClientReactor>> reactors;
+  std::vector<std::unique_ptr<routeguide::ListFeatures::ClientReactor<kDelivery>>> reactors;
   reactors.reserve(kNumConcurrentStreams);
   std::vector<grpc::Status> statuses(kNumConcurrentStreams);
   std::vector<int> feature_counts(kNumConcurrentStreams, 0);
@@ -493,13 +497,13 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleConcurrent_AllComplete) {
   for (int i = 0; i < kNumConcurrentStreams; ++i) {
     const routeguide::Rectangle request;
 
-    routeguide::ListFeatures::Callbacks cbs;
-    cbs.ok = [&feature_counts, i](grpc::ClientReadReactor<routeguide::Feature>*,
+    routeguide::ListFeatures::Callbacks<kDelivery> cbs;
+    cbs.read_ok = [&feature_counts, i](grpc::ClientReadReactor<routeguide::Feature>*,
                                    const routeguide::Feature&) {
       ++feature_counts[i];
       return false;
     };
-    cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
+    cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
     cbs.done = [&completed_count, &all_done_promise, &statuses, i, kNumConcurrentStreams](
                    grpc::ClientReadReactor<routeguide::Feature>*, const grpc::Status& status) {
       statuses[i] = status;
@@ -508,7 +512,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleConcurrent_AllComplete) {
       }
     };
 
-    reactors.push_back(std::make_unique<routeguide::ListFeatures::ClientReactor>(
+    reactors.push_back(std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
         *stub_, CreateClientContext(), request, std::move(cbs)));
   }
 
@@ -559,10 +563,10 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ResponseConsumedBeforeCallbackReturns
 
   const routeguide::Rectangle request;
 
-  routeguide::ListFeatures::Callbacks cbs;
-  cbs.ok = [&received_features, &received_mutex, &done_fired, &done_inside_callback](
+  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
+  cbs.read_ok = [&received_features, &received_mutex, &done_fired, &done_inside_callback](
                grpc::ClientReadReactor<routeguide::Feature>* reactor, const routeguide::Feature&) {
-    auto* client_reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(reactor);
+    auto* client_reactor = static_cast<routeguide::ListFeatures::ClientReactor<kDelivery>*>(reactor);
     std::thread consumer([client_reactor, &received_features, &received_mutex] {
       routeguide::Feature feature;
       if (client_reactor->GetResponse(feature)) {
@@ -575,14 +579,14 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ResponseConsumedBeforeCallbackReturns
     if (done_fired) done_inside_callback = true;
     return true;  // Hold: the response was already consumed through GetResponse() above
   };
-  cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
+  cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise, &done_fired](grpc::ClientReadReactor<routeguide::Feature>*,
                                           const grpc::Status& status) {
     done_fired = true;
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); })) << "Timeout waiting for stream completion";
@@ -621,13 +625,13 @@ TEST_F(ActiveReadReactorTest, ListFeatures_NokCallback_FiresOnStreamEnd) {
 
   const routeguide::Rectangle request;
 
-  routeguide::ListFeatures::Callbacks cbs;
-  cbs.ok = [&ok_count](grpc::ClientReadReactor<routeguide::Feature>*,
+  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
+  cbs.read_ok = [&ok_count](grpc::ClientReadReactor<routeguide::Feature>*,
                         const routeguide::Feature&) {
     ++ok_count;
     return false;
   };
-  cbs.nok = [&nok_called](grpc::ClientReadReactor<routeguide::Feature>*) {
+  cbs.read_nok = [&nok_called](grpc::ClientReadReactor<routeguide::Feature>*) {
     nok_called = true;
   };
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
@@ -635,7 +639,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_NokCallback_FiresOnStreamEnd) {
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));

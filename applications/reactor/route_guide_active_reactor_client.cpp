@@ -32,6 +32,11 @@ namespace {
 std::thread::id main_thread = std::this_thread::get_id();
 FeatureList feature_list_;
 
+// This demo pulls every response out of its reactor through GetResponse(). The push alternative,
+// where each callback is given the message as an owned std::unique_ptr, is exercised by the
+// *_push_test.cpp unit tests. See "Delivery approaches" in reactor_client.md.
+constexpr auto kDelivery = RpcReactor::Client::Delivery::kPull;
+
 std::unique_ptr<grpc::ClientContext> CreateClientContext() {
   auto context = std::make_unique<grpc::ClientContext>();
   // context->set_wait_for_ready(true);
@@ -84,7 +89,7 @@ class RouteGuideClient {
              &logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature)](const EventLoop::Event* event) {
               // (Point 3.5) ProceedEvent: OnDone
               assert(main_thread == std::this_thread::get_id());  // application thread
-              auto* reactor = static_cast<routeguide::GetFeature::ClientReactor*>(event->getData());
+              auto* reactor = static_cast<routeguide::GetFeature::ClientReactor<kDelivery>*>(event->getData());
               assert(reactor == reactor_.get());
               if (const auto status = reactor->Status(); status.ok()) {
                 // (Point 3.6) extracts response
@@ -106,7 +111,7 @@ class RouteGuideClient {
              &logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures)](const EventLoop::Event* event) {
               // (Point 2.7) ProceedEvent: OnReadDoneOk
               assert(main_thread == std::this_thread::get_id());  // application thread
-              auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
+              auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor<kDelivery>*>(event->getData());
               assert(reactor == reactor_.get());
               // (Point 2.8, 2.9, 2.10, 2.11) extracts response and restart RPC
               routeguide::ListFeatures::ResponseT response;
@@ -126,7 +131,7 @@ class RouteGuideClient {
              &logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures)](const EventLoop::Event* event) {
               // (Point 4.7) ProceedEvent: OnReadDoneNOk
               assert(main_thread == std::this_thread::get_id());  // application thread
-              auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
+              auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor<kDelivery>*>(event->getData());
               assert(reactor == reactor_.get());
               // (Point 4.8) update application
               logger.info("         | {} reactor: {}", event->getName(), fmt::ptr(reactor));
@@ -137,7 +142,7 @@ class RouteGuideClient {
              &logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures)](const EventLoop::Event* event) {
               // (Point 4.9) ProceedEvent: OnDone
               assert(main_thread == std::this_thread::get_id());  // application thread
-              auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
+              auto* reactor = static_cast<routeguide::ListFeatures::ClientReactor<kDelivery>*>(event->getData());
               assert(reactor == reactor_.get());
               const auto status = reactor->Status();
               // (Point 4.10) update application with status
@@ -152,7 +157,7 @@ class RouteGuideClient {
              &logger = routeguide::logger::Get(routeguide::RpcMethods::kRecordRoute)](const EventLoop::Event* event) {
               // ProceedEvent: OnWriteDone
               assert(main_thread == std::this_thread::get_id());  // application thread
-              auto* reactor = static_cast<routeguide::RecordRoute::ClientReactor*>(event->getData());
+              auto* reactor = static_cast<routeguide::RecordRoute::ClientReactor<kDelivery>*>(event->getData());
               assert(reactor == reactor_.get());
               logger.info("         | {} reactor: {}", event->getName(), fmt::ptr(reactor));
               // The point already sent to SendLastRequest() also triggers OnWriteDone, so check the
@@ -168,7 +173,7 @@ class RouteGuideClient {
              &logger = routeguide::logger::Get(routeguide::RpcMethods::kRecordRoute)](const EventLoop::Event* event) {
               // ProceedEvent: OnDone
               assert(main_thread == std::this_thread::get_id());  // application thread
-              auto* reactor = static_cast<routeguide::RecordRoute::ClientReactor*>(event->getData());
+              auto* reactor = static_cast<routeguide::RecordRoute::ClientReactor<kDelivery>*>(event->getData());
               assert(reactor == reactor_.get());
               if (const auto status = reactor->Status(); status.ok()) {
                 routeguide::RecordRoute::ResponseT response;
@@ -187,7 +192,7 @@ class RouteGuideClient {
              &logger = routeguide::logger::Get(routeguide::RpcMethods::kRouteChat)](const EventLoop::Event* event) {
               // ProceedEvent: OnReadDoneOk
               assert(main_thread == std::this_thread::get_id());  // application thread
-              auto* reactor = static_cast<routeguide::RouteChat::ClientReactor*>(event->getData());
+              auto* reactor = static_cast<routeguide::RouteChat::ClientReactor<kDelivery>*>(event->getData());
               assert(reactor == reactor_.get());
               routeguide::RouteChat::ResponseT response;
               reactor->GetResponse(response);
@@ -199,7 +204,7 @@ class RouteGuideClient {
              &logger = routeguide::logger::Get(routeguide::RpcMethods::kRouteChat)](const EventLoop::Event* event) {
               // ProceedEvent: OnReadDoneNOk
               assert(main_thread == std::this_thread::get_id());  // application thread
-              auto* reactor = static_cast<routeguide::RouteChat::ClientReactor*>(event->getData());
+              auto* reactor = static_cast<routeguide::RouteChat::ClientReactor<kDelivery>*>(event->getData());
               assert(reactor == reactor_.get());
               logger.info("         | {} reactor: {}", event->getName(), fmt::ptr(reactor));
             }),
@@ -209,7 +214,7 @@ class RouteGuideClient {
              &logger = routeguide::logger::Get(routeguide::RpcMethods::kRouteChat)](const EventLoop::Event* event) {
               // ProceedEvent: OnWriteDone
               assert(main_thread == std::this_thread::get_id());  // application thread
-              auto* reactor = static_cast<routeguide::RouteChat::ClientReactor*>(event->getData());
+              auto* reactor = static_cast<routeguide::RouteChat::ClientReactor<kDelivery>*>(event->getData());
               assert(reactor == reactor_.get());
               logger.info("         | {} reactor: {}", event->getName(), fmt::ptr(reactor));
               if (!route_chat_pending_.empty()) {
@@ -221,7 +226,7 @@ class RouteGuideClient {
                                                   const EventLoop::Event* event) {
           // ProceedEvent: OnDone
           assert(main_thread == std::this_thread::get_id());  // application thread
-          auto* reactor = static_cast<routeguide::RouteChat::ClientReactor*>(event->getData());
+          auto* reactor = static_cast<routeguide::RouteChat::ClientReactor<kDelivery>*>(event->getData());
           assert(reactor == reactor_.get());
           const auto status = reactor->Status();
           logger.info("         | {} reactor: {} Status: OK: {} msg: {}", event->getName(), fmt::ptr(reactor),
@@ -234,8 +239,8 @@ class RouteGuideClient {
   /// Proxy component: Client-facing method that creates Method Request and returns immediately.
   /// Runs on client thread (main application thread).
   void GetFeature(routeguide::Point point) {
-    using routeguide::GetFeature::Callbacks;
-    using routeguide::GetFeature::ClientReactor;
+    using Callbacks = routeguide::GetFeature::Callbacks<kDelivery>;
+    using ClientReactor = routeguide::GetFeature::ClientReactor<kDelivery>;
     using routeguide::GetFeature::ResponseT;
     using routeguide::GetFeature::RpcKey;
     auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature);
@@ -260,8 +265,8 @@ class RouteGuideClient {
   /// Proxy component: Client-facing method that creates Method Request and returns immediately.
   /// Runs on client thread (main application thread).
   void ListFeatures(routeguide::Rectangle rect) {
-    using routeguide::ListFeatures::Callbacks;
-    using routeguide::ListFeatures::ClientReactor;
+    using Callbacks = routeguide::ListFeatures::Callbacks<kDelivery>;
+    using ClientReactor = routeguide::ListFeatures::ClientReactor<kDelivery>;
     using routeguide::ListFeatures::ResponseT;
     using routeguide::ListFeatures::RpcKey;
     auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures);
@@ -274,13 +279,13 @@ class RouteGuideClient {
 
     Callbacks cbs;
     // (Point 2.5) TriggerEvent: OnReadDoneOk
-    cbs.ok = [](auto* reactor, const ResponseT&) -> bool {
+    cbs.read_ok = [](auto* reactor, const ResponseT&) -> bool {
       assert(main_thread != std::this_thread::get_id());  // gRPC thread
       EventLoop::TriggerEvent(kListFeaturesOnReadDoneOk, reactor);
       return true;  // true: hold the RPC until the application proceeded the response
     };
     // (Point 4.3) TriggerEvent: OnReadDoneNOk
-    cbs.nok = [](auto* reactor) {
+    cbs.read_nok = [](auto* reactor) {
       assert(main_thread != std::this_thread::get_id());  // gRPC thread
       EventLoop::TriggerEvent(kListFeaturesOnReadDoneNOk, reactor);
     };
@@ -301,8 +306,8 @@ class RouteGuideClient {
   /// time, waiting for each OnWriteDone before sending the next, since gRPC allows only one write
   /// in flight per stream.
   void RecordRoute(std::vector<routeguide::Point> points) {
-    using routeguide::RecordRoute::Callbacks;
-    using routeguide::RecordRoute::ClientReactor;
+    using Callbacks = routeguide::RecordRoute::Callbacks<kDelivery>;
+    using ClientReactor = routeguide::RecordRoute::ClientReactor<kDelivery>;
     using routeguide::RecordRoute::ResponseT;
     using routeguide::RecordRoute::RpcKey;
     auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kRecordRoute);
@@ -340,8 +345,8 @@ class RouteGuideClient {
   /// time (same one-write-in-flight constraint as RecordRoute), while responses can arrive on the
   /// independent read side at any time.
   void RouteChat(std::vector<routeguide::RouteNote> notes) {
-    using routeguide::RouteChat::Callbacks;
-    using routeguide::RouteChat::ClientReactor;
+    using Callbacks = routeguide::RouteChat::Callbacks<kDelivery>;
+    using ClientReactor = routeguide::RouteChat::ClientReactor<kDelivery>;
     using routeguide::RouteChat::ResponseT;
     using routeguide::RouteChat::RpcKey;
     auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kRouteChat);
@@ -390,8 +395,8 @@ class RouteGuideClient {
   /// creating the reactor, and again from the OnWriteDone handler until the list is exhausted.
   /// The last point is sent via SendLastRequest() to close the stream in the same operation.
   void SendNextRecordRoutePoint() {
-    auto* reactor =
-        static_cast<routeguide::RecordRoute::ClientReactor*>(reactor_map_[routeguide::RecordRoute::RpcKey].get());
+    auto* reactor = static_cast<routeguide::RecordRoute::ClientReactor<kDelivery>*>(
+        reactor_map_[routeguide::RecordRoute::RpcKey].get());
     auto point = std::move(record_route_pending_.front());
     record_route_pending_.erase(record_route_pending_.begin());
     if (record_route_pending_.empty()) {
@@ -406,8 +411,8 @@ class RouteGuideClient {
   /// The last note is sent via SendLastRequest() to close the client's write side; the server may
   /// still send further responses afterward.
   void SendNextRouteChatNote() {
-    auto* reactor =
-        static_cast<routeguide::RouteChat::ClientReactor*>(reactor_map_[routeguide::RouteChat::RpcKey].get());
+    auto* reactor = static_cast<routeguide::RouteChat::ClientReactor<kDelivery>*>(
+        reactor_map_[routeguide::RouteChat::RpcKey].get());
     auto note = std::move(route_chat_pending_.front());
     route_chat_pending_.erase(route_chat_pending_.begin());
     if (route_chat_pending_.empty()) {

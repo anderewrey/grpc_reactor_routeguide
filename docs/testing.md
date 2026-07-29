@@ -24,13 +24,20 @@ The reactor client tests use two complementary approaches, matching the reactor 
 
 ### Synchronous unit tests
 
-Four test binaries validate reactor callback logic directly, one per reactor type, using
+Eight test binaries validate reactor callback logic directly, one per reactor type and `Delivery` approach, using
 `std::promise`/`std::future` for synchronization instead of an EventLoop:
 
-- [active_unary_reactor_test.cpp][unary-test]: `ActiveUnaryReactor` via `GetFeature`
-- [active_read_reactor_test.cpp][read-test]: `ActiveReadReactor` via `ListFeatures`
-- [active_write_reactor_test.cpp][write-test]: `ActiveWriteReactor` via `RecordRoute`
-- [active_bidi_reactor_test.cpp][bidi-test]: `ActiveBidiReactor` via `RouteChat`
+- [active_unary_reactor_pull_test.cpp][unary-pull-test], [active_unary_reactor_push_test.cpp][unary-push-test]:
+  `ActiveUnaryReactor` via `GetFeature`
+- [active_read_reactor_pull_test.cpp][read-pull-test], [active_read_reactor_push_test.cpp][read-push-test]:
+  `ActiveReadReactor` via `ListFeatures`
+- [active_write_reactor_pull_test.cpp][write-pull-test], [active_write_reactor_push_test.cpp][write-push-test]:
+  `ActiveWriteReactor` via `RecordRoute`
+- [active_bidi_reactor_pull_test.cpp][bidi-pull-test], [active_bidi_reactor_push_test.cpp][bidi-push-test]:
+  `ActiveBidiReactor` via `RouteChat`
+
+Each file pins its approach in a single `kDelivery` constant and instantiates every reactor with it, so a pull file
+and its push counterpart read side by side as the same scenarios written against each approach.
 
 Each test file runs an in-process gRPC server with a fake `TestRouteGuideService` implementation
 configured per scenario. It completes a promise directly from the reactor's callbacks, so there
@@ -44,8 +51,12 @@ complexity of a background dispatch thread.
 path: a gRPC reactor callback triggers `EventLoop::TriggerEvent()`, and the application thread
 executes the deferred handler. It runs a real EventLoop in `NON_BLOCK` mode on a background
 thread. It asserts that reactor callbacks execute off the main thread, while `EventLoop` handlers
-execute the deferred processing. This includes the hold/resume pattern for streaming responses,
-where `GetResponse()` is called from an `EventLoop` handler.
+execute the deferred processing. Each case runs once per `Delivery` approach, as `RpcMethod_Pull_...` and
+`RpcMethod_Push_...`. Under `Delivery::kPull` the event carries the reactor, and the handler pulls the message out
+through `GetResponse()`. Under `Delivery::kPush`, for `ActiveReadReactor`, this includes the ownership-transfer path:
+the gRPC-thread `read_ok` callback releases the owned message into `EventLoop::TriggerEvent()`, and the
+`EventLoop` handler reclaims that pointer. The same case asserts that messages arrive in network
+order and that the `done` event is handled behind all of them, since both ride the same FIFO queue.
 
 Unlike the four unit test files, this single fixture accumulates one case per reactor type
 instead of splitting into one file per type. Every case exercises the same dispatch path and
@@ -70,8 +81,8 @@ run.
 | ---------- | ---------- |
 | Reactor callback logic, error paths, cancellation, deadlines | Synchronous unit test |
 | Thread-hopping and dispatch through `EventLoop` | Integration test |
-| Hold/resume pattern for streaming responses | Integration test |
-| New reactor type | Both: one synchronous unit test file plus one integration test |
+| Message ownership crossing the thread boundary through `EventLoop` | Integration test |
+| New reactor type | Both: one synchronous unit test file per `Delivery` plus one integration test per `Delivery` |
 
 ## Test coverage
 
@@ -81,11 +92,45 @@ See the file list above for which file covers which RPC type.
 
 | RPC Type | Reactor Class | Scenarios |
 | ---------- | --------------- | ----------- |
-| Unary (`GetFeature`) | `ActiveUnaryReactor` | Success, empty/server/not-found response, cancel, deadline, concurrent |
-| Server stream (`ListFeatures`) | `ActiveReadReactor` | Multiple/empty response, mid-stream error, cancel, concurrent |
-| Client stream (`RecordRoute`) | `ActiveWriteReactor` | Multiple/empty point, overlapping writes, cancel, error |
+| Unary (`GetFeature`) | `ActiveUnaryReactor` | Success, empty, error, failed response, cancel, deadline, concurrent |
+| Server stream (`ListFeatures`) | `ActiveReadReactor` | Multiple/empty, error, cancel, concurrent, deferred consumer |
+| Client stream (`RecordRoute`) | `ActiveWriteReactor` | Multiple/empty point, overlapping writes, cancel, no done |
 | Bidirectional (`RouteChat`) | `ActiveBidiReactor` | Send/receive, interleaved, either side closes first, cancel |
 | EventLoop dispatch | N/A | `GetFeature`/`ListFeatures`/cancel dispatched through a real `EventLoop` |
+
+The rows hold for both `Delivery` approaches, except where a scenario only exists under one of them: the deferred
+consumer and the failed-response check are `kPush` scenarios, and `GetResponse()` before `OnDone` is a `kPull` one.
+Both read test files carry a regression test for the hold-before-hand-off ordering:
+`ListFeatures_ResponseConsumedBeforeCallbackReturns_HoldsUntilReturn` under `kPull`, and its `kTurnByTurn`
+counterpart under `kPush`, listed below.
+
+The deferred-consumer scenario of the server-stream row is
+`ListFeatures_DeferredConsumer_StreamCompletesWithoutConsumerAction` in
+[active_read_reactor_push_test.cpp][read-push-test].
+Its `read_ok` callback parks every received message and calls nothing back into the reactor, and the stream still runs
+to completion, because `ReadPacing::kContinuous` re-arms each read itself. The same test checks that every parked
+message kept its own value, so none of them alias a shared read buffer.
+
+### Read pacing mode coverage
+
+Under `Delivery::kPush`, the two reading reactors take a `ReadPacing` mode, which adds a second axis to the rows
+above. It is covered two ways, both in the `_push_test.cpp` files.
+
+The behaviours that must not differ between modes run as `TEST_P` under the `Pacing/` prefix, once per mode.
+Each fixture supplies a `ResumeIfTurnByTurn()` helper, so one callback body serves both cases and the test asserts the
+same outcome either way. The unbound-`read_ok` case matters most there: with no callback bound there is nobody to
+call `ResumeRead()`, so the reactor must arm the read itself rather than take a hold nothing would release.
+
+The behaviours specific to one mode run as `TEST_F`:
+
+| Test | Asserts |
+| ------ | --------- |
+| `ListFeatures_TurnByTurn_StreamStallsUntilResumed` | One message per resume, and `OnDone` stays pending |
+| `ListFeatures_TurnByTurn_DuplicateResumeIsRejected` | A second `ResumeRead()` is rejected, not double-released |
+| `ListFeatures_Continuous_ResumeReadIsRejected` | `ResumeRead()` cannot disturb a stream the reactor drives itself |
+| `ListFeatures_TurnByTurn_ResumedBeforeCallbackReturns_HoldsUntilReturn` | The hold precedes the `read_ok` hand-off |
+| `RouteChat_TurnByTurn_ResumedBeforeCallbackReturns_HoldsUntilReturn` | The same ordering on the bidirectional reactor |
+| `RouteChat_TurnByTurn_ReadHoldDoesNotBlockWrites` | A write completes while a read hold is outstanding |
 
 ### Naming convention
 
@@ -102,7 +147,9 @@ The integration suite only verifies that dispatch happened. The RPC's business o
 already covered by the unit suites.
 
 Example: the unit suite uses `GetFeature_ValidPoint_ReturnsFeature`. The integration suite uses
-`GetFeature_ValidPoint_DispatchesToEventLoop`.
+`GetFeature_Pull_ValidPoint_DispatchesToEventLoop` and `GetFeature_Push_ValidPoint_DispatchesToEventLoop`: one
+fixture holds both `Delivery` approaches there, so their names carry it as an extra segment after the RPC method.
+The unit suites need no such segment, since each file is dedicated to one approach.
 
 ## Test infrastructure
 
@@ -300,10 +347,14 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [sanitizers-workflow]: /.github/workflows/sanitizers.yml
 [reactor-client]: /applications/reactor/reactor_client.h
 [reactor-client-routeguide]: /applications/reactor/reactor_client_routeguide.h
-[unary-test]: /applications/reactor/tests/active_unary_reactor_test.cpp
-[read-test]: /applications/reactor/tests/active_read_reactor_test.cpp
-[write-test]: /applications/reactor/tests/active_write_reactor_test.cpp
-[bidi-test]: /applications/reactor/tests/active_bidi_reactor_test.cpp
+[unary-pull-test]: /applications/reactor/tests/active_unary_reactor_pull_test.cpp
+[unary-push-test]: /applications/reactor/tests/active_unary_reactor_push_test.cpp
+[read-pull-test]: /applications/reactor/tests/active_read_reactor_pull_test.cpp
+[read-push-test]: /applications/reactor/tests/active_read_reactor_push_test.cpp
+[write-pull-test]: /applications/reactor/tests/active_write_reactor_pull_test.cpp
+[write-push-test]: /applications/reactor/tests/active_write_reactor_push_test.cpp
+[bidi-pull-test]: /applications/reactor/tests/active_bidi_reactor_pull_test.cpp
+[bidi-push-test]: /applications/reactor/tests/active_bidi_reactor_push_test.cpp
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp
 [callback-smoke-test]: /applications/callback/tests/callback_smoke_test.sh
 [test-fixture]: /applications/reactor/tests/route_guide_test_fixture.h

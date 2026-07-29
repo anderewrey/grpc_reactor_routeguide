@@ -7,10 +7,14 @@ find_package(GTest REQUIRED)
 find_package(EventLoop CONFIG REQUIRED)
 
 set(REACTOR_TESTS
-    active_unary_reactor_test
-    active_read_reactor_test
-    active_write_reactor_test
-    active_bidi_reactor_test
+    active_unary_reactor_pull_test
+    active_unary_reactor_push_test
+    active_read_reactor_pull_test
+    active_read_reactor_push_test
+    active_write_reactor_pull_test
+    active_write_reactor_push_test
+    active_bidi_reactor_pull_test
+    active_bidi_reactor_push_test
     client_reactor_integration_test
 )
 
