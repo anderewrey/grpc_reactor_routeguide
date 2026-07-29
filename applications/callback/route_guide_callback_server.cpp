@@ -185,7 +185,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
             return;
           }
           // Unlike the non-reactor examples, locks twice instead of once around the whole exchange.
-          // See "Comparison with direct callbacks" in reactor_client.md for why.
+          // See "Why Active Object pattern?" in docs/architecture.md for why.
           mu_.lock();
           logger_.info("REQUEST  | RouteNote: {}", protobuf_utils::ToString(note_));
           std::ranges::copy_if(received_notes_, std::back_inserter(to_send_notes_),

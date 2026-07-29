@@ -45,7 +45,7 @@ class ClientReactor final : public RpcReactor::Client::ActiveUnaryReactor<Respon
                 Callbacks&& cbs)
       : ActiveUnaryReactor(std::move(context), std::move(cbs)) {
     // (Point 1.2, 1.3) async RPC call
-    stub.async()->GetFeature(context_.get(), &request, &response_, this);
+    stub.async()->GetFeature(context_.get(), &request, response_.get(), this);
     // (Point 1.4, 1.5) Starting RPC call, send request to server
     StartCall();
   }
@@ -60,6 +60,9 @@ namespace routeguide::ListFeatures {
 /// Specialized callback slots for RouteGuide::ListFeatures stream-reader RPC client
 using Callbacks = RpcReactor::Client::ActiveReadCallbacks<ResponseT>;
 
+/// Read pacing mode selector for RouteGuide::ListFeatures, see RpcReactor::Client::ReadPacing
+using ReadPacing = RpcReactor::Client::ReadPacing;
+
 /// Specialized reactor class for RouteGuide::ListFeatures stream-reader RPC client.
 /// Specializes the generic ActiveReadReactor (Method Request component).
 class ClientReactor final : public RpcReactor::Client::ActiveReadReactor<ResponseT> {
@@ -70,11 +73,13 @@ class ClientReactor final : public RpcReactor::Client::ActiveReadReactor<Respons
   /// @param context given to the reactor and is associated with the called RPC method
   /// @param request to send to the server
   /// @param cbs given to the reactor to be used as callable functions
+  /// @param pacing when the reactor arms the read following a delivered message
   ClientReactor(RouteGuide::Stub& stub,
                 std::unique_ptr<grpc::ClientContext> context,
                 const RequestT& request,
-                Callbacks&& cbs)
-      : ActiveReadReactor(std::move(context), std::move(cbs)) {
+                Callbacks&& cbs,
+                const ReadPacing pacing = ReadPacing::kContinuous)
+      : ActiveReadReactor(std::move(context), std::move(cbs), pacing) {
     // (Point 1.2, 1.3) async RPC call
     stub.async()->ListFeatures(context_.get(), &request, this);
     // (Point 1.4) Starting reading
@@ -106,9 +111,9 @@ class ClientReactor final : public RpcReactor::Client::ActiveWriteReactor<Reques
                 std::unique_ptr<grpc::ClientContext> context,
                 Callbacks&& cbs)
       : ActiveWriteReactor(std::move(context), std::move(cbs)) {
-    // async RPC call - gRPC writes the final response into response_ directly when the RPC
-    // completes; there is no separate read event for a client-streaming RPC's response.
-    stub.async()->RecordRoute(context_.get(), &response_, this);
+    // async RPC call - gRPC writes the final response into the reactor's read target directly when
+    // the RPC completes; there is no separate read event for a client-streaming RPC's response.
+    stub.async()->RecordRoute(context_.get(), response_.get(), this);
     // Starting RPC call
     StartCall();
   }
@@ -123,6 +128,9 @@ namespace routeguide::RouteChat {
 /// Specialized callback slots for RouteGuide::RouteChat bidirectional streaming RPC client
 using Callbacks = RpcReactor::Client::ActiveBidiCallbacks<RequestT, ResponseT>;
 
+/// Read pacing mode selector for RouteGuide::RouteChat, see RpcReactor::Client::ReadPacing
+using ReadPacing = RpcReactor::Client::ReadPacing;
+
 /// Specialized reactor class for RouteGuide::RouteChat bidirectional streaming RPC client.
 /// Specializes the generic ActiveBidiReactor (Method Request component).
 ///
@@ -133,11 +141,15 @@ using Callbacks = RpcReactor::Client::ActiveBidiCallbacks<RequestT, ResponseT>;
 /// - EventLoop integration: callbacks can trigger TriggerEvent() to dispatch to application thread
 ///
 /// Inherited methods from ActiveBidiReactor:
-/// - SendRequest(const RouteNote&): Send a message to the server
+/// - SendRequest(RouteNote&&): Send a message to the server, giving up its ownership
+/// - SendLastRequest(RouteNote&&): Send the final message and close the request stream, in one operation
 /// - CloseRequestStream(): Signal end of client requests (server may continue sending)
-/// - GetResponse(RouteNote&): Extract received response via swap
+/// - ResumeRead(): Arm the next read under ReadPacing::kTurnByTurn, once done with the delivered message
 /// - TryCancel(): Cancel the RPC from any thread
 /// - Status(): Get completion status after OnDone()
+///
+/// Received responses are not pulled from the reactor: each one is pushed to the read_ok slot as an
+/// owned message.
 class ClientReactor final : public RpcReactor::Client::ActiveBidiReactor<RequestT, ResponseT> {
  public:
   /// Constructor of the specialized class. It calls the RPC method and starts the stream reading
@@ -145,10 +157,12 @@ class ClientReactor final : public RpcReactor::Client::ActiveBidiReactor<Request
   /// @param stub of the RouteGuide API
   /// @param context given to the reactor and is associated with the called RPC method
   /// @param cbs given to the reactor to be used as callable functions
+  /// @param pacing when the reactor arms the read following a delivered message
   ClientReactor(RouteGuide::Stub& stub,
                 std::unique_ptr<grpc::ClientContext> context,
-                Callbacks&& cbs)
-      : ActiveBidiReactor(std::move(context), std::move(cbs)) {
+                Callbacks&& cbs,
+                const ReadPacing pacing = ReadPacing::kContinuous)
+      : ActiveBidiReactor(std::move(context), std::move(cbs), pacing) {
     // (Point 1.2, 1.3) async RPC call - establishes bidirectional stream
     stub.async()->RouteChat(context_.get(), this);
     // (Point 1.4) Starting reading

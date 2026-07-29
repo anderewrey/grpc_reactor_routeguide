@@ -1,126 +1,15 @@
 # Reactor implementation of gRPC clients
 
-## Design overview
+This is the reference for the client-side reactor library: the naming conventions, the delivery contracts, and a
+class-by-class walkthrough of all four reactors with a sequence diagram each. It states what the code does.
 
-A gRPC thread invokes the reactor callbacks and the application thread is notified to process the response event.
-The hold mechanism (`AddHold()`/`RemoveHold()`) prevents a concurrent `OnDone()` from destroying the reactor while
-the application thread is still mid-`StartRead()`, which would otherwise segfault. The elimination of locks on
-application state comes from the single-threaded event dispatch described below, not from the hold mechanism
-itself.
+For why the library is built this way, which alternatives were rejected, and the reasoning behind the hold rules,
+see [architecture.md](/docs/architecture.md). For build and test commands, see
+[developing.md](/docs/developing.md) and [testing.md](/docs/testing.md).
 
-### The problem
-
-The gRPC reactor callbacks (e.g. `OnDone`, `OnReadDone`) are executed on threads from the gRPC internal thread pool, but
-the application cannot control which thread executes the callback. Client applications that use a single main thread or
-event loop require response processing to occur on a thread which is managed by the application to maintain thread-safe
-access with the software components of the main application.
-
-### Comparison with direct callbacks
-
-A direct callback implementation processes responses immediately within the gRPC thread callback and requires
-synchronization mechanisms when accessing shared application state. The synchronization requirement propagates throughout
-the application codebase, and all mutable state must be protected at every access point. The application loses
-single-threaded execution guarantees and must handle concurrent access everywhere. Long processing times block threads
-from the gRPC thread pool and reduce available concurrency.
-
-For example, `RouteChat`'s server-side callback implementation
-([route_guide_callback_server.cpp](/applications/callback/route_guide_callback_server.cpp)) cannot hold a single
-lock around the shared notes vector for the whole exchange, unlike the non-reactor examples
-([route_guide_sync_server.cpp](/applications/blocking/route_guide_sync_server.cpp)), because the reactor's read and
-write callbacks can run on different gRPC threads between a read and a write. It instead locks twice: once to copy
-the notes to send, and once to append the newly received note.
-
-### The solution: Active Object pattern
-
-This implementation uses the [Active Object pattern][active-object-pattern] to address the threading problem. The
-result is single-threaded response processing without synchronization primitives. The pattern defers response
-processing to the application thread through event notification. All responses are handled sequentially on a single
-application thread.
-
-In this implementation, the main application thread serves as the Active Object's thread. It actively runs the EventLoop
-(Scheduler) which continuously processes queued events. gRPC reactor callbacks execute on gRPC internal threads and
-enqueue events, and the response handlers process responses on the main application thread. This ensures all application
-logic executes on a single thread without synchronization primitives.
-
-### Library architecture
-
-This reactor library implements the Active Object pattern infrastructure, designed for use by applications that provide
-their own business logic.
-
-**What the library provides:**
-
-- **Method Request encapsulation**: `ActiveUnaryReactor` and `ActiveReadReactor` classes
-- **Scheduler integration**: Callbacks trigger `EventLoop::TriggerEvent()`
-- **Guard mechanism**: `AddHold()`/`RemoveHold()` prevents concurrent access during response processing
-- **Future-like access**: `GetResponse()` and `Status()` for deferred result retrieval
-
-**What applications provide:**
-
-- **Servant (business logic)**: Implemented in `EventLoop::RegisterEvent()` handlers
-- **Domain-specific processing**: Transform RPC responses into application state changes
-
-**Demo vs production:**
-
-The demo application (`route_guide_active_reactor_client.cpp`) uses simple logging as Servant logic:
-
-```cpp
-// Demo: Logging only
-EventLoop::RegisterEvent(kGetFeatureOnDone, [](const Event* event) {
-  logger.info("RESPONSE | {}", response);  // Placeholder Servant logic
-});
-```
-
-Production applications implement actual business logic:
-
-```cpp
-// Production: Real Servant logic
-EventLoop::RegisterEvent(kGetFeatureOnDone, [&app_state](const Event* event) {
-  routeguide::Feature response;
-  if (reactor->GetResponse(response)) {
-    app_state.UpdateFeatureCache(response);      // Business logic
-    ui_controller.NotifyFeatureLoaded(response); // State changes
-    metrics.RecordFeatureQuery(response);        // Application concerns
-  }
-});
-```
-
-This separation is intentional: the library handles the concurrency complexity, applications handle the domain logic.
-
-### Pattern components
-
-This implementation follows the Active Object pattern, combining it with the Reactor pattern for event-driven
-processing.
-
-**Components mapping:**
-
-| Active Object Component | This Implementation                       | Notes                                        |
-|-------------------------|-------------------------------------------|----------------------------------------------|
-| Proxy                   | `GetFeature()`, `ListFeatures()` methods  | Creates Method Requests, returns immediately |
-| Method Request          | `ActiveUnaryReactor`, `ActiveReadReactor` | Encapsulates RPC state with guards           |
-| Activation Queue        | EventLoop internal queue                  | Holds pending event notifications            |
-| Scheduler               | `EventLoop::Run()`                        | Dispatches events to handlers                |
-| Servant                 | `EventLoop::RegisterEvent()` handlers     | Application-provided business logic          |
-| Future                  | `GetResponse()`, `Status()`               | Deferred result access                       |
-| Guards                  | `AddHold()`/`RemoveHold()`                | Prevents concurrent access during processing |
-
-**Library vs application responsibilities:**
-
-| Aspect  | Definition                                         | This Implementation                                   |
-|---------|----------------------------------------------------|-------------------------------------------------------|
-| Guards  | Method Requests have `guard()` for synchronization | `AddHold()`/`RemoveHold()` mechanism                  |
-| Servant | Business logic component with state                | Application-provided (demo uses logging placeholders) |
-| Scope   | Full client-server encapsulation                   | Client-side library (server has separate Servant)     |
-
-**Combined pattern characteristics:**
-
-- **Active Object**: Proxy, Method Request, Activation Queue, Scheduler, Servant, Future, Guards
-- **Reactor pattern**: Event demultiplexing, event handlers, non-blocking I/O
-
-Reactor Pattern (Event-driven concurrency):
-
-- Events from gRPC (`OnDone`, `OnReadDone`) are received and demultiplexed
-- Events are handled asynchronously without blocking
-- Event detection is separated from event handling
+Two facts orient everything below. Each reactor hands every message to a callback as an owned object, so nothing
+is left in a reactor for the application to pull. Each reactor arms its next read from inside the reaction that
+just completed, unless the application asked to pace the reads itself.
 
 ## API naming conventions
 
@@ -141,42 +30,47 @@ These gRPC functions are called internally by the reactor classes and are not ex
 | gRPC Function           | Purpose                          | Called by                                         |
 |-------------------------|----------------------------------|---------------------------------------------------|
 | `StartCall()`           | Initiates the RPC                | Specialized constructor                           |
-| `StartRead(&response_)` | Begins async read operation      | Constructor, `GetResponse()`, `OnReadDone()`      |
+| `StartRead(&response_)` | Begins async read operation      | Specialized constructor, then `OnReadDone()`      |
 | `StartWrite()`          | Begins async write operation     | Inside `SendRequest()`                            |
 | `StartWriteLast()`      | Write + implied close, one op    | Inside `SendLastRequest()`                        |
 | `StartWritesDone()`     | Signals end of client writes     | Inside `CloseRequestStream()`                     |
-| `AddHold()`             | Prevents OnDone until RemoveHold | Inside `OnReadDone()`                             |
-| `RemoveHold()`          | Releases hold, allows OnDone     | Inside `GetResponse()`                            |
 
 ### gRPC callbacks (protected overrides)
 
 These callbacks are invoked by gRPC and handled internally by the reactor classes:
 
-| gRPC Callback               | When it fires                        | Invokes user callback             |
-|-----------------------------|--------------------------------------|-----------------------------------|
-| `OnReadDone(bool ok)`       | Read operation completed             | `cbs_.ok`/`cbs_.nok`               |
-| `OnWriteDone(bool ok)`      | Write operation completed            | `cbs_.write_done`                 |
-| `OnWritesDoneDone(bool ok)` | Explicit StartWritesDone() completed | none (internal only)              |
-| `OnDone(Status)`            | RPC terminated                       | `cbs_.done`                       |
+| gRPC Callback               | When it fires                        | Invokes user callback          |
+|-----------------------------|--------------------------------------|--------------------------------|
+| `OnReadDone(bool ok)`       | Read operation completed             | `cbs_.read_ok`/`cbs_.read_nok` |
+| `OnWriteDone(bool ok)`      | Write operation completed            | `cbs_.write_done`              |
+| `OnWritesDoneDone(bool ok)` | Explicit StartWritesDone() completed | none (internal only)           |
+| `OnDone(Status)`            | RPC terminated                       | `cbs_.done`                    |
 
-`ActiveBidiReactor` uses `cbs_.read_ok`/`cbs_.read_nok` instead of `cbs_.ok`/`cbs_.nok` for `OnReadDone`.
+`ActiveReadReactor` and `ActiveBidiReactor` name these two slots identically, so a reader of either finds the
+same `read_ok`/`read_nok` pair.
 
 ### Stream completion tracking
 
-Each of `ActiveReadReactor`, `ActiveWriteReactor`, and `ActiveBidiReactor` tracks whether further read/write
-operations are still valid via an internal `stream_no_more_` flag:
+All three streaming reactors track whether further read/write operations are still valid via an internal
+`stream_no_more_` flag. Only calls issued from outside a reaction consult it, since a reaction already carries
+the `ok` flag that answers the same question:
 
 - Set by `OnReadDone(false)`, `OnWriteDone(false)`, `OnWritesDoneDone()`, and `OnDone()` (whichever apply to that
   reactor's direction).
 - Checked before issuing a new `StartRead()`, `StartWrite()`, `StartWriteLast()`, or `StartWritesDone()`.
+- On the read side, only `ResumeRead()` consults it, and only under `ReadPacing::kTurnByTurn`. A read-only reactor
+  cannot in practice reach it with a hold outstanding, because the events that set the flag all require an
+  operation the hold has already prevented from being armed. `ActiveBidiReactor` can, because a write failing
+  while a read hold stands sets the same flag.
 - `ActiveBidiReactor` uses a single flag for both directions instead of one per direction. Per gRPC's own
   contract (`grpcpp/support/client_callback.h`), a failure on either read or write means no new read/write
   operation will succeed, so tracking the two directions separately would not add information.
 - `OnWritesDoneDone()` fires only for an explicit `StartWritesDone()` (i.e. `CloseRequestStream()`), not for a
   close implied via `StartWriteLast()` (i.e. `SendLastRequest()`). This is per gRPC's own documented distinction.
 - This narrows, but does not fully close, a race with a concurrent `OnDone()`: the flag can flip to true right
-  after a call already checked it. Closing that race fully would need the same `AddHold()`/`RemoveHold()`
-  protection `OnReadDone()` already uses for the read side.
+  after a call already checked it. Closing that race fully would need a hold covering the write flow, taken
+  before `StartCall()` and released once when that flow conclusively ends, which is the `UseMultipleHolds()`
+  sketch both classes carry commented out.
 
 ### Application-facing API
 
@@ -187,13 +81,17 @@ These methods are exposed to application code with naming that reflects applicat
 | `SendRequest()`        | Send a request message on the stream         | Takes ownership; caller gives up the request |
 | `SendLastRequest()`    | Send the final request and close, atomically | For a known-last message                     |
 | `CloseRequestStream()` | Signal end of client requests                | Returns false if rejected (see below)        |
-| `GetResponse()`        | Extract a received response via swap         | Client receives responses                    |
+| `ResumeRead()`         | Arm the read following a delivered message   | `kTurnByTurn` pacing only, see below         |
 | `TryCancel()`          | Cancel the entire RPC                        | Thread-safe, any thread                      |
 | `Status()`             | Get final RPC status                         | Valid after `OnDone`                         |
 
 `CloseRequestStream()` returns `false` (does nothing) if already closed, if a write is still in flight, or if the
 RPC has already failed/finished. Callers should wait for `OnWriteDone()` and retry, or use `SendLastRequest()`
 instead when the last message is known in advance.
+
+`ResumeRead()` exists on the two reading reactors and returns `false` (does nothing) unless a
+`ReadPacing::kTurnByTurn` hold is outstanding, which makes it a rejected no-op under `ReadPacing::kContinuous` and on a
+duplicate call. See [Read pacing modes](#read-pacing-modes).
 
 ### Future server-side API
 
@@ -212,10 +110,14 @@ For server-side reactors, the naming will mirror client-side with role reversal:
 
 | RPC Type          | Send             | Close Stream           | Receive          | Cancel         | Status     |
 |-------------------|------------------|------------------------|------------------|----------------|------------|
-| **Unary**         | (constructor)    | N/A                    | `GetResponse()`  | `TryCancel()`  | `Status()` |
-| **Server-Stream** | (constructor)    | N/A                    | `GetResponse()`  | `TryCancel()`  | `Status()` |
-| **Client-Stream** | `SendRequest()`  | `CloseRequestStream()` | `GetResponse()`  | `TryCancel()`  | `Status()` |
-| **Bidi**          | `SendRequest()`  | `CloseRequestStream()` | `GetResponse()`  | `TryCancel()`  | `Status()` |
+| **Unary**         | (constructor)    | N/A                    | done callback,   | `TryCancel()`  | `Status()` |
+|                   |                  |                        | owned response   |                |            |
+| **Server-Stream** | (constructor)    | N/A                    | ok callback,     | `TryCancel()`  | `Status()` |
+|                   |                  |                        | owned message    |                |            |
+| **Client-Stream** | `SendRequest()`  | `CloseRequestStream()` | done callback,   | `TryCancel()`  | `Status()` |
+|                   |                  |                        | owned response   |                |            |
+| **Bidi**          | `SendRequest()`  | `CloseRequestStream()` | read_ok callback,| `TryCancel()`  | `Status()` |
+|                   |                  |                        | owned message    |                |            |
 
 #### Server-side reactors (future)
 
@@ -236,14 +138,14 @@ Client                              Server
   |---CloseRequestStream()---------->|  (read stream ends)
   |                                   |
   |<------------------SendResponse()--|
-  |  GetResponse()                    |
+  |  read_ok callback, owned message  |
   |<------------------SendResponse()--|
-  |  GetResponse()                    |
+  |  read_ok callback, owned message  |
   |<-----------CloseResponseStream()--|
-  |  (read stream ends)               |
+  |  read_nok callback                |
 ```
 
-## Component implementation
+## Implementation map
 
 The implementation is organized across three architectural layers, mapping Active Object concepts to concrete code.
 
@@ -256,93 +158,101 @@ The implementation is organized across three architectural layers, mapping Activ
 
 | Pattern Component  | Description                                    | Code Elements                                  |
 |--------------------|------------------------------------------------|------------------------------------------------|
-| Proxy              | Client methods creating reactors               | `GetFeature()`, `ListFeatures()`               |
+| Proxy              | Client methods creating reactors               | `GetFeature()`, `ListFeatures()`,              |
+|                    |                                                | `RecordRoute()`, `RouteChat()`                 |
 | Scheduler          | Event loop dispatching to app thread           | `EventLoop::Run()`, `TriggerEvent()`           |
-| Activation Queue   | Event loop queue of pending notifications      | EventLoop internal queue                       |
-| Method Request     | Reactor instances encapsulating RPC state      | `ActiveUnaryReactor`, `ActiveReadReactor`      |
+| Activation Queue   | Event loop queue of notifications and messages | EventLoop internal queue                       |
+| Method Request     | Reactor instances encapsulating RPC state      | The four `Active*Reactor` classes              |
 | Servant            | Application business logic handlers            | `RegisterEvent()` handlers                     |
-| Future             | Reactor handle for retrieving results          | `GetResponse()`, `Status()`                    |
-| Guards             | Prevents concurrent access during processing   | `AddHold()`, `RemoveHold()`                    |
+| Future             | Reactor handle for retrieving results          | `Status()`                                     |
+| Guards             | Keeps `OnDone()` from concluding an RPC        | The reaction boundary, plus a hold             |
 
-### Proxy component
+The Scheduler and the Activation Queue come from the [EventLoop library][eventloop-lib]. The queue carries the
+message itself rather than a notification that one is ready, which is what makes the obligations below the
+application's.
 
-The Proxy component provides the client-facing interface that applications call to initiate RPC operations. Proxy
-methods run on the client application thread and create reactor instances (Method Requests) without blocking.
+## Message ownership
 
-> **Note on terminology:** This component shares characteristics with the GoF Proxy pattern (providing a surrogate
-> interface) but serves a different purpose. In Active Object, the Proxy transforms synchronous method calls into
-> asynchronous Method Requests, whereas GoF Proxy primarily controls access to an object. The term "proxy" here
-> describes the component's role in the Active Object pattern, not a direct application of the GoF Proxy pattern.
+Every reactor hands its messages to a callback as owned objects, and the callback typically releases them into
+the event queue. That makes the application responsible for each message. Four obligations follow, each from a
+property of the [EventLoop library][eventloop-lib]:
 
-The Proxy method constructs the reactor, configures callbacks to notify the Scheduler (EventLoop), and returns control
-immediately to the caller.
+| Obligation                              | Why                                      | Cost                 |
+|-----------------------------------------|------------------------------------------|----------------------|
+| Reclaim the pointer into a `unique_ptr` | The queue carries a bare `void*`         | Leak                 |
+| Reclaim it in exactly one handler       | Every callback under one name is invoked | Double free          |
+| Reclaim before anything can throw       | Nothing else owns it meanwhile           | Leak                 |
+| Drain the queue before `Halt()`         | `Halt()` discards, it does not drain     | Queued messages leak |
 
-### Scheduler & Activation Queue components
+The event data is one pointer, so an application running several concurrent RPCs of the same method cannot tell
+which reactor produced a message. It must use a distinct event name per reactor instance, or pass the reactor
+pointer the callback received alongside the message.
 
-The Scheduler dispatches queued events to the application thread, and the Activation Queue is the internal queue holding
-pending notifications. These components are provided by the [EventLoop library][eventloop-lib].
+Two execution strategies are available to a consumer. A gRPC-thread callback (`OnDoneCallback`,
+`OnReadDoneOkCallback`) can decide whether to hand the owned message on to the application thread or drop it,
+which costs nothing more than dropping the `std::unique_ptr`. A handler registered through
+`EventLoop::RegisterEvent()` then does the real processing on the application thread. Processing inside the
+gRPC-thread callback is discouraged, because it occupies a thread gRPC needs for other RPCs.
 
-The Scheduler bridges gRPC threads to the application thread. gRPC callbacks invoke `TriggerEvent()`, which enqueues
-notifications in the Activation Queue. The Scheduler dequeues and dispatches them to response handlers on the
-application thread, maintaining single-threaded execution.
+## Read pacing modes
 
-### Method Request component
+`ActiveReadReactor` and `ActiveBidiReactor` take a `ReadPacing` mode at construction, fixed for the whole RPC.
+The mode selects when the reactor arms the read that follows a delivered message, and nothing else. Both modes
+move an owned `std::unique_ptr<ResponseT>` into the `read_ok` slot, so the callback signature and the surrounding
+application wiring are identical under either one, and the only difference a consumer writes is whether it calls
+`ResumeRead()` when it is done with the message.
 
-The Method Request component encapsulates an RPC invocation with all necessary state: `ClientContext`, request message,
-response message, and callbacks. The reactor instances (e.g. `ActiveUnaryReactor`, `ActiveReadReactor`) implement this
-component.
+| Property           | `kContinuous` (default)                       | `kTurnByTurn`                                |
+|--------------------|-----------------------------------------------|----------------------------------------------|
+| Arms the next read | The reactor, as the reaction's last statement | The application, through `ResumeRead()`      |
+| Holds the RPC      | No                                            | Yes, one hold per delivered message          |
+| Messages in flight | Unbounded                                     | One                                          |
+| A slow consumer    | Never stalls the stream                       | Stalls the stream while it is slow           |
+| The cost           | The event queue grows without bound           | The RPC stalls, and strands if never resumed |
 
-### Servant component
+The mode is a choice of where the backpressure goes; which mode suits which RPC is argued in
+[architecture.md](/docs/architecture.md#why-the-reading-reactors-offer-two-pacing-modes).
 
-The Servant component contains application-provided business logic. In this client-side implementation, the Servant is
-implemented via `EventLoop::RegisterEvent()` handlers that process RPC results on the application thread.
+The mode is fixed at construction rather than switchable, which keeps it out of the race between the application
+thread and `OnReadDone()`. The branch costs one read per network message.
 
-The response handling provides two execution strategies:
+The re-arm sits outside the `read_ok` guard under both modes. An unbound slot has nobody to call `ResumeRead()`,
+so the reactor arms the read itself rather than take a hold that nothing would ever release.
 
-1. **Immediate processing**: Early callbacks (`OnDoneCallback`, `OnReadDoneOkCallback`) execute on gRPC threads for
-   quick decisions or lightweight processing
-2. **Deferred processing**: Handlers registered via `EventLoop::RegisterEvent()` execute on the application thread for
-   response processing after Scheduler dispatch
+### The obligation kTurnByTurn adds
 
-The demo application uses simple logging as placeholder Servant logic. Production applications implement actual
-business logic (state updates, UI notifications, domain processing) in these handlers.
+Under `kTurnByTurn`, an application that drops a message without calling `ResumeRead()` strands the RPC. The hold
+suppresses `OnDone()`, and no outstanding read is left to report the stream ending, so nothing can conclude the
+RPC and the reactor can never be legally destroyed. `kContinuous` carries no such obligation, which is why it is
+the default.
 
-### Future component
+`ResumeRead()` claims an internal flag before releasing anything, so a duplicate or spurious call is rejected
+rather than acted on. Releasing a hold that was never taken would drop gRPC's outstanding-callback count below
+what the RPC actually has in flight, and conclude the RPC early.
 
-The Future component provides asynchronous access to RPC results. The reactor instance acts as the Future, exposing
-`GetResponse()` to retrieve response data and `Status()` to check operation success or failure.
+## Hold requirements
 
-### Guards component
+gRPC's `AddHold()`/`RemoveHold()` keeps `OnDone()` from concluding an RPC while an operation on its state is still
+being issued. One rule decides where the library needs one:
 
-The Guards component prevents `OnDone()` from concluding an RPC, and destroying its underlying gRPC-bound state,
-while the application still has an operation pending outside of any gRPC reaction. It is implemented via gRPC's
-`AddHold()`/`RemoveHold()` mechanism.
+> An operation issued from inside a reaction needs no hold. One issued from outside a reaction needs one.
 
-#### Why OnReadDone holds before returning
+Applied per direction, the rule accounts for every gRPC call the library makes, including the one defect:
 
-When the `OnReadDoneOkCallback` returns true, the application thread will call `StartRead()` later, from
-`GetResponse()`, not immediately inside the gRPC callback. Between that return and the later `StartRead()` call,
-a concurrent `OnDone()` could still arrive and destroy the reactor's underlying gRPC-bound callback state. Calling
-`StartRead()` at that point would forward through that now-destroyed object and segfault. Other reactor
-operations, `Status()` and `TryCancel()`, do not touch gRPC's internal object at all, so they remain safe to call
-regardless of hold state; only the deferred `StartRead()` needs the hold's protection. `AddHold()` prevents
-`OnDone()` from firing during this window, and `RemoveHold()` in `GetResponse()` releases it once the new
-`StartRead()` is issued (or skipped, if the stream is done). This is the gap gRPC's own callback API leaves open
-by design, and why it added the [hold mechanism][grpc-hold-pr].
+| Operation                    | Issued by                           | Hold                  |
+|------------------------------|-------------------------------------|-----------------------|
+| `StartRead()`, `kContinuous` | The reactor, in `OnReadDone()`      | Not needed            |
+| `StartRead()`, `kTurnByTurn` | The application, in `ResumeRead()`  | Required, and taken   |
+| `StartWrite()` and friends   | The application, in `SendRequest()` | Required, and missing |
 
-#### Hold semantics per RPC, not per direction
+The third row is a residual race: `SendRequest()`, `SendLastRequest()`, and `CloseRequestStream()` guard themselves
+with `stream_no_more_`, described under [Stream completion tracking](#stream-completion-tracking), which narrows
+the window without closing it. The reasoning behind all three rows, and why the obvious fix for the third one does
+not work, is in
+[architecture.md](/docs/architecture.md#why-one-rule-decides-every-hold).
 
-gRPC's hold count (`AddHold()`/`RemoveHold()`) is a single counter shared by the entire RPC, not one counter per
-read/write direction, per gRPC's documented public contract (`grpcpp/support/client_callback.h`, not vendored in
-this repository). This has a direct consequence for `ActiveBidiReactor`:
-
-- A hold added in `OnReadDone()` (protecting a response held for later `GetResponse()`) does not block other,
-  independent reactions from firing. In particular, `OnWriteDone(false)` on an unrelated in-flight write can
-  still fire and set `stream_no_more_` while that hold is outstanding. The hold only gates `OnDone()`, not other
-  callbacks.
-- Consequently, `GetResponse()` must call `RemoveHold()` unconditionally, whether or not it restarts reading.
-  Only the restart is conditional on `stream_no_more_`. Skipping `RemoveHold()` when `stream_no_more_` happens to
-  already be true would leak the hold and stall the RPC (`OnDone()` would never fire) rather than fail loudly.
+`Status()` and `TryCancel()` are safe from any thread at any time, because neither touches gRPC's internal
+callback object: `Status()` reads a member of the reactor, and `TryCancel()` goes through `ClientContext`.
 
 ## Unary RPC client
 
@@ -373,28 +283,27 @@ When `ClientUnaryReactor::OnDone` event is handled in the active reactor, the ar
 function are:
 
 ````cpp
-using OnDoneCallback = std::function<void(grpc::ClientUnaryReactor* reactor, const grpc::Status&, const ResponseT&)>;
+using OnDoneCallback =
+    std::function<void(grpc::ClientUnaryReactor* reactor, const grpc::Status&, std::unique_ptr<ResponseT>)>;
 ````
 
 - the pointer to the active reactor instance (i.e. `this`)
 - a reference to the `grpc::Status` content
-- a reference to the `Response` content
+- the response, whose ownership transfers to the callback
 
-For the sake of the gRPC processing, it is strongly discouraged to process the response during that callback event. They
-are provided to ease some early-reaction logics or to select situations where the response handling is worthy or not.
+The response is never null. A failed RPC yields an empty message, because gRPC writes no response, so the status is
+what tells the callback whether the content is meaningful. See [Message ownership](#message-ownership) for the
+obligations that come with handing the response on to an event queue.
+
+For the sake of the gRPC processing, it is strongly discouraged to process the response during that callback event.
+The callback exists to hand the response to the application thread, or to discard it by dropping the pointer.
 
 #### Class functions
 
-Three public functions can be called by the application side:
+Two public functions can be called by the application side:
 
-- `bool GetResponse(ResponseT& response)`
 - `const grpc::Status& Status()`
 - `void TryCancel()`
-
-`GetResponse()` function swaps the underlying data storage of the response object. The swap mechanism is important to
-avoid a deep-copy of the content of the response. For the `ActiveUnaryReactor`, having the response swapped is acceptable
-because the unary RPC is meant to one response only, so the swap is a good technique to speed up the response proceeding
-time. The function will return true when the returned response is valid.
 
 `Status()` function simply returns a reference to the `grpc::Status` of the active reactor. Initialized as `Status::OK`,
 its content is updated once `ClientUnaryReactor::OnDone` event is received. It means calling `Status()` at any other
@@ -423,7 +332,7 @@ notification function as an `kGetFeatureOnDone` event.
 From the PlantUML sequence diagram, the corresponding points are:
 
 - 1.x : the `std::make_unique<ClientReactor>(...)` line
-- 3.4 : the `cbs.done = [](auto* reactor, const grpc::Status&, const ResponseT&) {...}` lines
+- 3.4 : the `cbs.done = [](auto*, const grpc::Status&, std::unique_ptr<ResponseT> response) {...}` lines
 
 ````cpp
 #include "applications/reactor/reactor_client_routeguide.h"
@@ -433,8 +342,9 @@ void GetFeature(routeguide::Point point) {
   using routeguide::GetFeature::ResponseT;
   using routeguide::GetFeature::RpcKey;
   Callbacks cbs;
-  cbs.done = [](auto* reactor, const grpc::Status&, const ResponseT&) {
-    EventLoop::TriggerEvent(kGetFeatureOnDone, reactor);  // Signal OnDoneCallback event from gRPC thread
+  cbs.done = [](auto*, const grpc::Status&, std::unique_ptr<ResponseT> response) {
+    // Signal OnDoneCallback from gRPC thread, handing the response ownership to the queue
+    EventLoop::TriggerEvent(kGetFeatureOnDone, response.release());
   };
   reactor_map_[RpcKey] = std::make_unique<ClientReactor>(*stub_,
                                                          std::move(CreateClientContext()),
@@ -455,13 +365,15 @@ The following snippet is an example code of the application-side callback. That 
 application thread, scheduled by the eventloop of the application. In this example, that lambda is used as the callback
 and given to the eventloop when the `kGetFeatureOnDone` is notified.
 
-From the PlantUML sequence diagram, the corresponding points are from 3.6 to 3.8.
+The handler reclaims the response the gRPC-thread callback released into the queue, and reads `Status()` from the
+reactor it already holds. The event data is the response, so the reactor pointer no longer rides with it.
+
+From the PlantUML sequence diagram, the corresponding points are from 3.5 to 3.7.
 
 ````cpp
-EventLoop::RegisterEvent(kGetFeatureOnDone, [&reactor_ = reactor_map_[GetFeature::RpcKey]](const Event*) {
+EventLoop::RegisterEvent(kGetFeatureOnDone, [&reactor_ = reactor_map_[GetFeature::RpcKey]](const Event* event) {
+  const std::unique_ptr<routeguide::Feature> response{static_cast<routeguide::Feature*>(event->getData())};
   if (reactor_->Status().ok()) {
-    routeguide::Feature response;
-    bool valid = reactor_->GetResponse(response);
     /**  proceeding of the content of response **/
   }
   reactor_.reset();
@@ -476,11 +388,11 @@ skinparam lifelineStrategy solid
 skinparam ParticipantPadding 50
 title gRPC Client reactor for unary RPC
 
+box "Application side" #powderblue
 boundary    app      as "Application\nside"
-box "ActiveUnaryReactor" #beige
-collections data     as "Data"
-control     reactor  as "ClientUnaryReactor"
+queue       equeue   as "EventLoop\nQueue"
 end box
+control     reactor  as "ClientUnaryReactor"
 entity      grpc     as "gRPC\nClientCallbackUnary"
 
 legend top center
@@ -494,8 +406,8 @@ autonumber 1.1
 == 1. RPC establishment ==
     app -[#darkblue]> reactor : Create Reactor
     activate reactor
-    data o-[#darkblue]->> reactor : Response holder
-    & reactor -[#darkblue]\ grpc : async RPC service call\nstub.async()->RpcMethod()
+    reactor -[#darkblue]> reactor : <i>internal read target ready
+    reactor -[#darkblue]\ grpc : async RPC service call\nstub.async()->RpcMethod()
     activate grpc #lightgreen
     reactor -[#darkblue]\ grpc : StartCall()
     activate grpc #green
@@ -511,21 +423,22 @@ autonumber 2.1
 autonumber 3.1
 == 3. RPC completion ==
     grpc <--? : RPC termination
-    &grpc -[#darkgreen]> data : <i>writes response
-    activate data #yellow
+    &grpc -[#darkgreen]> reactor : <i>writes response
+    activate reactor #gold
     deactivate grpc
     reactor <[#darkgreen]- grpc : OnDone
     deactivate grpc
 group #lightgreen (grpc-thread callback) ondone
-    {start3} app /[#darkgreen]- reactor : TriggerEvent : OnDone
+    {start3} equeue /[#darkgreen]- reactor : TriggerEvent : OnDone\n+ owned response
+    activate equeue #blue
+    deactivate reactor
 end
     ...
-    {end3} app -[#darkblue]> reactor : ProceedEvent: OnDone
-group #lightblue (app-thread callback) ondone
+    {end3} equeue -[#darkblue]> app : ProceedEvent: OnDone\n+ owned response
     {start3} <-> {end3} : Eventloop
-    data o-[#darkblue]> reactor : <i>extracts response
-    deactivate data
-    reactor -[#darkblue]> app : <i>update application with response
+    deactivate equeue
+group #lightblue (app-thread callback) ondone
+    app -[#darkblue]> app : <i>update application with response
     activate app #blue
     deactivate app
     app -[#darkblue]> reactor : Destroy Reactor
@@ -579,47 +492,39 @@ When `ClientReadReactor::OnReadDone` event with a negative OK is handled in the 
 - the pointer to the active reactor instance (i.e. `this`)
 
 ````cpp
-using OnReadDoneOkCallback = std::function<bool(grpc::ClientReadReactor<ResponseT>* reactor, const ResponseT&)>;
+using OnReadDoneOkCallback =
+    std::function<void(grpc::ClientReadReactor<ResponseT>* reactor, std::unique_ptr<ResponseT>)>;
 ````
 
 When `ClientReadReactor::OnReadDone` event with a positive OK is handled in the active reactor, the
 `OnReadDoneOkCallback` callback function is called with the following argument:
 
 - the pointer to the active reactor instance (i.e. `this`)
-- a reference to the `Response` content
+- the received message, whose ownership transfers to the callback
 
-For the sake of the gRPC processing, it is strongly discouraged to process the response during that callback event. It
-is provided to ease some early-reaction logics or to select situations where the response handling is worthy or not.
-One difference is that callback requires a return value: a boolean flag.
+The ownership transfer distinguishes that callback from the two others. The reactor moves the message out of its
+read target before the call, so it never refers to that message again. Which side arms the read that follows
+depends on the `ReadPacing` mode the reactor was constructed with, described under
+[Read pacing modes](#read-pacing-modes).
 
-When it returns:
-
-- true, the active reactor will hold the RPC and no more concurrent gRPC events are possible. That way, it is
-thread-safe to access the reactor from a different processing thread without concurrent events (e.g. RPC termination).
-Once the proceeding of the response is done, the RPC must be signaled to start a new read and then the hold can be
-removed.
-- false, the active reactor will immediately start a new response reading without waiting, reusing the same response
-storage for that next read. Because no hold is added, any data the callback wants to keep must be extracted (copied
-or moved out) before the callback returns, since the next incoming response overwrites that storage as soon as
-reading resumes. That case can be useful when the response is copied onto a queue for later, application-thread
-processing, or when it is discarded outright. That extraction must stay minimal, since it still executes on the
-gRPC thread; the response's actual processing should happen afterward, on the application thread.
+Processing the message inside the callback stays discouraged, because the callback runs on a gRPC thread. The
+callback exists to hand the message to the application thread, or to discard it: dropping the `std::unique_ptr` is
+all a discard takes.
 
 #### Class functions
 
 Three public functions can be called by the application side:
 
-- `bool GetResponse(ResponseT& response)`
 - `const grpc::Status& Status()`
+- `bool ResumeRead()`
 - `void TryCancel()`
 
-`GetResponse()` function (badly named, sorry) does two important things: it swaps the underlying data storage of the
-response variable and then (if the stream allows it) it triggers immediately a new read on the stream and resume the
-RPC. The swap mechanism is important to avoid a deep-copy of the content of the response. For the `ActiveReadReactor`,
-the content of that response is not valuable because it overwrites it on each reading, so the swap is a good technique
-to speed up the response proceeding time. The function will return true when the returned response is valid. For
-thread-safe reading, a hold must be added over the reactor if the response handling is done out of the
-`ClientReadReactor::OnReadDone` event.
+The reactor exposes no response accessor. Its internal `response_` read target keeps a stable address across
+every read, and each message is swapped out of it by pointer, without a deep-copy, before the next read is armed.
+
+`ResumeRead()` arms the read that `OnReadDone()` left unarmed under `ReadPacing::kTurnByTurn`, and releases the hold
+it took. It returns `false` without acting when there is no such hold outstanding, which covers a reactor built
+in `ReadPacing::kContinuous` mode and a duplicate call in either mode.
 
 `Status()` function simply returns a reference to the `grpc::Status` of the active reactor. Initialized as `Status::OK`,
 its content is updated once `ClientReadReactor::OnDone` event is received. It means calling `Status()` at any other
@@ -645,13 +550,14 @@ The following snippet instances a `ActiveReadReactor` dedicated to the `ListFeat
 fills a callback structure with the related bound functions. In this example, the callbacks are bound to the eventloop
 notification function as an `kListFeaturesOnReadDoneOk`, `kListFeaturesOnReadDoneNOk`, or `kListFeaturesOnDone` event.
 
-The implementation of the `OnReadDoneOkCallback` is different, because it requires a return value
+The implementation of the `OnReadDoneOkCallback` is different, because it receives the message as an owned object
+and releases that ownership into the event queue. The two other callbacks pass the reactor pointer instead.
 
 From the PlantUML sequence diagram, the corresponding points are:
 
 - 1.x : the `std::make_unique<ClientReactor>(...)` line
-- 2.4 : the `cbs.ok = [](auto* reactor, const ResponseT&) -> bool {...}` lines
-- 4.3 : the `cbs.nok = [](auto* reactor) {...}` lines
+- 2.5 : the `cbs.read_ok = [](auto*, std::unique_ptr<ResponseT> response) {...}` lines
+- 4.3 : the `cbs.read_nok = [](auto* reactor) {...}` lines
 - 4.6 : the `cbs.done = [](auto* reactor, const grpc::Status&) {...}` lines
 
 ````cpp
@@ -661,11 +567,11 @@ void ListFeatures(routeguide::Rectangle rect) {
   using routeguide::ListFeatures::Callbacks;
   using routeguide::ListFeatures::RpcKey;
   Callbacks cbs;
-  cbs.ok = [](auto* reactor, const routeguide::Feature&) -> bool {
-    EventLoop::TriggerEvent(kListFeaturesOnReadDoneOk, reactor);  // Signal OnReadDoneOkCallback from gRPC thread
-    return true;  // true: hold the RPC until the application proceeded the response
+  cbs.read_ok = [](auto*, std::unique_ptr<routeguide::Feature> response) {
+    // Signal OnReadDoneOkCallback from gRPC thread, handing the message ownership to the queue
+    EventLoop::TriggerEvent(kListFeaturesOnReadDoneOk, response.release());
   };
-  cbs.nok = [](auto* reactor) {
+  cbs.read_nok = [](auto* reactor) {
     EventLoop::TriggerEvent(kListFeaturesOnReadDoneNOk, reactor);  // Signal OnReadDoneNOkCallback from gRPC thread
   };
   cbs.done = [](auto* reactor, const grpc::Status&) {
@@ -720,19 +626,22 @@ EventLoop::RegisterEvent(kListFeaturesOnReadDoneNOk, [](const Event*) {
 
 The following snippet is an example code of the application-side callback. That code is meant to be executed on the main
 application thread, scheduled by the eventloop of the application. In this example, that lambda is used as the callback
-and given to the eventloop when the `kListFeaturesOnReadDoneOk` is notified. The main goal of that callback is to read
-the response from the active reactor and starting a new read operation on the stream.
+and given to the eventloop when the `kListFeaturesOnReadDoneOk` is notified. The main goal of that callback is to
+reclaim the ownership of the message the gRPC-thread callback released into the queue, and then to process it. The
+handler needs no access to the reactor, because there is no response left to extract from it and no read to
+restart: the reactor already armed its next read before this handler ran.
 
-From the PlantUML sequence diagram, the corresponding points are from 2.8 to 2.11.
+The reclaim must precede any statement that can throw or return early, so the message is freed on those paths too.
+Exactly one handler may reclaim it: EventLoop invokes every callback registered under one event name, so a second
+handler for the same name would free the same message twice.
+
+From the PlantUML sequence diagram, the corresponding points are 2.8 and 2.9.
 
 ````cpp
-EventLoop::RegisterEvent(kListFeaturesOnReadDoneOk,
-    [&reactor_ = reactor_map_[ListFeatures::RpcKey]](const Event* event) {
-      routeguide::Feature response;
-      bool valid = reactor_->GetResponse(response);  // when called, a new stream reading is automatically triggered
-      /**  proceeding of the content of response **/
-    }
-);
+EventLoop::RegisterEvent(kListFeaturesOnReadDoneOk, [](const Event* event) {
+  const std::unique_ptr<routeguide::Feature> response{static_cast<routeguide::Feature*>(event->getData())};
+  /**  proceeding of the content of response **/
+});
 ````
 
 ### PlantUML sequence flow
@@ -744,11 +653,11 @@ skinparam ParticipantPadding 50
 
 title gRPC Client reactor for server-side stream RPC
 
+box "Application side" #powderblue
 boundary    app      as "Application\nside"
-box "ActiveReadReactor" #beige
-collections data     as "Data"
-control     reactor  as "ClientReadReactor"
+queue       equeue   as "EventLoop\nQueue"
 end box
+control     reactor  as "ClientReadReactor"
 entity      grpc     as "gRPC\nClientCallbackReader"
 
 legend top center
@@ -764,8 +673,8 @@ autonumber 1.1
     activate reactor
     & reactor -[#darkblue]\ grpc : async RPC service call\nstub.async()->RpcMethod()
     activate grpc #lightgreen
-    data o-[#darkblue]->> reactor : Response holder
-    & reactor -[#darkblue]\ grpc : StartRead()
+    reactor -[#darkblue]> reactor : <i>internal read target ready
+    reactor -[#darkblue]\ grpc : StartRead()
     reactor -[#darkblue]\ grpc : StartCall()
     activate grpc #green
     & grpc --\? : send Request\nto server
@@ -775,47 +684,53 @@ autonumber 2.1
 == 2. Stream reading ==
 loop
     grpc <--? : receive Response\nfrom server
-    &grpc -[#darkgreen]> data : <i>writes response
-    activate data #yellow
-    reactor <[#darkgreen]- grpc : OnReadDone : true
-alt Turn-by-turn | onreaddoneok callback returns true
+    &grpc -[#darkgreen]> reactor : <i>writes response
+alt ReadPacing::kContinuous (default)
+    activate reactor #gold
 group #lightgreen (grpc-thread callback) onreaddoneok
-    {start1} app /[#darkgreen]- reactor : TriggerEvent : OnReadDoneOk
-    &reactor [#darkgreen]-\ grpc : AddHold()
+    reactor <[#darkgreen]- grpc : OnReadDone : true
+    reactor -[#darkgreen]> reactor : <i>extracts response\ninto owned message
+    {start1} equeue /[#darkgreen]- reactor : TriggerEvent : OnReadDoneOk\n+ owned message
+    activate equeue #blue
+    deactivate reactor
+    reactor -[#darkgreen]\ grpc : StartRead()
 end
-    deactivate grpc
-    &grpc -> grpc : holding RPC
-    activate grpc
-    {end1} app -[#darkblue]> reactor : ProceedEvent: OnReadDoneOk
-    {start1} <-> {end1} : Eventloop
+    grpc -> grpc : reading continues\n(no wait, no hold)
 group #lightblue (app-thread callback) onreaddoneok
-    data o-[#darkblue]> reactor : <i>extracts response
-    deactivate data
-    data o-[#darkblue]->> reactor : Response holder
-    & reactor -[#darkblue]\ grpc : StartRead()
-    reactor -[#darkblue]\ grpc : RemoveHold()
-    &reactor -[#darkblue]> app : <i>update application with response
+    {end1} equeue -[#darkblue]> app : ProceedEvent: OnReadDoneOk\n+ owned message
+    {start1} <-> {end1} : Eventloop
+    deactivate equeue
+    app -[#darkblue]> app : <i>processes owned message
     activate app #blue
     deactivate app
+end
+else ReadPacing::kTurnByTurn
+    activate reactor #gold
+group #lightgreen (grpc-thread callback) onreaddoneok
+    reactor <[#darkgreen]- grpc : OnReadDone : true
+    reactor -[#darkgreen]> reactor : <i>extracts response\ninto owned message
+    reactor -[#darkgreen]\ grpc : AddHold()
+    {start2} equeue /[#darkgreen]- reactor : TriggerEvent : OnReadDoneOk\n+ owned message
+    activate equeue #blue
+    deactivate reactor
+end
+    deactivate grpc
+    &grpc -> grpc : holding RPC\n(no read armed)
+    activate grpc
+group #lightblue (app-thread callback) onreaddoneok
+    {end2} equeue -[#darkblue]> app : ProceedEvent: OnReadDoneOk\n+ owned message
+    {start2} <-> {end2} : Eventloop
+    deactivate equeue
+    app -[#darkblue]> app : <i>processes owned message
+    activate app #blue
+    deactivate app
+    app -[#darkblue]> reactor : ResumeRead()
+    & reactor -[#darkblue]\ grpc : StartRead()
+    reactor -[#darkblue]\ grpc : RemoveHold()
 end
     deactivate grpc
     &grpc -> grpc : resuming RPC
     activate grpc #green
-else continuously | onreaddoneok callback returns false
-    activate data #yellow
-group #lightgreen (grpc-thread callback) onreaddoneok
-    data o-[#darkblue]> reactor : <i>extracts response
-    deactivate data
-    data o-[#darkgreen]->> reactor : Response holder
-    & reactor -[#darkgreen]\ grpc : StartRead()
-    {start21} app /[#darkgreen]- reactor : TriggerEvent : OnReadDoneOk\n + response
-end
-group #lightblue (app-thread callback) onreaddoneok
-    {end21} app -[#darkblue]> app : <i>update application\nwith response
-    {start21} <-> {end21} : Eventloop
-    activate app #blue
-    deactivate app
-end
 end
 end
 ...
@@ -831,27 +746,29 @@ autonumber 4.1
     & reactor <[#darkgreen]- grpc : OnReadDone : false
     deactivate grpc
 group #lightgreen (grpc-thread callback) onreaddonenok
-    {start3} app /[#darkgreen]- reactor : TriggerEvent : OnReadDoneNok
+    {start3} equeue /[#darkgreen]- reactor : TriggerEvent : OnReadDoneNok
+    activate equeue #blue
 end
 
     grpc <--? : RPC termination
     & reactor <[#darkgreen]- grpc : OnDone
     deactivate grpc
 group #lightgreen (grpc-thread callback) ondone
-    app /[#darkgreen]- reactor : TriggerEvent : OnDone
+    equeue /[#darkgreen]- reactor : TriggerEvent : OnDone
 end
 ...
-    app -[#darkblue]> reactor : ProceedEvent: OnReadDoneNok
+    equeue -[#darkblue]> app : ProceedEvent: OnReadDoneNok
 group #lightblue (app-thread callback) onreaddonenok
     reactor -[#darkblue]> app : <i>update application
     activate app #blue
     deactivate app
 end
-    {end3} app -[#darkblue]> reactor : ProceedEvent: OnDone
+    {end3} equeue -[#darkblue]> app : ProceedEvent: OnDone
 group #lightblue (app-thread callback) ondone
     reactor -[#darkblue]> app : <i>update application with status
     activate app #blue
     deactivate app
+    deactivate equeue
     {start3} <-> {end3} : Eventloop
     app -[#darkblue]> reactor : Destroy Reactor
     destroy reactor
@@ -862,31 +779,565 @@ end
 
 gRPC API keywords: ClientWriteReactor, ClientCallbackWriter
 
-Implemented and unit-tested: `ActiveWriteReactor` (Method Request, Future) in
-[reactor_client.h](/applications/reactor/reactor_client.h), specialized as `RecordRoute::ClientReactor` in
-[reactor_client_routeguide.h](/applications/reactor/reactor_client_routeguide.h). Test coverage:
-[active_write_reactor_test.cpp](/applications/reactor/tests/active_write_reactor_test.cpp).
+Only the asynchronous method is provided.
 
-No example client wiring (Proxy method, EventLoop handlers) exists yet in
-[route_guide_active_reactor_client.cpp](/applications/reactor/route_guide_active_reactor_client.cpp); that
-application still only calls `GetFeature()` and `ListFeatures()`.
+### ActiveWriteReactor class
+
+Inherit from `grpc::ClientWriteReactor`, this class implements the Method Request component of the
+[Active Object pattern][active-object-pattern] and uses the [Reactor pattern][reactor-pattern] for event handling.
+Its threading properties match the two reactors above: the constructor runs on the caller thread, the gRPC
+callbacks run on a thread from the gRPC pool, and the callback slots exist to hand the work to the application's
+event loop rather than to process it in place.
+
+The write direction is what distinguishes it. The application drives that direction, so `SendRequest()` issues a
+gRPC write from the application thread, outside any reaction. gRPC allows one write in flight at a time, which
+makes the write flow a turn-by-turn exchange: send one request, wait for `OnWriteDone`, send the next.
+
+A client-streaming RPC receives exactly one response, and gRPC writes it as part of completing the call rather
+than through a read operation. There is therefore no `OnReadDone` here, and the terminal response is delivered
+with the status through `OnDoneCallback`.
+
+The two callbacks are `OnWriteDoneCallback` and `OnDoneCallback`.
+
+````cpp
+using OnWriteDoneCallback = std::function<void(grpc::ClientWriteReactor<RequestT>* reactor, bool ok)>;
+````
+
+When `ClientWriteReactor::OnWriteDone` is handled in the active reactor, the `OnWriteDoneCallback` callback
+function is called with the following arguments:
+
+- the pointer to the active reactor instance (i.e. `this`)
+- the `ok` flag, false when the write failed and no further operation will succeed
+
+````cpp
+using OnDoneCallback = std::function<void(grpc::ClientWriteReactor<RequestT>* reactor,
+                                          const grpc::Status&,
+                                          std::unique_ptr<ResponseT>)>;
+````
+
+When `ClientWriteReactor::OnDone` is handled in the active reactor, the `OnDoneCallback` callback function is
+called with the following arguments:
+
+- the pointer to the active reactor instance (i.e. `this`)
+- a reference to the `grpc::Status` content
+- the terminal response, whose ownership transfers to the callback
+
+The response is never null, on the same basis as the unary case: a failed RPC yields an empty message, so the
+status is what tells the callback whether the content is meaningful. See
+[Message ownership](#message-ownership) for the obligations that come with handing it on to an event queue.
+
+#### Class functions
+
+Five public functions can be called by the application side:
+
+- `bool SendRequest(RequestT&&)`
+- `bool SendLastRequest(RequestT&&)`
+- `bool CloseRequestStream()`
+- `const grpc::Status& Status()`
+- `void TryCancel()`
+
+`SendRequest()` takes ownership of the request: the caller passes a temporary or an explicit `std::move()`, and
+must not keep using the object afterwards. It returns false without side effects when the reactor cannot accept
+the write, which leaves the caller free to retry the same object after the next `OnWriteDone`.
+
+`SendLastRequest()` sends the final request and closes the request stream in one operation, which avoids the gap a
+separate `SendRequest()` then `CloseRequestStream()` pair leaves open. It still produces an `OnWriteDone` event,
+so a handler that pumps the next request must check whether any request remains rather than sending
+unconditionally.
+
+`CloseRequestStream()` signals the end of the request stream on its own, for the case where the last request is
+not known in advance.
+
+`Status()` and `TryCancel()` behave as described for the unary reactor.
+
+### Code snippet
+
+#### Instantiation of the ActiveWriteReactor class
+
+The following snippet instances an `ActiveWriteReactor` dedicated to the `RecordRoute` RPC of the `routeguide`
+API. The `done` callback releases the terminal response into the queue, while `write_done` passes the reactor
+pointer, because there is no message to carry.
+
+From the PlantUML sequence diagram, the corresponding points are:
+
+- 1.x : the `std::make_unique<ClientReactor>(...)` line
+- 2.6 : the `cbs.write_done = [](auto* reactor, bool) {...}` lines
+- 4.4 : the `cbs.done = [](auto*, const grpc::Status&, std::unique_ptr<ResponseT> response) {...}` lines
+
+````cpp
+#include "applications/reactor/reactor_client_routeguide.h"
+void RecordRoute(std::vector<routeguide::Point> points) {
+  using routeguide::RecordRoute::Callbacks;
+  using routeguide::RecordRoute::ClientReactor;
+  using routeguide::RecordRoute::ResponseT;
+  using routeguide::RecordRoute::RpcKey;
+  record_route_pending_ = std::move(points);
+  Callbacks cbs;
+  cbs.write_done = [](auto* reactor, bool) {
+    EventLoop::TriggerEvent(kRecordRouteOnWriteDone, reactor);  // Signal OnWriteDoneCallback from gRPC thread
+  };
+  cbs.done = [](auto*, const grpc::Status&, std::unique_ptr<ResponseT> response) {
+    // Signal OnDoneCallback from gRPC thread, handing the response ownership to the queue
+    EventLoop::TriggerEvent(kRecordRouteOnDone, response.release());
+  };
+  reactor_map_[RpcKey] = std::make_unique<ClientReactor>(*stub_, CreateClientContext(), std::move(cbs));
+  SendNextRecordRoutePoint();  // Kick the write flow with the first request
+}
+````
+
+#### Pumping the request stream
+
+The write flow advances one request per `OnWriteDone`. The pump sends the final request through
+`SendLastRequest()`, so no separate close is needed.
+
+From the PlantUML sequence diagram, the corresponding points are 2.1 and 2.8.
+
+````cpp
+void SendNextRecordRoutePoint() {
+  auto* reactor = static_cast<RecordRoute::ClientReactor*>(reactor_map_[RecordRoute::RpcKey].get());
+  auto point = std::move(record_route_pending_.front());
+  record_route_pending_.erase(record_route_pending_.begin());
+  if (record_route_pending_.empty()) {
+    reactor->SendLastRequest(std::move(point));  // Last request also closes the stream
+  } else {
+    reactor->SendRequest(std::move(point));
+  }
+}
+
+EventLoop::RegisterEvent(kRecordRouteOnWriteDone, [this](const Event*) {
+  // The request sent via SendLastRequest() also triggers OnWriteDone, so check what remains
+  if (!record_route_pending_.empty()) {
+    SendNextRecordRoutePoint();
+  }
+});
+````
+
+#### OnDoneCallback
+
+> [!IMPORTANT]
+> The last action to do when handling that event is to delete the reactor instance: that instance can't be
+> reused by gRPC and a new instance must be allocated for a new usage.
+
+The handler reclaims the terminal response the gRPC-thread callback released into the queue, and reads `Status()`
+from the reactor it already holds.
+
+From the PlantUML sequence diagram, the corresponding points are from 4.5 to 4.7.
+
+````cpp
+EventLoop::RegisterEvent(kRecordRouteOnDone, [&reactor_ = reactor_map_[RecordRoute::RpcKey]](const Event* event) {
+  const std::unique_ptr<routeguide::RouteSummary> response{
+      static_cast<routeguide::RouteSummary*>(event->getData())};
+  if (reactor_->Status().ok()) {
+    /**  proceeding of the content of response **/
+  }
+  reactor_.reset();
+});
+````
+
+### PlantUML sequence flow
+
+```plantuml
+!pragma teoz true
+skinparam lifelineStrategy solid
+skinparam ParticipantPadding 50
+
+title gRPC Client reactor for client-side stream RPC
+
+box "Application side" #powderblue
+boundary    app      as "Application\nside"
+queue       equeue   as "EventLoop\nQueue"
+end box
+control     reactor  as "ClientWriteReactor"
+entity      grpc     as "gRPC\nClientCallbackWriter"
+
+legend top center
+  <font color=blue><b>blue</b>: main application thread
+  <font color=green><b>green</b>: gRPC thread pool
+endlegend
+
+activate app #lightblue
+
+autonumber 1.1
+== 1. Stream establishment ==
+    app -[#darkblue]> reactor : Create Reactor
+    activate reactor
+    reactor -[#darkblue]> reactor : <i>internal response target ready
+    reactor -[#darkblue]\ grpc : async RPC service call\nstub.async()->RpcMethod(response_.get())
+    activate grpc #lightgreen
+    reactor -[#darkblue]\ grpc : StartCall()
+    activate grpc #green
+
+...
+autonumber 2.1
+== 2. Request streaming ==
+loop one request at a time, the last one via SendLastRequest()
+    app -[#darkblue]> reactor : SendRequest()
+    reactor -[#darkblue]> reactor : <i>moves request into\nthe write buffer
+    reactor -[#darkblue]\ grpc : StartWrite()
+    & grpc --\? : send Request\nto server
+group #lightgreen (grpc-thread callback) onwritedone
+    reactor <[#darkgreen]- grpc : OnWriteDone : true
+    activate reactor #gold
+    {start2} equeue /[#darkgreen]- reactor : TriggerEvent : OnWriteDone
+    activate equeue #blue
+    deactivate reactor
+end
+    {end2} equeue -[#darkblue]> app : ProceedEvent: OnWriteDone
+    {start2} <-> {end2} : Eventloop
+    deactivate equeue
+group #lightblue (app-thread callback) onwritedone
+    app -[#darkblue]> app : <i>sends the next request,\nif any remains
+    activate app #blue
+    deactivate app
+end
+end
+
+...
+autonumber 3.1
+== 3. Client-side cancellation ==
+    app -[#darkblue]> reactor : TryCancel()
+    & reactor -[#darkblue]\ grpc : TryCancel()
+    & grpc --\? : RPC termination\nbehest
+
+autonumber 4.1
+== 4. RPC completion ==
+    grpc <--? : receive Response\nand RPC termination
+    &grpc -[#darkgreen]> reactor : <i>writes terminal response
+    activate reactor #gold
+    deactivate grpc
+    reactor <[#darkgreen]- grpc : OnDone
+    deactivate grpc
+group #lightgreen (grpc-thread callback) ondone
+    {start4} equeue /[#darkgreen]- reactor : TriggerEvent : OnDone\n+ owned response
+    activate equeue #blue
+    deactivate reactor
+end
+    ...
+    {end4} equeue -[#darkblue]> app : ProceedEvent: OnDone\n+ owned response
+    {start4} <-> {end4} : Eventloop
+    deactivate equeue
+group #lightblue (app-thread callback) ondone
+    app -[#darkblue]> app : <i>update application with response
+    activate app #blue
+    deactivate app
+    app -[#darkblue]> reactor : Destroy Reactor
+    destroy reactor
+end
+```
 
 ## Bidirectional streaming RPC client
 
 gRPC API keywords: ClientBidiReactor, ClientCallbackReaderWriter
 
-Implemented and unit-tested: `ActiveBidiReactor` (Method Request, Future) in
-[reactor_client.h](/applications/reactor/reactor_client.h), specialized as `RouteChat::ClientReactor` in
-[reactor_client_routeguide.h](/applications/reactor/reactor_client_routeguide.h). Test coverage:
-[active_bidi_reactor_test.cpp](/applications/reactor/tests/active_bidi_reactor_test.cpp).
+Only the asynchronous method is provided.
 
-No example client wiring exists yet in
-[route_guide_active_reactor_client.cpp](/applications/reactor/route_guide_active_reactor_client.cpp), same as the
-client-streaming case above.
+### ActiveBidiReactor class
+
+Inherit from `grpc::ClientBidiReactor`, this class implements the Method Request component of the
+[Active Object pattern][active-object-pattern] and uses the [Reactor pattern][reactor-pattern] for event handling.
+It combines the two directions already described: its read side behaves as `ActiveReadReactor`'s, and its write
+side as `ActiveWriteReactor`'s.
+
+The two directions are independent. The application drives the write side one request at a time, gRPC drives the
+read side, and neither waits for the other. A bidirectional RPC carries no terminal response, so `OnDoneCallback`
+delivers only the status, unlike the client-streaming case.
+
+The four callbacks are `OnReadDoneOkCallback`, `OnReadDoneNOkCallback`, `OnWriteDoneCallback`, and
+`OnDoneCallback`. The read pair and the write callback carry the same signatures and the same meaning as in the
+reactors above:
+
+````cpp
+using OnReadDoneOkCallback =
+    std::function<void(grpc::ClientBidiReactor<RequestT, ResponseT>* reactor, std::unique_ptr<ResponseT>)>;
+using OnReadDoneNOkCallback = std::function<void(grpc::ClientBidiReactor<RequestT, ResponseT>* reactor)>;
+using OnWriteDoneCallback = std::function<void(grpc::ClientBidiReactor<RequestT, ResponseT>* reactor, bool ok)>;
+using OnDoneCallback =
+    std::function<void(grpc::ClientBidiReactor<RequestT, ResponseT>* reactor, const grpc::Status&)>;
+````
+
+Each received message is swapped out of the internal read target and handed to `OnReadDoneOkCallback` as an owned
+object. Which side arms the read that follows depends on the `ReadPacing` mode the reactor was constructed
+with, exactly as on `ActiveReadReactor`, and is described under [Read pacing modes](#read-pacing-modes).
+Processing the message inside that callback stays discouraged, because it runs on a gRPC thread: the callback
+exists to hand the message to the application thread, or to discard it by dropping the `std::unique_ptr`.
+
+`OnReadDoneNOkCallback` reports the end of the response stream. Unlike the server-streaming case, it also means
+the RPC itself is ending, because a server closes a bidirectional response stream only by finishing the call.
+
+#### Class functions
+
+Six public functions can be called by the application side:
+
+- `bool SendRequest(RequestT&&)`
+- `bool SendLastRequest(RequestT&&)`
+- `bool CloseRequestStream()`
+- `bool ResumeRead()`
+- `const grpc::Status& Status()`
+- `void TryCancel()`
+
+They behave exactly as described for `ActiveWriteReactor` and `ActiveReadReactor`. Like the three other reactors,
+`ActiveBidiReactor` exposes no response accessor: its `response_` read target keeps a stable address across every
+read, and each message is swapped out of it by pointer, without a deep-copy, before the next read is armed.
+
+A `ReadPacing::kTurnByTurn` hold stalls only the read direction. gRPC counts holds and outstanding operations on one
+per-RPC counter, but that counter gates `OnDone()` alone, so the application can keep sending requests while it
+is behind on responses.
+
+### Code snippet
+
+#### Instantiation of the ActiveBidiReactor class
+
+The following snippet instances an `ActiveBidiReactor` dedicated to the `RouteChat` RPC of the `routeguide` API.
+Only `read_ok` carries a message; the three other callbacks pass the reactor pointer.
+
+From the PlantUML sequence diagram, the corresponding points are:
+
+- 1.x : the `std::make_unique<ClientReactor>(...)` line
+- 2.6 : the `cbs.write_done = [](auto* reactor, bool) {...}` lines
+- 3.5 : the `cbs.read_ok = [](auto*, std::unique_ptr<ResponseT> response) {...}` lines
+- 5.4 : the `cbs.read_nok = [](auto* reactor) {...}` lines
+- 5.7 : the `cbs.done = [](auto* reactor, const grpc::Status&) {...}` lines
+
+````cpp
+#include "applications/reactor/reactor_client_routeguide.h"
+void RouteChat(std::vector<routeguide::RouteNote> notes) {
+  using routeguide::RouteChat::Callbacks;
+  using routeguide::RouteChat::ClientReactor;
+  using routeguide::RouteChat::ResponseT;
+  using routeguide::RouteChat::RpcKey;
+  route_chat_pending_ = std::move(notes);
+  Callbacks cbs;
+  cbs.read_ok = [](auto*, std::unique_ptr<ResponseT> response) {
+    // Signal OnReadDoneOkCallback from gRPC thread, handing the message ownership to the queue
+    EventLoop::TriggerEvent(kRouteChatOnReadDoneOk, response.release());
+  };
+  cbs.read_nok = [](auto* reactor) {
+    EventLoop::TriggerEvent(kRouteChatOnReadDoneNOk, reactor);  // Signal OnReadDoneNOkCallback from gRPC thread
+  };
+  cbs.write_done = [](auto* reactor, bool) {
+    EventLoop::TriggerEvent(kRouteChatOnWriteDone, reactor);  // Signal OnWriteDoneCallback from gRPC thread
+  };
+  cbs.done = [](auto* reactor, const grpc::Status&) {
+    EventLoop::TriggerEvent(kRouteChatOnDone, reactor);  // Signal OnDoneCallback from gRPC thread
+  };
+  reactor_map_[RpcKey] = std::make_unique<ClientReactor>(*stub_, CreateClientContext(), std::move(cbs));
+  SendNextRouteChatNote();  // Kick the write flow with the first request
+}
+````
+
+#### OnReadDoneOkCallback
+
+The handler reclaims the message the gRPC-thread callback released into the queue. It needs no access to the
+reactor: there is no response left to extract and no read to restart, because the reactor already armed its next
+read before this handler ran.
+
+The reclaim must precede any statement that can throw or return early, and exactly one handler may reclaim it.
+Both obligations are the ones listed under [Message ownership](#message-ownership).
+
+From the PlantUML sequence diagram, the corresponding points are 3.8 and 3.9.
+
+````cpp
+EventLoop::RegisterEvent(kRouteChatOnReadDoneOk, [](const Event* event) {
+  const std::unique_ptr<routeguide::RouteNote> response{static_cast<routeguide::RouteNote*>(event->getData())};
+  /**  proceeding of the content of response **/
+});
+````
+
+#### OnWriteDoneCallback
+
+The write flow advances one request per event, exactly as in the client-streaming case, and the final note is
+sent through `SendLastRequest()`. The server may keep sending responses after that close.
+
+From the PlantUML sequence diagram, the corresponding points are 2.1 and 2.8.
+
+````cpp
+EventLoop::RegisterEvent(kRouteChatOnWriteDone, [this](const Event*) {
+  if (!route_chat_pending_.empty()) {
+    SendNextRouteChatNote();
+  }
+});
+````
+
+#### OnDoneCallback
+
+> [!IMPORTANT]
+> The last action to do when handling that event is to delete the reactor instance: that instance can't be
+> reused by gRPC and a new instance must be allocated for a new usage.
+
+From the PlantUML sequence diagram, the corresponding points are 5.11 and 5.12.
+
+````cpp
+EventLoop::RegisterEvent(kRouteChatOnDone, [&reactor_ = reactor_map_[RouteChat::RpcKey]](const Event*) {
+  const auto status = reactor_->Status();
+  /**  proceeding of the status **/
+  reactor_.reset();
+});
+````
+
+### PlantUML sequence flow
+
+```plantuml
+!pragma teoz true
+skinparam lifelineStrategy solid
+skinparam ParticipantPadding 50
+
+title gRPC Client reactor for bidirectional stream RPC
+
+box "Application side" #powderblue
+boundary    app      as "Application\nside"
+queue       equeue   as "EventLoop\nQueue"
+end box
+control     reactor  as "ClientBidiReactor"
+entity      grpc     as "gRPC\nClientCallbackReaderWriter"
+
+legend top center
+  <font color=blue><b>blue</b>: main application thread
+  <font color=green><b>green</b>: gRPC thread pool
+endlegend
+
+activate app #lightblue
+
+autonumber 1.1
+== 1. Stream establishment ==
+    app -[#darkblue]> reactor : Create Reactor
+    activate reactor
+    & reactor -[#darkblue]\ grpc : async RPC service call\nstub.async()->RpcMethod()
+    activate grpc #lightgreen
+    reactor -[#darkblue]> reactor : <i>internal read target ready
+    reactor -[#darkblue]\ grpc : StartRead()
+    reactor -[#darkblue]\ grpc : StartCall()
+    activate grpc #green
+
+...
+note across
+  Sections 2 and 3 are independent. The write side is driven by the application
+  thread, the read side by gRPC, and neither waits for the other.
+end note
+
+autonumber 2.1
+== 2. Request streaming (write side) ==
+loop one request at a time, the last one via SendLastRequest()
+    app -[#darkblue]> reactor : SendRequest()
+    reactor -[#darkblue]> reactor : <i>moves request into\nthe write buffer
+    reactor -[#darkblue]\ grpc : StartWrite()
+    & grpc --\? : send Request\nto server
+group #lightgreen (grpc-thread callback) onwritedone
+    reactor <[#darkgreen]- grpc : OnWriteDone : true
+    activate reactor #gold
+    {start2} equeue /[#darkgreen]- reactor : TriggerEvent : OnWriteDone
+    activate equeue #blue
+    deactivate reactor
+end
+    {end2} equeue -[#darkblue]> app : ProceedEvent: OnWriteDone
+    {start2} <-> {end2} : Eventloop
+    deactivate equeue
+group #lightblue (app-thread callback) onwritedone
+    app -[#darkblue]> app : <i>sends the next request,\nif any remains
+    activate app #blue
+    deactivate app
+end
+end
+
+...
+autonumber 3.1
+== 3. Response streaming (read side) ==
+loop
+    grpc <--? : receive Response\nfrom server
+    &grpc -[#darkgreen]> reactor : <i>writes response
+alt ReadPacing::kContinuous (default)
+    activate reactor #gold
+group #lightgreen (grpc-thread callback) onreaddoneok
+    reactor <[#darkgreen]- grpc : OnReadDone : true
+    reactor -[#darkgreen]> reactor : <i>extracts response\ninto owned message
+    {start3} equeue /[#darkgreen]- reactor : TriggerEvent : OnReadDoneOk\n+ owned message
+    activate equeue #blue
+    deactivate reactor
+    reactor -[#darkgreen]\ grpc : StartRead()
+end
+    grpc -> grpc : reading continues\n(no wait, no hold)
+group #lightblue (app-thread callback) onreaddoneok
+    {end3} equeue -[#darkblue]> app : ProceedEvent: OnReadDoneOk\n+ owned message
+    {start3} <-> {end3} : Eventloop
+    deactivate equeue
+    app -[#darkblue]> app : <i>processes owned message
+    activate app #blue
+    deactivate app
+end
+else ReadPacing::kTurnByTurn
+    activate reactor #gold
+group #lightgreen (grpc-thread callback) onreaddoneok
+    reactor <[#darkgreen]- grpc : OnReadDone : true
+    reactor -[#darkgreen]> reactor : <i>extracts response\ninto owned message
+    reactor -[#darkgreen]\ grpc : AddHold()
+    {start4} equeue /[#darkgreen]- reactor : TriggerEvent : OnReadDoneOk\n+ owned message
+    activate equeue #blue
+    deactivate reactor
+end
+    deactivate grpc
+    &grpc -> grpc : holding the read side\n(no read armed)\nthe write side keeps running
+    activate grpc
+group #lightblue (app-thread callback) onreaddoneok
+    {end4} equeue -[#darkblue]> app : ProceedEvent: OnReadDoneOk\n+ owned message
+    {start4} <-> {end4} : Eventloop
+    deactivate equeue
+    app -[#darkblue]> app : <i>processes owned message
+    activate app #blue
+    deactivate app
+    app -[#darkblue]> reactor : ResumeRead()
+    & reactor -[#darkblue]\ grpc : StartRead()
+    reactor -[#darkblue]\ grpc : RemoveHold()
+end
+    deactivate grpc
+    &grpc -> grpc : resuming RPC
+    activate grpc #green
+end
+end
+
+...
+autonumber 4.1
+== 4. Client-side cancellation ==
+    app -[#darkblue]> reactor : TryCancel()
+    & reactor -[#darkblue]\ grpc : TryCancel()
+    & grpc --\? : RPC termination\nbehest
+
+autonumber 5.1
+== 5. Stream termination ==
+    grpc <--? : depleted stream
+    & reactor <[#darkgreen]- grpc : OnReadDone : false
+    deactivate grpc
+group #lightgreen (grpc-thread callback) onreaddonenok
+    reactor -[#darkgreen]> reactor : <i>no more read or write\n(stream_no_more_)
+    {start5} equeue /[#darkgreen]- reactor : TriggerEvent : OnReadDoneNok
+    activate equeue #blue
+end
+
+    grpc <--? : RPC termination
+    & reactor <[#darkgreen]- grpc : OnDone
+    deactivate grpc
+group #lightgreen (grpc-thread callback) ondone
+    equeue /[#darkgreen]- reactor : TriggerEvent : OnDone
+end
+...
+    equeue -[#darkblue]> app : ProceedEvent: OnReadDoneNok
+group #lightblue (app-thread callback) onreaddonenok
+    app -[#darkblue]> app : <i>update application
+    activate app #blue
+    deactivate app
+end
+    {end5} equeue -[#darkblue]> app : ProceedEvent: OnDone
+group #lightblue (app-thread callback) ondone
+    app -[#darkblue]> app : <i>update application with status
+    activate app #blue
+    deactivate app
+    deactivate equeue
+    {start5} <-> {end5} : Eventloop
+    app -[#darkblue]> reactor : Destroy Reactor
+    destroy reactor
+end
+```
 
 <!-- Reference links -->
 [active-object-pattern]: https://www.modernescpp.com/index.php/active-object/
 [reactor-pattern]: https://www.modernescpp.com/index.php/reactor/
 [eventloop-lib]: https://github.com/amoldhamale1105/EventLoop
 [grpc-callback-tutorial]: https://grpc.io/docs/languages/cpp/callback/
-[grpc-hold-pr]: https://github.com/grpc/grpc/pull/18072

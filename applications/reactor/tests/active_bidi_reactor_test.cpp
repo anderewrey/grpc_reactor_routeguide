@@ -26,6 +26,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <ostream>
 #include <string>
 #include <thread>
 #include <utility>
@@ -35,6 +36,14 @@
 #include "rg_service/rg_utils.h"
 #include "applications/reactor/reactor_client_routeguide.h"
 #include "applications/reactor/tests/route_guide_test_fixture.h"
+
+namespace RpcReactor::Client {
+/// Found by argument-dependent lookup, so GoogleTest names the pacing mode in the registered test
+/// names and in failure messages instead of dumping the enum's bytes.
+void PrintTo(const ReadPacing& pacing, std::ostream* os) {
+  *os << (pacing == ReadPacing::kContinuous ? "Continuous" : "TurnByTurn");
+}
+}  // namespace RpcReactor::Client
 
 namespace {
 
@@ -170,6 +179,34 @@ class ActiveBidiReactorTest : public RouteGuideTestFixtureBase<TestRouteGuideSer
   }
 };
 
+using routeguide::RouteChat::ReadPacing;
+
+/// Fixture for the behaviours that must hold identically under either read pacing mode. The mode
+/// changes only who arms the next read, so everything an application observes on either direction
+/// is expected to be the same under both.
+class ActiveBidiReactorPacingTest : public ActiveBidiReactorTest,
+                                    public testing::WithParamInterface<ReadPacing> {
+ protected:
+  /// Under kTurnByTurn the application owns the re-arm, so a consumer must resume once it is done with
+  /// the message or the read side stays stalled. Under kContinuous the reactor has already re-armed and
+  /// the call is a rejected no-op, which is what lets one callback body serve both modes.
+  static void ResumeIfTurnByTurn(grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>* reactor,
+                                 const ReadPacing pacing) {
+    if (pacing == ReadPacing::kTurnByTurn) {
+      static_cast<routeguide::RouteChat::ClientReactor*>(reactor)->ResumeRead();
+    }
+  }
+};
+
+/// Names the parameterized cases after the mode, so a failure report says which one broke.
+std::string PacingName(const testing::TestParamInfo<ReadPacing>& info) {
+  return info.param == ReadPacing::kContinuous ? "Continuous" : "TurnByTurn";
+}
+
+INSTANTIATE_TEST_SUITE_P(Pacing, ActiveBidiReactorPacingTest,
+                         testing::Values(ReadPacing::kContinuous, ReadPacing::kTurnByTurn),
+                         PacingName);
+
 // =============================================================================
 // RouteChat Bidirectional Streaming Tests
 // =============================================================================
@@ -182,7 +219,10 @@ class ActiveBidiReactorTest : public RouteGuideTestFixtureBase<TestRouteGuideSer
 /// - Second note: expect 1 response (first note)
 /// - Third note: expect 2 responses (first + second)
 /// - Total expected responses: 0 + 1 + 2 = 3
-TEST_F(ActiveBidiReactorTest, RouteChat_SendReceive_MatchesNotes) {
+/// - The above holds under both read pacing modes
+TEST_P(ActiveBidiReactorPacingTest, RouteChat_SendReceive_MatchesNotes) {
+  const ReadPacing pacing = GetParam();
+
   std::promise<RouteChatResult> result_promise;
   std::future<RouteChatResult> result_future = result_promise.get_future();
 
@@ -195,12 +235,14 @@ TEST_F(ActiveBidiReactorTest, RouteChat_SendReceive_MatchesNotes) {
   bool write_ready = true;
 
   routeguide::RouteChat::Callbacks cbs;
-  cbs.read_ok = [&received_notes, &notes_mutex](
-                    grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
-                    const routeguide::RouteNote& note) {
-    std::lock_guard<std::mutex> lock(notes_mutex);
-    received_notes.push_back(note);
-    return false;  // Continue reading immediately
+  cbs.read_ok = [&received_notes, &notes_mutex, pacing](
+                    grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>* reactor,
+                    std::unique_ptr<routeguide::RouteNote> note) {
+    {
+      std::lock_guard<std::mutex> lock(notes_mutex);
+      received_notes.push_back(std::move(*note));
+    }
+    ResumeIfTurnByTurn(reactor, pacing);
   };
   cbs.read_nok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {};
   cbs.write_done = [&write_mutex, &write_cv, &write_ready](
@@ -224,7 +266,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_SendReceive_MatchesNotes) {
   };
 
   auto reactor = std::make_unique<routeguide::RouteChat::ClientReactor>(
-      *stub_, CreateClientContext(), std::move(cbs));
+      *stub_, CreateClientContext(), std::move(cbs), pacing);
 
   // Send 3 notes to the same location
   std::vector<routeguide::RouteNote> sent_notes;
@@ -286,11 +328,10 @@ TEST_F(ActiveBidiReactorTest, RouteChat_InterleavedMessages_AllReceived) {
   routeguide::RouteChat::Callbacks cbs;
   cbs.read_ok = [&received_count, &received_notes, &notes_mutex](
                     grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
-                    const routeguide::RouteNote& note) {
+                    std::unique_ptr<routeguide::RouteNote> note) {
     received_count++;
     std::lock_guard<std::mutex> lock(notes_mutex);
-    received_notes.push_back(note);
-    return false;
+    received_notes.push_back(std::move(*note));
   };
   cbs.read_nok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {};
   cbs.write_done = [&write_mutex, &write_cv, &write_ready](
@@ -384,10 +425,9 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ClientClosesFirst_ServerContinues) {
   routeguide::RouteChat::Callbacks cbs;
   cbs.read_ok = [&received_notes, &notes_mutex](
                     grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
-                    const routeguide::RouteNote& note) {
+                    std::unique_ptr<routeguide::RouteNote> note) {
     std::lock_guard<std::mutex> lock(notes_mutex);
-    received_notes.push_back(note);
-    return false;
+    received_notes.push_back(std::move(*note));
   };
   cbs.read_nok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {};
   cbs.write_done = [&write_mutex, &write_cv, &write_ready](
@@ -469,10 +509,9 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ServerClosesFirst_ClientContinues) {
   routeguide::RouteChat::Callbacks cbs;
   cbs.read_ok = [&received_notes, &notes_mutex](
                     grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
-                    const routeguide::RouteNote& note) {
+                    std::unique_ptr<routeguide::RouteNote> note) {
     std::lock_guard<std::mutex> lock(notes_mutex);
-    received_notes.push_back(note);
-    return false;
+    received_notes.push_back(std::move(*note));
   };
   cbs.read_nok = [&read_nok_fired](
                      grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {
@@ -525,9 +564,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_TryCancel_TriggersOnDone) {
 
   routeguide::RouteChat::Callbacks cbs;
   cbs.read_ok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
-                   const routeguide::RouteNote&) {
-    return false;
-  };
+                   std::unique_ptr<routeguide::RouteNote>) {};
   cbs.read_nok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {};
   cbs.write_done = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                       bool) {};
@@ -568,10 +605,9 @@ TEST_F(ActiveBidiReactorTest, RouteChat_DeadlineExceeded_PropagatesStatus) {
 
   routeguide::RouteChat::Callbacks cbs;
   cbs.read_ok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
-                   const routeguide::RouteNote&) {
+                   std::unique_ptr<routeguide::RouteNote>) {
     // Slow down to help trigger deadline
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    return false;
   };
   cbs.read_nok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {};
   cbs.write_done = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
@@ -637,9 +673,8 @@ TEST_F(ActiveBidiReactorTest, RouteChat_MultipleConcurrent_AllComplete) {
     // Capture i by value
     cbs.read_ok = [&received_counts, i](
                       grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
-                      const routeguide::RouteNote&) {
+                      std::unique_ptr<routeguide::RouteNote>) {
       received_counts[i]++;
-      return false;
     };
     cbs.read_nok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {};
     cbs.write_done = [&write_mutexes, &write_cvs, &write_readies, i](
@@ -708,6 +743,248 @@ TEST_F(ActiveBidiReactorTest, RouteChat_MultipleConcurrent_AllComplete) {
     EXPECT_GE(received_counts[i].load(), 1)
         << "Stream " << i << " should receive at least 1 response";
   }
+}
+
+/// @test Validates the read side keeps flowing while the consumer only parks the messages.
+///
+/// The read_ok slot stores each owned message and never calls back into the reactor, which the
+/// previous pull contract could not sustain: keeping a message meant leaving a hold outstanding
+/// until GetResponse() released it, so a consumer that deferred stalled the RPC. Sending kNoteCount
+/// notes to one location makes the server echo every note it stored earlier, so note i comes back
+/// once per later note and the total is kNoteCount*(kNoteCount-1)/2.
+TEST_F(ActiveBidiReactorTest, RouteChat_DeferredConsumer_StreamCompletesWithoutConsumerAction) {
+  constexpr int kNoteCount = 8;
+  constexpr size_t kExpectedResponses = kNoteCount * (kNoteCount - 1) / 2;
+
+  // Parked messages: kept owned and untouched until the RPC is over.
+  std::vector<std::unique_ptr<routeguide::RouteNote>> parked;
+  std::mutex parked_mutex;
+  std::condition_variable parked_cv;
+
+  std::mutex write_mutex;
+  std::condition_variable write_cv;
+  bool write_ready = true;
+
+  std::promise<grpc::Status> done_promise;
+  std::future<grpc::Status> done_future = done_promise.get_future();
+
+  routeguide::RouteChat::Callbacks cbs;
+  cbs.read_ok = [&parked, &parked_mutex, &parked_cv](
+                    grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                    std::unique_ptr<routeguide::RouteNote> note) {
+    std::lock_guard<std::mutex> lock(parked_mutex);
+    parked.push_back(std::move(note));  // Defer everything: no processing, no reactor call
+    parked_cv.notify_one();
+  };
+  cbs.read_nok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {};
+  cbs.write_done = [&write_mutex, &write_cv, &write_ready](
+                       grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                       bool) {
+    std::lock_guard<std::mutex> lock(write_mutex);
+    write_ready = true;
+    write_cv.notify_one();
+  };
+  cbs.done = [&done_promise](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                             const grpc::Status& status) {
+    done_promise.set_value(status);
+  };
+
+  auto reactor = std::make_unique<routeguide::RouteChat::ClientReactor>(
+      *stub_, CreateClientContext(), std::move(cbs));
+
+  for (int i = 0; i < kNoteCount; ++i) {
+    {
+      std::unique_lock<std::mutex> lock(write_mutex);
+      ASSERT_TRUE(write_cv.wait_for(lock, std::chrono::seconds(5), [&write_ready] { return write_ready; }))
+          << "Write " << i << " never completed";
+      write_ready = false;
+    }
+    reactor->SendRequest(rg_utils::MakeRouteNote("note-" + std::to_string(i), 500, 600));
+  }
+
+  // Wait for every echo before closing: the fake server drops queued responses once it finishes.
+  {
+    std::unique_lock<std::mutex> lock(parked_mutex);
+    ASSERT_TRUE(parked_cv.wait_for(lock, std::chrono::seconds(5),
+                                   [&parked] { return parked.size() >= kExpectedResponses; }))
+        << "Stream stalled while the consumer deferred processing, parked " << parked.size();
+  }
+
+  reactor->CloseRequestStream();
+
+  auto wait_result = done_future.wait_for(std::chrono::seconds(5));
+  ASSERT_EQ(wait_result, std::future_status::ready) << "Timeout waiting for RPC completion";
+  EXPECT_TRUE(done_future.get().ok());
+
+  // Each parked message must still hold its own content, not a later message's.
+  std::map<std::string, int> counts;
+  {
+    std::lock_guard<std::mutex> lock(parked_mutex);
+    ASSERT_EQ(parked.size(), kExpectedResponses);
+    for (const auto& note : parked) counts[note->message()]++;
+  }
+  for (int i = 0; i < kNoteCount - 1; ++i) {
+    EXPECT_EQ(counts["note-" + std::to_string(i)], kNoteCount - 1 - i)
+        << "Parked copies of note-" << i << " were overwritten";
+  }
+}
+
+/// @test Validates an unbound read_ok slot does not stall the stream.
+///
+/// With no read_ok bound the reactor drops each message and re-arms its read anyway, so the RPC
+/// still runs to completion and the read stream still reports its end.
+/// The kTurnByTurn case matters most here: with no callback bound there is nobody to call ResumeRead(),
+/// so the reactor must arm the read itself rather than take a hold that nothing would ever release.
+TEST_P(ActiveBidiReactorPacingTest, RouteChat_NoReadOkCallbackBound_StreamStillDrains) {
+  const ReadPacing pacing = GetParam();
+
+  std::atomic<bool> read_nok_fired{false};
+  std::mutex write_mutex;
+  std::condition_variable write_cv;
+  bool write_ready = true;
+
+  std::promise<grpc::Status> done_promise;
+  std::future<grpc::Status> done_future = done_promise.get_future();
+
+  routeguide::RouteChat::Callbacks cbs;
+  // read_ok deliberately left unbound: the reactor must drop each message and keep reading.
+  cbs.read_nok = [&read_nok_fired](
+                     grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {
+    read_nok_fired = true;
+  };
+  cbs.write_done = [&write_mutex, &write_cv, &write_ready](
+                       grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                       bool) {
+    std::lock_guard<std::mutex> lock(write_mutex);
+    write_ready = true;
+    write_cv.notify_one();
+  };
+  cbs.done = [&done_promise](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                             const grpc::Status& status) {
+    done_promise.set_value(status);
+  };
+
+  auto reactor = std::make_unique<routeguide::RouteChat::ClientReactor>(
+      *stub_, CreateClientContext(), std::move(cbs), pacing);
+
+  // Three notes at one location give the server two echoes to send, both dropped by the reactor.
+  for (int i = 0; i < 3; ++i) {
+    {
+      std::unique_lock<std::mutex> lock(write_mutex);
+      ASSERT_TRUE(write_cv.wait_for(lock, std::chrono::seconds(5), [&write_ready] { return write_ready; }))
+          << "Write " << i << " never completed";
+      write_ready = false;
+    }
+    reactor->SendRequest(rg_utils::MakeRouteNote("dropped-" + std::to_string(i), 700, 800));
+  }
+  {
+    std::unique_lock<std::mutex> lock(write_mutex);
+    write_cv.wait_for(lock, std::chrono::seconds(1), [&write_ready] { return write_ready; });
+  }
+
+  reactor->CloseRequestStream();
+
+  auto wait_result = done_future.wait_for(std::chrono::seconds(5));
+  ASSERT_EQ(wait_result, std::future_status::ready) << "Stream stalled with no read_ok slot bound";
+  EXPECT_TRUE(done_future.get().ok());
+  EXPECT_TRUE(read_nok_fired.load()) << "read_nok should fire when the read stream ends";
+}
+
+// =============================================================================
+// ReadPacing::kTurnByTurn Specific Tests
+// =============================================================================
+
+/// @test Validates a read hold stalls only the read direction, not the write direction.
+///
+/// This is what makes kTurnByTurn usable on a bidirectional RPC: gRPC counts holds and outstanding
+/// operations on one per-RPC counter, but a hold only defers OnDone, it does not gate writes. An
+/// application can therefore keep sending while it is behind on responses.
+///
+/// 1. Two notes at one location make the server echo the first one back
+/// 2. That response arrives and the consumer does not resume, so a hold stands
+/// 3. A third note is sent and its OnWriteDone fires while that hold is still outstanding
+/// 4. Only then does the test resume, draining the two echoes the third note produced
+///
+/// Verifies that:
+/// - The write completes with the read side held
+/// - No further response arrives until ResumeRead() is called
+/// - All 3 echoes arrive and the RPC completes with OK
+TEST_F(ActiveBidiReactorTest, RouteChat_TurnByTurn_ReadHoldDoesNotBlockWrites) {
+  std::mutex mutex;
+  std::condition_variable cv;
+  int received = 0;
+  bool write_ready = true;
+
+  std::promise<grpc::Status> done_promise;
+  std::future<grpc::Status> done_future = done_promise.get_future();
+
+  // Waits for the next echo to be delivered, without resuming: the test thread owns the re-arm.
+  auto wait_for_received = [&mutex, &cv, &received](int expected) {
+    std::unique_lock<std::mutex> lock(mutex);
+    return cv.wait_for(lock, std::chrono::seconds(5), [&received, expected] { return received == expected; });
+  };
+  auto wait_for_write = [&mutex, &cv, &write_ready]() {
+    std::unique_lock<std::mutex> lock(mutex);
+    const bool ready = cv.wait_for(lock, std::chrono::seconds(5), [&write_ready] { return write_ready; });
+    write_ready = false;
+    return ready;
+  };
+
+  routeguide::RouteChat::Callbacks cbs;
+  cbs.read_ok = [&mutex, &cv, &received](
+                    grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                    std::unique_ptr<routeguide::RouteNote>) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      ++received;
+    }
+    cv.notify_all();
+  };
+  cbs.read_nok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {};
+  cbs.write_done = [&mutex, &cv, &write_ready](
+                       grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*, bool) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      write_ready = true;
+    }
+    cv.notify_all();
+  };
+  cbs.done = [&done_promise](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                             const grpc::Status& status) {
+    done_promise.set_value(status);
+  };
+
+  auto reactor = std::make_unique<routeguide::RouteChat::ClientReactor>(
+      *stub_, CreateClientContext(), std::move(cbs), ReadPacing::kTurnByTurn);
+
+  // First note records history and draws no echo. Second note draws exactly one.
+  ASSERT_TRUE(wait_for_write());
+  ASSERT_TRUE(reactor->SendRequest(rg_utils::MakeRouteNote("first", 500, 600)));
+  ASSERT_TRUE(wait_for_write());
+  ASSERT_TRUE(reactor->SendRequest(rg_utils::MakeRouteNote("second", 500, 600)));
+  ASSERT_TRUE(wait_for_write());
+  ASSERT_TRUE(wait_for_received(1)) << "First echo never arrived";
+
+  // The read side is now held. The write side must keep working through it.
+  ASSERT_TRUE(reactor->SendLastRequest(rg_utils::MakeRouteNote("third", 500, 600)))
+      << "SendLastRequest() rejected while the read side was held";
+  EXPECT_TRUE(wait_for_write()) << "Write never completed while a read hold was outstanding";
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    EXPECT_EQ(received, 1) << "Read side delivered while it was supposed to be held";
+  }
+
+  // Drain: the third note echoes both earlier notes back, one resume at a time.
+  for (int expected = 2; expected <= 3; ++expected) {
+    EXPECT_TRUE(reactor->ResumeRead()) << "ResumeRead() rejected while a hold was outstanding";
+    ASSERT_TRUE(wait_for_received(expected)) << "Echo " << expected << " never arrived after resuming";
+  }
+  EXPECT_TRUE(reactor->ResumeRead()) << "Final ResumeRead() must arm the read that ends the stream";
+
+  ASSERT_EQ(done_future.wait_for(std::chrono::seconds(5)), std::future_status::ready)
+      << "Held bidi stream never completed after the last resume";
+  EXPECT_TRUE(done_future.get().ok());
+  EXPECT_EQ(received, 3);
 }
 
 }  // namespace
