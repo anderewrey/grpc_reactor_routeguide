@@ -987,4 +987,180 @@ TEST_F(ActiveBidiReactorTest, RouteChat_TurnByTurn_ReadHoldDoesNotBlockWrites) {
   EXPECT_EQ(received, 3);
 }
 
+/// @test Validates the idle-window hold gates the write path.
+///
+/// The hold is the permission to write, so a second call while the first write is still in flight
+/// finds it already claimed and must be rejected without reaching gRPC. Rejection is also what
+/// enforces the one-write-in-flight rule, since no separate write-pending flag exists any more.
+TEST_F(ActiveBidiReactorTest, RouteChat_OverlappingWrite_RejectedWhileHoldIsClaimed) {
+  std::atomic<int> completed{0};
+  std::promise<grpc::Status> done_promise;
+  std::future<grpc::Status> done_future = done_promise.get_future();
+
+  routeguide::RouteChat::Callbacks cbs;
+  cbs.read_ok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                   std::unique_ptr<routeguide::RouteNote>) {};
+  cbs.read_nok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {};
+  cbs.write_done = [&completed](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                                bool) { ++completed; };
+  cbs.done = [&done_promise](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                            const grpc::Status& status) { done_promise.set_value(status); };
+
+  auto reactor = std::make_unique<routeguide::RouteChat::ClientReactor>(
+      *stub_, CreateClientContext(), std::move(cbs));
+
+  // Spams writes from this thread and checks the invariant the hold enforces, rather than betting on
+  // a write not completing in time. An accepted write is only legal if every earlier one has
+  // completed, so accepted can never exceed completed by more than the single one in flight.
+  int accepted = 0;
+  for (int i = 0; i < 50; ++i) {
+    if (reactor->SendRequest(rg_utils::MakeRouteNote("note-" + std::to_string(i), 900, 900))) ++accepted;
+    // MUTATION PROBE: a non-atomic claim lets two threads through; a missing claim lets this thread
+    // through repeatedly. Both break the inequality below.
+    ASSERT_LE(accepted, completed.load() + 1)
+        << "Two writes were in flight at once, so the hold did not gate the write path";
+  }
+  EXPECT_GT(accepted, 0) << "Every write was rejected, so the hold was never armed";
+  EXPECT_LT(accepted, 50) << "Every write was accepted, so the hold gated nothing";
+
+  reactor->TryCancel();
+  ASSERT_EQ(done_future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+}
+
+/// @test Validates the claim survives concurrent claimants.
+///
+/// The claim's atomicity only matters when two threads reach it at once: the application thread
+/// writing, and the gRPC thread releasing the hold when the read stream ends. A single-threaded test
+/// cannot tell a compare-exchange from a test-then-set, so this one hammers the write path from two
+/// threads while the server closes the stream underneath them. A non-atomic claim lets two claimants
+/// through, which either breaks the one-write-in-flight invariant or double-releases the hold.
+/// Probabilistic by nature; it is the concurrency the design reasons about, not a proof.
+/// The server is deliberately left running: terminating it underneath the writers hits a
+/// pre-existing defect, recorded in deferred-work.md, where a write accepted into a terminating
+/// stream can leave the RPC unable to conclude. That defect predates the idle-window hold and
+/// reproduces identically on the baseline, so it is not this test's subject.
+TEST_F(ActiveBidiReactorTest, RouteChat_ConcurrentClaimants_KeepTheHoldAccountingIntact) {
+  std::atomic<int> completed{0};
+  std::atomic<int> accepted{0};
+  std::atomic<bool> invariant_held{true};
+
+  std::promise<grpc::Status> done_promise;
+  std::future<grpc::Status> done_future = done_promise.get_future();
+
+  routeguide::RouteChat::Callbacks cbs;
+  cbs.read_ok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                   std::unique_ptr<routeguide::RouteNote>) {};
+  cbs.read_nok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {};
+  cbs.write_done = [&completed](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                                bool) { ++completed; };
+  cbs.done = [&done_promise](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                            const grpc::Status& status) { done_promise.set_value(status); };
+
+  auto reactor = std::make_unique<routeguide::RouteChat::ClientReactor>(
+      *stub_, CreateClientContext(), std::move(cbs));
+
+  auto writer = [&reactor, &accepted, &completed, &invariant_held] {
+    for (int i = 0; i < 200; ++i) {
+      if (reactor->SendRequest(rg_utils::MakeRouteNote("concurrent", 920, 920))) {
+        if (++accepted > completed.load() + 1) invariant_held = false;
+      }
+    }
+  };
+  std::thread a(writer);
+  std::thread b(writer);
+  a.join();
+  b.join();
+
+  EXPECT_TRUE(invariant_held.load()) << "Two writes were accepted with only one hold to claim";
+  EXPECT_GT(accepted.load(), 0) << "Every concurrent write was rejected, so nothing was exercised";
+
+  // Closing has to win the claim eventually, which it cannot if the accounting drifted.
+  while (!reactor->CloseRequestStream()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  ASSERT_EQ(done_future.wait_for(std::chrono::seconds(5)), std::future_status::ready)
+      << "RPC never completed, so the hold accounting drifted";
+}
+
+/// @test Validates the write path is closed deterministically once the read stream ends.
+///
+/// The pre-hold code could only narrow this window: it tested stream_no_more_ and a gRPC thread
+/// could set the flag right afterwards. The release in OnReadDone(false) removes the hold instead,
+/// so every later write finds nothing to claim and is rejected rather than racing into gRPC.
+TEST_F(ActiveBidiReactorTest, RouteChat_WriteAfterReadStreamClosed_RejectedDeterministically) {
+  test_service_.SetMaxMessages(1);  // Server finishes right after the first note
+
+  std::promise<grpc::Status> done_promise;
+  std::future<grpc::Status> done_future = done_promise.get_future();
+  std::promise<void> nok_promise;
+  std::future<void> nok_future = nok_promise.get_future();
+
+  routeguide::RouteChat::Callbacks cbs;
+  cbs.read_ok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                   std::unique_ptr<routeguide::RouteNote>) {};
+  cbs.read_nok = [&nok_promise](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {
+    nok_promise.set_value();
+  };
+  cbs.write_done = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*, bool) {};
+  cbs.done = [&done_promise](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                            const grpc::Status& status) { done_promise.set_value(status); };
+
+  auto reactor = std::make_unique<routeguide::RouteChat::ClientReactor>(
+      *stub_, CreateClientContext(), std::move(cbs));
+
+  ASSERT_TRUE(reactor->SendRequest(rg_utils::MakeRouteNote("only", 910, 910)))
+      << "The setup write was rejected, so the rest of this test would pass vacuously";
+  ASSERT_EQ(nok_future.wait_for(std::chrono::seconds(5)), std::future_status::ready)
+      << "Server never closed the read stream";
+
+  // The read stream has ended, so the hold is gone for good and no re-arm can resurrect it.
+  EXPECT_FALSE(reactor->SendRequest(rg_utils::MakeRouteNote("after close", 910, 910)))
+      << "A write was accepted after the read stream ended";
+  EXPECT_FALSE(reactor->CloseRequestStream()) << "A close was accepted after the read stream ended";
+
+  ASSERT_EQ(done_future.wait_for(std::chrono::seconds(5)), std::future_status::ready)
+      << "RPC never completed, so a hold was left outstanding";
+}
+
+/// @test Validates the release claims its hold rather than assuming one is outstanding.
+///
+/// CloseRequestStream() consumes the hold, so by the time the server ends the read stream there is
+/// nothing left to release. A release that skipped its claim would decrement gRPC's
+/// outstanding-callback count a second time here, dropping it to zero while OnReadDone(false) is
+/// still running and letting OnDone() overlap the reaction that gRPC promises it follows.
+/// The suite cannot observe the underflow itself, since this gRPC is release-built and its own
+/// check is compiled out, so the observable consequence is what gets asserted.
+TEST_F(ActiveBidiReactorTest, RouteChat_ReleaseWithNoHold_DoesNotLetOnDoneOverlapTheReaction) {
+  std::atomic<bool> nok_returned{false};
+  std::atomic<bool> done_saw_nok_returned{false};
+
+  std::promise<grpc::Status> done_promise;
+  std::future<grpc::Status> done_future = done_promise.get_future();
+
+  routeguide::RouteChat::Callbacks cbs;
+  cbs.read_ok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                   std::unique_ptr<routeguide::RouteNote>) {};
+  cbs.read_nok = [&nok_returned](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {
+    // Widens the window so an OnDone() that fires from inside this reaction is observable rather
+    // than merely possible.
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    nok_returned = true;
+  };
+  cbs.write_done = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*, bool) {};
+  cbs.done = [&done_promise, &nok_returned, &done_saw_nok_returned](
+                 grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                 const grpc::Status& status) {
+    done_saw_nok_returned = nok_returned.load();
+    done_promise.set_value(status);
+  };
+
+  auto reactor = std::make_unique<routeguide::RouteChat::ClientReactor>(
+      *stub_, CreateClientContext(), std::move(cbs));
+
+  // Closing straight away consumes the idle-window hold while the write stream is still empty.
+  ASSERT_TRUE(reactor->CloseRequestStream()) << "Close rejected on an idle write stream";
+
+  ASSERT_EQ(done_future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  EXPECT_TRUE(done_saw_nok_returned.load())
+      << "OnDone() ran before OnReadDone(false) returned, so a hold was released without being held";
+}
+
 }  // namespace

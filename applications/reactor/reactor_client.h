@@ -376,9 +376,11 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   ///         or the RPC has already finished/is finishing)
   bool SendRequest(RequestT&& request) {
     // The stream_no_more_ check narrows a race it cannot close: a gRPC thread can set the flag
-    // right after this check passes. Closing it needs a hold covering the write flow, taken
-    // before StartCall(), which is the UseMultipleHolds() sketch below. Which reactions set the
-    // flag is listed at its declaration.
+    // right after this check passes. Which reactions set the flag is listed at its declaration.
+    // ActiveBidiReactor closes the same window by claiming a hold that covers only the idle write
+    // stream, but that design needs OnReadDone(false) to release it, and this reactor has no read
+    // stream to supply one. See "Why the write side of ActiveWriteReactor has no hold" in
+    // docs/architecture.md.
     if (stream_no_more_) return false;  // RPC already finished (or finishing)
     if (writes_done_) return false;  // Stream already closed
     if (write_pending_) return false;  // Write already in progress
@@ -433,11 +435,13 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// @return reference to the grpc::Status object
   const grpc::Status& Status() { return status_; }
 
-  // UPCOMING: gRPC's AddMultipleHolds(int holds) reserves a fixed hold budget upfront (before
+  // REJECTED: gRPC's AddMultipleHolds(int holds) reserves a fixed hold budget upfront (before
   // StartCall()) for an operation-flow issued outside the reactions, which is what SendRequest()
-  // does from the application thread. It could close the race noted there, but the intended
-  // lifetime/usage on the write side has not been designed and no application code uses it yet.
-  // Left commented out until there is an application need for it.
+  // does from the application thread. Reserving one hold for the whole write flow was prototyped on
+  // 2026-07-26 and rejected: it suppresses OnDone() for the life of the RPC, and a passive
+  // termination gives the application no event to release on, so the RPC never completes. Kept as
+  // the concrete shape both docs refer to, not as a plan. The reasoning, and what remains open for
+  // this reactor, is in docs/architecture.md.
   // void UseMultipleHolds() {
   //     this->AddMultipleHolds(/* holds */ 1);
   // }
@@ -577,6 +581,20 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// This class cannot be moved.
   ActiveBidiReactor& operator=(ActiveBidiReactor&&) = delete;
 
+  /// Activates the RPC, and reserves the hold that covers the write operations the application
+  /// issues from its own thread. Shadows grpc::ClientBidiReactor::StartCall(), which the
+  /// specialized reactor already calls last in its constructor, so a new specialization cannot
+  /// forget to arm the hold the way it could forget a second required call.
+  /// gRPC accepts a hold only before StartCall() or from inside a reaction, which is why the first
+  /// one is taken here and every later one is taken in OnWriteDone().
+  /// The flag is published before StartCall(), so a reaction arriving immediately after it finds a
+  /// claimable hold rather than one that is outstanding but still invisible.
+  void StartCall() {
+    this->AddHold();
+    write_idle_ = true;
+    grpc::ClientBidiReactor<RequestT, ResponseT>::StartCall();
+  }
+
   /// Sends a request message asynchronously on the bidirectional stream.
   /// The write operation completes asynchronously and OnWriteDone() will be called.
   /// gRPC requires that only one write be in flight at a time, so this method
@@ -588,16 +606,28 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// @return true if the write was initiated, false if rejected (stream closed, write pending,
   ///         or the RPC has already finished/is finishing)
   bool SendRequest(RequestT&& request) {
-    // The stream_no_more_ check narrows a race it cannot close: a gRPC thread can set the flag
-    // right after this check passes. Closing it needs a hold covering the write flow, taken
-    // before StartCall(), which is the UseMultipleHolds() sketch below. Which reactions set the
-    // flag is listed at its declaration.
-    if (stream_no_more_) return false;  // RPC already finished (or finishing)
-    if (writes_done_) return false;  // Stream already closed
-    if (write_pending_) return false;  // Write already in progress
+    if (writes_done_) return false;  // Stream already closed, by this same thread
+    // Winning the claim is what makes the StartWrite() below safe from the application thread: the
+    // idle-window hold is outstanding across it, so OnDone() cannot be tearing down the state the
+    // call reaches into. A lost claim means a write is already in flight, or the write side is
+    // over, which are exactly the cases that must be rejected. See "Hold requirements" in
+    // reactor_client.md.
+    bool idle = true;
+    if (!write_idle_.compare_exchange_strong(idle, false)) return false;
+    // Re-checked after winning the claim, and it is not redundant with it. The claim proves the
+    // state is still alive, which is what makes the call safe; it says nothing about the stream
+    // being dead. Issuing a write on a terminating RPC is safe but doomed, and gRPC may never
+    // complete it, which would leave the outstanding-callback count above zero and stall OnDone()
+    // forever. Releasing and refusing is what keeps the RPC concludable.
+    if (stream_no_more_) {
+      this->RemoveHold();
+      return false;
+    }
     pending_request_ = std::move(request);
-    write_pending_ = true;
+    // StartWrite() before RemoveHold(), so the outstanding-callback count never reaches zero
+    // between the two. Same ordering, same reason, as ResumeRead().
     this->StartWrite(&pending_request_);
+    this->RemoveHold();
     return true;
   }
 
@@ -609,15 +639,20 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// @return true if the write was initiated, false if rejected (stream closed, write pending,
   ///         or the RPC has already finished/is finishing)
   bool SendLastRequest(RequestT&& request) {
-    if (stream_no_more_) return false;  // RPC already finished (or finishing)
-    if (writes_done_) return false;     // Stream already closed
-    if (write_pending_) return false;   // Write already in progress
+    if (writes_done_) return false;  // Stream already closed, by this same thread
+    bool idle = true;                // Same claim, same reasoning, as SendRequest()
+    if (!write_idle_.compare_exchange_strong(idle, false)) return false;
+    if (stream_no_more_) {           // Same post-claim re-check, same reasoning
+      this->RemoveHold();
+      return false;
+    }
     pending_request_ = std::move(request);
-    write_pending_ = true;
     // Per gRPC's contract, calling this already forbids any further StartWrite/StartWriteLast/
     // StartWritesDone, the same as CloseRequestStream() - set writes_done_ now, synchronously.
+    // It is also what stops OnWriteDone() from re-arming the hold for a write side that is over.
     writes_done_ = true;
     this->StartWriteLast(&pending_request_, grpc::WriteOptions());
+    this->RemoveHold();
     return true;
   }
 
@@ -628,11 +663,17 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   ///         or the RPC has already finished/is finishing). Callers should wait for OnWriteDone()
   ///         and retry.
   bool CloseRequestStream() {
-    if (stream_no_more_) return false;  // Same race-narrowing guard as SendRequest(), see above
-    if (writes_done_) return false;     // Already closed
-    if (write_pending_) return false;   // Wait for the in-flight write to complete first
+    if (writes_done_) return false;  // Already closed
+    // StartWritesDone() is an application-thread call like the writes, so it needs the same claim.
+    bool idle = true;
+    if (!write_idle_.compare_exchange_strong(idle, false)) return false;
+    if (stream_no_more_) {           // Same post-claim re-check, same reasoning
+      this->RemoveHold();
+      return false;
+    }
     writes_done_ = true;
     this->StartWritesDone();
+    this->RemoveHold();
     return true;
   }
 
@@ -674,15 +715,6 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
     return armed;
   }
 
-  // UPCOMING: gRPC's AddMultipleHolds(int holds) reserves a fixed hold budget upfront (before
-  // StartCall()) for an operation-flow issued outside the reactions, which is what SendRequest()
-  // does from the application thread. It could close the race noted there, but the intended
-  // lifetime/usage on the write side has not been designed and no application code uses it yet.
-  // Left commented out until there is an application need for it.
-  // void UseMultipleHolds() {
-  //     this->AddMultipleHolds(/* holds */ 1);
-  // }
-
  protected:
   /// This event function is called by gRPC when the stream has a read event. The user-side
   /// callback is then called, but on the same gRPC thread.
@@ -691,7 +723,13 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// @param ok true: a response is received. false: the read stream is closed.
   void OnReadDone(const bool ok) override {
     if (!ok) {
+      // Published before the release below, so an OnWriteDone() concurrently arming the idle-window
+      // hold observes the flag and releases what this reaction could not yet claim.
       stream_no_more_ = true;
+      // The only trigger that frees a write side left idle. gRPC's contract makes a read failure a
+      // reliable end-of-RPC signal for either direction, so this covers the passive terminations
+      // (a deadline, or the server closing) that no application write action would ever report.
+      ReleaseWriteIdleHold();
       if (cbs_.read_nok) cbs_.read_nok(this);
       return;
     }
@@ -722,8 +760,25 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// The OnWriteDoneCallback is then called, but on the same gRPC thread.
   /// @param ok true if the write was successful
   void OnWriteDone(bool ok) override {
-    write_pending_ = false;
     if (!ok) stream_no_more_ = true;
+    // Re-arms the idle-window hold for the next application-thread write, from inside this reaction
+    // where taking a hold is free of the race the application thread has. Skipped once the write
+    // side is conclusively over, so a closed or failed stream never suppresses OnDone().
+    // The writes_done_ half of that guard is deliberate rather than load-bearing: removing it keeps
+    // every test green, because OnReadDone(false) would release the surplus hold once the server
+    // finishes. It stays because the write side already knows it is over here, and leaning on a
+    // read-side event to undo a hold this reaction should never have taken would couple the two
+    // directions for no reason.
+    if (ok && !writes_done_ && !stream_no_more_) {
+      this->AddHold();
+      write_idle_ = true;
+      // Re-checked after the flag is published, because a concurrent OnReadDone(false) can end the
+      // RPC between the guard above and here, and its own release would have found nothing to
+      // claim. Both sides publish before they test, so exactly one of them releases.
+      if (stream_no_more_) ReleaseWriteIdleHold();
+    }
+    // Armed before the callback, because the callback may write inline, or hand off to a thread
+    // that writes before this reaction returns.
     if (cbs_.write_done) cbs_.write_done(this, ok);
   }
 
@@ -751,6 +806,13 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   ResponseT response_;  ///< internal read target, swapped out on each read, never exposed
 
  private:
+  /// Releases the idle-window hold, but only for the caller that claims it, so the count cannot
+  /// underflow into an early OnDone() when both reaction sides try at once.
+  void ReleaseWriteIdleHold() {
+    bool idle = true;
+    if (write_idle_.compare_exchange_strong(idle, false)) this->RemoveHold();
+  }
+
   grpc::Status status_;
   ActiveBidiCallbacks<RequestT, ResponseT> cbs_;
 
@@ -769,10 +831,14 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   // the application gives up the request once SendRequest() accepts it.
   RequestT pending_request_;
 
-  // Flag indicating a write operation is in progress.
-  // gRPC requires that only one write be in flight at a time.
-  // Set by application thread via StartWrite, cleared by gRPC thread via OnWriteDone.
-  std::atomic_bool write_pending_{false};
+  // Whether an unclaimed idle-window hold is outstanding, which is also the permission to issue a
+  // write from the application thread. True means the write stream is idle and one operation may be
+  // started; false means a write is already in flight, or the write side is over. Claiming it with
+  // a compare-exchange is what closes the race a plain flag test could only narrow, and gRPC's
+  // one-write-in-flight rule is enforced by the same claim rather than by a separate flag.
+  // Armed before StartCall() and again in OnWriteDone(); claimed by whichever thread writes,
+  // closes the stream, or reports the read stream ending.
+  std::atomic_bool write_idle_{false};
 
   // Flag indicating CloseRequestStream() has been called.
   // After this, no more SendRequest() calls are allowed.
