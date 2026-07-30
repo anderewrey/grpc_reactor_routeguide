@@ -95,7 +95,7 @@ See the file list above for which file covers which RPC type.
 | Unary (`GetFeature`) | `ActiveUnaryReactor` | Success, empty, error, failed response, cancel, deadline, concurrent |
 | Server stream (`ListFeatures`) | `ActiveReadReactor` | Multiple/empty, error, cancel, concurrent, deferred consumer |
 | Client stream (`RecordRoute`) | `ActiveWriteReactor` | Multiple/empty point, overlapping writes, cancel, no done |
-| Bidirectional (`RouteChat`) | `ActiveBidiReactor` | Send/receive, interleaved, either side closes first, cancel |
+| Bidirectional (`RouteChat`) | `ActiveBidiReactor` | Send/receive, interleaved, closes, cancel, write hold |
 | EventLoop dispatch | N/A | `GetFeature`/`ListFeatures`/cancel dispatched through a real `EventLoop` |
 
 The rows hold for both `Delivery` approaches, except where a scenario only exists under one of them: the deferred
@@ -131,6 +131,26 @@ The behaviours specific to one mode run as `TEST_F`:
 | `ListFeatures_TurnByTurn_ResumedBeforeCallbackReturns_HoldsUntilReturn` | The hold precedes the `read_ok` hand-off |
 | `RouteChat_TurnByTurn_ResumedBeforeCallbackReturns_HoldsUntilReturn` | The same ordering on the bidirectional reactor |
 | `RouteChat_TurnByTurn_ReadHoldDoesNotBlockWrites` | A write completes while a read hold is outstanding |
+
+### Write-side idle hold coverage
+
+`ActiveBidiReactor` keeps a hold while its write stream is idle, and claiming that hold is the permission to write.
+Four tests cover it, and each was mutation-verified except where noted.
+
+| Test | Asserts |
+| ------ | --------- |
+| `RouteChat_OverlappingWrite_RejectedWhileHoldIsClaimed` | Accepted writes never exceed completed ones by one |
+| `RouteChat_ConcurrentClaimants_KeepTheHoldAccountingIntact` | Two writer threads cannot both win one claim |
+| `RouteChat_WriteAfterReadStreamClosed_RejectedDeterministically` | Writes are refused once the read stream ends |
+| `RouteChat_ReleaseWithNoHold_DoesNotLetOnDoneOverlapTheReaction` | An unclaimed release lets `OnDone` overlap |
+
+The four live in [active_bidi_reactor_push_test.cpp][bidi-push-test]. The write side is identical under both
+`Delivery` approaches, and the one place the two meet it, the `OnReadDone(false)` release, is exercised under each:
+`RouteChat_DeadlineExceeded_PropagatesStatus` exists in both bidi files and doubles as the guard for that release,
+since removing it hangs the test for its full timeout. Two properties are deliberately not covered by tests, and are recorded
+in [deferred-work.md](/_bmad-output/implementation-artifacts/deferred-work.md): the atomicity of the claim, whose
+race window is too narrow to hit from a test and which needs ThreadSanitizer, and the non-re-arm after a terminal
+write, which `OnReadDone(false)` masks.
 
 ### Naming convention
 
