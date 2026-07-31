@@ -512,6 +512,11 @@ On purpose, the following examples are coming from a sandbox code using a 3rdpar
 For the sanity of the reader, some passages are removed and the code logic reduced to its maximum. It is recommended
 to read the original code from the route_guide_active_reactor_client.cpp file.
 
+Each snippet keeps its reactor in a typed `std::unique_ptr`, so no snippet ever recovers a reactor type with a cast.
+The snippets name that slot after the RPC, such as `get_feature_`, to stay readable out of context. In the demo
+itself the slot is a `reactor_` member of a per-variant scenario class under
+[scenarios](/applications/reactor/scenarios), one class per reactor variant.
+
 #### Instantiation of the ActiveUnaryReactor class
 
 The following snippets instance a `ActiveUnaryReactor` dedicated to the `GetFeature` RPC of the `routeguide` API, once
@@ -531,15 +536,11 @@ void GetFeature(routeguide::Point point) {
   using ClientReactor = routeguide::GetFeature::ClientReactor<Delivery::kPull>;
   using Callbacks = routeguide::GetFeature::Callbacks<Delivery::kPull>;
   using routeguide::GetFeature::ResponseT;
-  using routeguide::GetFeature::RpcKey;
   Callbacks cbs;
   cbs.done = [](auto* reactor, const grpc::Status&, const ResponseT&) {
     EventLoop::TriggerEvent(kGetFeatureOnDone, reactor);  // Signal OnDoneCallback event from gRPC thread
   };
-  reactor_map_[RpcKey] = std::make_unique<ClientReactor>(*stub_,
-                                                         CreateClientContext(),
-                                                         std::move(point),
-                                                         std::move(cbs));
+  get_feature_ = std::make_unique<ClientReactor>(*stub_, CreateClientContext(), point, std::move(cbs));
 }
 ````
 
@@ -556,16 +557,12 @@ void GetFeature(routeguide::Point point) {
   using ClientReactor = routeguide::GetFeature::ClientReactor<Delivery::kPush>;
   using Callbacks = routeguide::GetFeature::Callbacks<Delivery::kPush>;
   using routeguide::GetFeature::ResponseT;
-  using routeguide::GetFeature::RpcKey;
   Callbacks cbs;
   cbs.done = [](auto*, const grpc::Status&, std::unique_ptr<ResponseT> response) {
     // Signal OnDoneCallback from gRPC thread, handing the response ownership to the queue
     EventLoop::TriggerEvent(kGetFeatureOnDone, response.release());
   };
-  reactor_map_[RpcKey] = std::make_unique<ClientReactor>(*stub_,
-                                                         CreateClientContext(),
-                                                         std::move(point),
-                                                         std::move(cbs));
+  get_feature_ = std::make_unique<ClientReactor>(*stub_, CreateClientContext(), point, std::move(cbs));
 }
 ````
 
@@ -585,13 +582,13 @@ Under `Delivery::kPull`, the handler reads `Status()` and pulls the response out
 sequence diagram, the corresponding points are from 3.6 to 3.8.
 
 ````cpp
-EventLoop::RegisterEvent(kGetFeatureOnDone, [&reactor_ = reactor_map_[GetFeature::RpcKey]](const Event*) {
-  if (reactor_->Status().ok()) {
+EventLoop::RegisterEvent(kGetFeatureOnDone, [this](const Event*) {
+  if (get_feature_->Status().ok()) {
     routeguide::Feature response;
-    bool valid = reactor_->GetResponse(response);
+    bool valid = get_feature_->GetResponse(response);
     /**  proceeding of the content of response **/
   }
-  reactor_.reset();
+  get_feature_.reset();
 });
 ````
 
@@ -600,12 +597,12 @@ reads `Status()` from the reactor it already holds. The event data is the respon
 ride with it. From the PlantUML sequence diagram, the corresponding points are from 3.5 to 3.7.
 
 ````cpp
-EventLoop::RegisterEvent(kGetFeatureOnDone, [&reactor_ = reactor_map_[GetFeature::RpcKey]](const Event* event) {
+EventLoop::RegisterEvent(kGetFeatureOnDone, [this](const Event* event) {
   const std::unique_ptr<routeguide::Feature> response{static_cast<routeguide::Feature*>(event->getData())};
-  if (reactor_->Status().ok()) {
+  if (get_feature_->Status().ok()) {
     /**  proceeding of the content of response **/
   }
-  reactor_.reset();
+  get_feature_.reset();
 });
 ````
 
@@ -905,7 +902,6 @@ void ListFeatures(routeguide::Rectangle rect) {
   using routeguide::ListFeatures::Delivery;
   using ClientReactor = routeguide::ListFeatures::ClientReactor<Delivery::kPull>;
   using Callbacks = routeguide::ListFeatures::Callbacks<Delivery::kPull>;
-  using routeguide::ListFeatures::RpcKey;
   Callbacks cbs;
   cbs.read_ok = [](auto* reactor, const routeguide::Feature&) -> bool {
     EventLoop::TriggerEvent(kListFeaturesOnReadDoneOk, reactor);  // Signal OnReadDoneOkCallback from gRPC thread
@@ -917,10 +913,7 @@ void ListFeatures(routeguide::Rectangle rect) {
   cbs.done = [](auto* reactor, const grpc::Status&) {
     EventLoop::TriggerEvent(kListFeaturesOnDone, reactor);  // Signal OnDoneCallback event from gRPC thread
   };
-  reactor_map_[RpcKey] = std::make_unique<ClientReactor>(*stub_,
-                                                         CreateClientContext(),
-                                                         std::move(rect),
-                                                         std::move(cbs));
+  list_features_ = std::make_unique<ClientReactor>(*stub_, CreateClientContext(), rect, std::move(cbs));
 }
 ````
 
@@ -941,7 +934,6 @@ void ListFeatures(routeguide::Rectangle rect) {
   using routeguide::ListFeatures::ReadPacing;
   using ClientReactor = routeguide::ListFeatures::ClientReactor<Delivery::kPush>;
   using Callbacks = routeguide::ListFeatures::Callbacks<Delivery::kPush>;
-  using routeguide::ListFeatures::RpcKey;
   Callbacks cbs;
   cbs.read_ok = [](auto*, std::unique_ptr<routeguide::Feature> response) {
     // Signal OnReadDoneOkCallback from gRPC thread, handing the message ownership to the queue
@@ -953,11 +945,8 @@ void ListFeatures(routeguide::Rectangle rect) {
   cbs.done = [](auto* reactor, const grpc::Status&) {
     EventLoop::TriggerEvent(kListFeaturesOnDone, reactor);  // Signal OnDoneCallback event from gRPC thread
   };
-  reactor_map_[RpcKey] = std::make_unique<ClientReactor>(*stub_,
-                                                         CreateClientContext(),
-                                                         std::move(rect),
-                                                         std::move(cbs),
-                                                         ReadPacing::kContinuous);
+  list_features_ =
+      std::make_unique<ClientReactor>(*stub_, CreateClientContext(), rect, std::move(cbs), ReadPacing::kContinuous);
 }
 ````
 
@@ -977,10 +966,10 @@ the active reactor instance.
 From the PlantUML sequence diagram, the corresponding points are 4.10 and 4.11.
 
 ````cpp
-EventLoop::RegisterEvent(kListFeaturesOnDone, [&reactor_ = reactor_map_[ListFeatures::RpcKey]](const Event*) {
-  const auto status = reactor_->Status();
+EventLoop::RegisterEvent(kListFeaturesOnDone, [this](const Event*) {
+  const auto status = list_features_->Status();
   /**  proceeding of the status **/
-  reactor_.reset();
+  list_features_.reset();
 });
 ````
 
@@ -1009,13 +998,11 @@ Under `Delivery::kPull`, the main goal of that callback is to read the response 
 new read operation on the stream. From the PlantUML sequence diagram, the corresponding points are from 2.8 to 2.11.
 
 ````cpp
-EventLoop::RegisterEvent(kListFeaturesOnReadDoneOk,
-    [&reactor_ = reactor_map_[ListFeatures::RpcKey]](const Event* event) {
-      routeguide::Feature response;
-      bool valid = reactor_->GetResponse(response);  // when called, a new stream reading is automatically triggered
-      /**  proceeding of the content of response **/
-    }
-);
+EventLoop::RegisterEvent(kListFeaturesOnReadDoneOk, [this](const Event*) {
+  routeguide::Feature response;
+  bool valid = list_features_->GetResponse(response);  // when called, a new stream reading is automatically triggered
+  /**  proceeding of the content of response **/
+});
 ````
 
 Under `Delivery::kPush`, the main goal of that callback is to reclaim the ownership of the message the gRPC-thread
@@ -1413,7 +1400,6 @@ void RecordRoute(std::vector<routeguide::Point> points) {
   using Callbacks = routeguide::RecordRoute::Callbacks<Delivery::kPush>;
   using ClientReactor = routeguide::RecordRoute::ClientReactor<Delivery::kPush>;
   using routeguide::RecordRoute::ResponseT;
-  using routeguide::RecordRoute::RpcKey;
   record_route_pending_ = std::move(points);
   Callbacks cbs;
   cbs.write_done = [](auto* reactor, bool) {
@@ -1423,7 +1409,7 @@ void RecordRoute(std::vector<routeguide::Point> points) {
     // Signal OnDoneCallback from gRPC thread, handing the response ownership to the queue
     EventLoop::TriggerEvent(kRecordRouteOnDone, response.release());
   };
-  reactor_map_[RpcKey] = std::make_unique<ClientReactor>(*stub_, CreateClientContext(), std::move(cbs));
+  record_route_ = std::make_unique<ClientReactor>(*stub_, CreateClientContext(), std::move(cbs));
   SendNextRecordRoutePoint();  // Kick the write flow with the first request
 }
 ````
@@ -1437,13 +1423,12 @@ From the PlantUML sequence diagram, the corresponding points are 2.1 and 2.8.
 
 ````cpp
 void SendNextRecordRoutePoint() {
-  auto* reactor = static_cast<RecordRoute::ClientReactor*>(reactor_map_[RecordRoute::RpcKey].get());
   auto point = std::move(record_route_pending_.front());
   record_route_pending_.erase(record_route_pending_.begin());
   if (record_route_pending_.empty()) {
-    reactor->SendLastRequest(std::move(point));  // Last request also closes the stream
+    record_route_->SendLastRequest(std::move(point));  // Last request also closes the stream
   } else {
-    reactor->SendRequest(std::move(point));
+    record_route_->SendRequest(std::move(point));
   }
 }
 
@@ -1464,13 +1449,13 @@ EventLoop::RegisterEvent(kRecordRouteOnWriteDone, [this](const Event*) {
 Under `Delivery::kPull`, the handler pulls the terminal response out of the reactor:
 
 ````cpp
-EventLoop::RegisterEvent(kRecordRouteOnDone, [&reactor_ = reactor_map_[RecordRoute::RpcKey]](const Event*) {
-  if (reactor_->Status().ok()) {
+EventLoop::RegisterEvent(kRecordRouteOnDone, [this](const Event*) {
+  if (record_route_->Status().ok()) {
     routeguide::RouteSummary response;
-    bool valid = reactor_->GetResponse(response);
+    bool valid = record_route_->GetResponse(response);
     /**  proceeding of the content of response **/
   }
-  reactor_.reset();
+  record_route_.reset();
 });
 ````
 
@@ -1480,7 +1465,7 @@ queue, and reads `Status()` from the reactor it already holds.
 From the PlantUML sequence diagram, the corresponding points are from 4.5 to 4.7.
 
 ````cpp
-EventLoop::RegisterEvent(kRecordRouteOnDone, [&reactor_ = reactor_map_[RecordRoute::RpcKey]](const Event* event) {
+EventLoop::RegisterEvent(kRecordRouteOnDone, [this](const Event* event) {
   const std::unique_ptr<routeguide::RouteSummary> response{
       static_cast<routeguide::RouteSummary*>(event->getData())};
   if (reactor_->Status().ok()) {
@@ -1693,7 +1678,6 @@ void RouteChat(std::vector<routeguide::RouteNote> notes) {
   using Callbacks = routeguide::RouteChat::Callbacks<Delivery::kPush>;
   using ClientReactor = routeguide::RouteChat::ClientReactor<Delivery::kPush>;
   using routeguide::RouteChat::ResponseT;
-  using routeguide::RouteChat::RpcKey;
   route_chat_pending_ = std::move(notes);
   Callbacks cbs;
   cbs.read_ok = [](auto*, std::unique_ptr<ResponseT> response) {
@@ -1709,8 +1693,7 @@ void RouteChat(std::vector<routeguide::RouteNote> notes) {
   cbs.done = [](auto* reactor, const grpc::Status&) {
     EventLoop::TriggerEvent(kRouteChatOnDone, reactor);  // Signal OnDoneCallback from gRPC thread
   };
-  reactor_map_[RpcKey] =
-      std::make_unique<ClientReactor>(*stub_, CreateClientContext(), std::move(cbs), ReadPacing::kContinuous);
+  route_chat_ = std::make_unique<ClientReactor>(*stub_, CreateClientContext(), std::move(cbs), ReadPacing::kContinuous);
   SendNextRouteChatNote();  // Kick the write flow with the first request
 }
 ````
@@ -1721,9 +1704,9 @@ Under `Delivery::kPull`, the handler pulls the message out of the reactor, which
 the read hold:
 
 ````cpp
-EventLoop::RegisterEvent(kRouteChatOnReadDoneOk, [&reactor_ = reactor_map_[RouteChat::RpcKey]](const Event*) {
+EventLoop::RegisterEvent(kRouteChatOnReadDoneOk, [this](const Event*) {
   routeguide::RouteNote response;
-  bool valid = reactor_->GetResponse(response);  // when called, a new stream reading is automatically triggered
+  bool valid = route_chat_->GetResponse(response);  // when called, a new stream reading is automatically triggered
   /**  proceeding of the content of response **/
 });
 ````
@@ -1768,10 +1751,10 @@ EventLoop::RegisterEvent(kRouteChatOnWriteDone, [this](const Event*) {
 From the PlantUML sequence diagram, the corresponding points are 5.12 and 5.13.
 
 ````cpp
-EventLoop::RegisterEvent(kRouteChatOnDone, [&reactor_ = reactor_map_[RouteChat::RpcKey]](const Event*) {
-  const auto status = reactor_->Status();
+EventLoop::RegisterEvent(kRouteChatOnDone, [this](const Event*) {
+  const auto status = route_chat_->Status();
   /**  proceeding of the status **/
-  reactor_.reset();
+  route_chat_.reset();
 });
 ````
 
