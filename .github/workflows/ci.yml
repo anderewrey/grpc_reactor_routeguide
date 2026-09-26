@@ -129,10 +129,11 @@ jobs:
           cp -r /tmp/vcpkg/packages/eventloop_$triplet/* /usr/local/
           rm -rf /tmp/vcpkg
 
+      # _GLIBCXX_ASSERTIONS: ABI-neutral libstdc++ bounds and precondition checks.
       - name: Configure
         run: |
           cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=${{ matrix.cxx_compiler }} \
-            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DCMAKE_CXX_FLAGS="-D_GLIBCXX_ASSERTIONS ${{ matrix.cxx_flags }}" \
             -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.linker_flags }}"
 
       - name: Build
@@ -241,8 +242,14 @@ jobs:
             asan_options: ""
           # Same ASan runtime options as the Alpine clang-asan-ubsan variant - see ci.yml history
           # for the rationale behind each one.
+          #
+          # PROTOBUF_MESSAGE_GLOBALS_TEMPORARY_OPTOUT: under ASan, protobuf's port_def.inc defines
+          # PROTOBUF_MESSAGE_GLOBALS, which drops fields from ClassData. The system libprotobuf is not
+          # built with ASan, so it reads ClassData with the other layout and segfaults.
           - id: gcc-asan-ubsan
-            cxx_flags: "-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+            cxx_flags: >-
+              -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+              -DPROTOBUF_MESSAGE_GLOBALS_TEMPORARY_OPTOUT
             linker_flags: "-fsanitize=address,undefined"
             asan_options: >-
               detect_invalid_pointer_pairs=2 quarantine_size_mb=512 strict_string_checks=1
@@ -275,10 +282,11 @@ jobs:
           cp -r /tmp/vcpkg/packages/eventloop_x64-linux-gcc-release/* /usr/local/
           rm -rf /tmp/vcpkg
 
+      # _GLIBCXX_ASSERTIONS: ABI-neutral libstdc++ bounds and precondition checks.
       - name: Configure
         run: |
           cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=g++ \
-            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DCMAKE_CXX_FLAGS="-D_GLIBCXX_ASSERTIONS ${{ matrix.cxx_flags }}" \
             -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.linker_flags }}"
 
       - name: Build
