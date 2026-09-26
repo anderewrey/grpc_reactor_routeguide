@@ -100,9 +100,14 @@ Available presets:
 | `vcpkg-clang-release` | Clang | Release | `cmake-build-vcpkg-release-clang` |
 | `vcpkg-gcc13-debug` | GCC 13 toolset | Debug | `cmake-build-vcpkg-debug-gcc13` |
 | `vcpkg-gcc13-release` | GCC 13 toolset | Release | `cmake-build-vcpkg-release-gcc13` |
+| `vcpkg-clang-asan` | Clang, ASan + UBSan | Debug | `cmake-build-vcpkg-asan-clang` |
+| `vcpkg-clang-tsan` | Clang, TSan | Debug | `cmake-build-vcpkg-tsan-clang` |
 
 The `gcc13` presets expect the compiler at `/opt/rh/gcc-toolset-13`. Debug presets build the application in Debug
 against Release libraries, which is supported on Linux (see [vcpkg-usage.md](/docs/vcpkg-usage.md)).
+
+The `asan` and `tsan` presets build every dependency with that sanitizer, from their own triplets. See
+[Sanitizers with an instrumented dependency stack][sanitizer-stack].
 
 ## Clean
 
@@ -192,3 +197,4 @@ pre-commit run --all-files
 
 <!-- Reference links -->
 [vcpkg]: https://vcpkg.io/
+[sanitizer-stack]: /docs/testing.md#sanitizers-with-an-instrumented-dependency-stack

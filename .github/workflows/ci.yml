@@ -68,8 +68,8 @@ jobs:
           # strict_string_checks=1: checks that C-string arguments are actually null-terminated.
           # Narrowly scoped to this project's own C-string usage (e.g. GetFeatureName(), strlen() in
           # rg_utils.cpp), not gRPC/Abseil internals, so not expected to surface non-instrumented-
-          # library noise the way ThreadSanitizer's suppressions did (see "Why no ThreadSanitizer
-          # job" in docs/testing.md).
+          # library noise the way ThreadSanitizer's suppressions did (see "Why ThreadSanitizer runs
+          # only in sanitizers.yml" in docs/testing.md).
           # detect_stack_use_after_return=1: targets this project's actual risk pattern - lambdas
           # that capture local state by reference and get invoked later, possibly from a different
           # thread (EventLoop handlers, the reactor_map_ reference captures).

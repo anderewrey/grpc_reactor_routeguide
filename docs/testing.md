@@ -141,15 +141,39 @@ example `sendmsg`) are written and tested against glibc's struct layouts. They c
 before this project's own code runs. Clang's `compiler-rt` is the sanitizer runtime Alpine's own
 ecosystem maintains musl support for, so the sanitizer job uses Clang exclusively.
 
-### Why no ThreadSanitizer job
+### Why ThreadSanitizer runs only in sanitizers.yml
 
-ThreadSanitizer was tried and dropped. Every suppression strategy attempted (`race:` entries,
-`called_from_lib:`, `ignore_noninstrumented_modules=1`) either failed to converge on a stable
-suppression list, since each run surfaced new gRPC/Abseil/c-ares-internal signatures with no
-repeats, or blinded TSan's synchronization tracking enough to produce a worse class of false
-positive: races reported between this project's own fixture and worker threads that do not
-actually race. Running gRPC, Abseil, and c-ares themselves built with TSan instrumentation would
-be required to get a clean signal, which is out of scope for this project's CI.
+ThreadSanitizer was first tried in `ci.yml`, against the distributions' uninstrumented gRPC, Abseil
+and c-ares, and dropped. TSan only sees the synchronization of code it instruments, so every
+suppression strategy attempted (`race:` entries, `called_from_lib:`,
+`ignore_noninstrumented_modules=1`) either never converged, or hid enough synchronization to
+report races that do not exist. [sanitizers.yml][sanitizers-workflow] instruments that whole stack
+instead, as described below.
+
+### Sanitizers with an instrumented dependency stack
+
+[sanitizers.yml][sanitizers-workflow] builds every vcpkg dependency with the sanitizer under test:
+the gRPC bundle (gRPC, Protobuf, Abseil, c-ares, RE2), OpenSSL, zlib, spdlog, gflags, GoogleTest
+and EventLoop. It has one matrix entry per sanitizer:
+
+| Entry | Triplet | Preset | Sanitizers |
+| ----- | ------- | ------ | ---------- |
+| `asan` | `x64-linux-clang-asan` | `vcpkg-clang-asan` | ASan on the whole stack, UBSan on this project |
+| `tsan` | `x64-linux-clang-tsan` | `vcpkg-clang-tsan` | ThreadSanitizer |
+
+Unlike the `ci.yml` sanitizer variants, headers and libraries agree on every sanitizer-dependent
+layout, and a report can point inside gRPC or EventLoop, not only at this project's code. A job
+step checks that each installed library references the sanitizer runtime, since an
+uninstrumented dependency still links and passes under ASan.
+
+A cold build of one stack takes 30 to 50 minutes. The vcpkg binary cache keeps it to a few minutes
+afterwards: it is keyed on the vcpkg manifest, ports, triplet and compiler, and saved even when a
+later step fails. The workflow also runs every Monday on `master`, since GitHub evicts a cache
+left unused for 7 days, and a cache saved on `master` is readable from every pull request.
+
+EventLoop is patched in its overlay port (`vcpkg/ports/eventloop/fix-thread-safety.patch`). Upstream
+pushes onto its event queue without the mutex its loop reads that queue under, which this workflow's
+TSan entry reported.
 
 ### ASan runtime options
 
@@ -250,6 +274,7 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 <!-- Reference links -->
 [ci-workflow]: /.github/workflows/ci.yml
 [static-analysis-workflow]: /.github/workflows/static-analysis.yml
+[sanitizers-workflow]: /.github/workflows/sanitizers.yml
 [reactor-client]: /applications/reactor/reactor_client.h
 [reactor-client-routeguide]: /applications/reactor/reactor_client_routeguide.h
 [unary-test]: /applications/reactor/tests/active_unary_reactor_test.cpp
