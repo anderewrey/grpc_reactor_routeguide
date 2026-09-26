@@ -129,10 +129,11 @@ jobs:
           cp -r /tmp/vcpkg/packages/eventloop_$triplet/* /usr/local/
           rm -rf /tmp/vcpkg
 
+      # _GLIBCXX_ASSERTIONS: ABI-neutral libstdc++ bounds and precondition checks.
       - name: Configure
         run: |
           cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=${{ matrix.cxx_compiler }} \
-            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DCMAKE_CXX_FLAGS="-D_GLIBCXX_ASSERTIONS ${{ matrix.cxx_flags }}" \
             -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.linker_flags }}"
 
       - name: Build
@@ -281,10 +282,11 @@ jobs:
           cp -r /tmp/vcpkg/packages/eventloop_x64-linux-gcc-release/* /usr/local/
           rm -rf /tmp/vcpkg
 
+      # _GLIBCXX_ASSERTIONS: ABI-neutral libstdc++ bounds and precondition checks.
       - name: Configure
         run: |
           cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=g++ \
-            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DCMAKE_CXX_FLAGS="-D_GLIBCXX_ASSERTIONS ${{ matrix.cxx_flags }}" \
             -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.linker_flags }}"
 
       - name: Build
