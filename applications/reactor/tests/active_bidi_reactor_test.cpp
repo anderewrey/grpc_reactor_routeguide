@@ -19,9 +19,9 @@
 #include <grpc/grpc.h>
 #include <grpcpp/client_context.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <future>
 #include <map>
 #include <memory>
@@ -558,106 +558,77 @@ TEST_F(ActiveBidiReactorTest, RouteChat_DeadlineExceeded_PropagatesStatus) {
 ///
 /// Tests that multiple bidi streams can run concurrently:
 /// - Create 3 concurrent RouteChat reactors
-/// - Each exchanges different messages
+/// - Each sends its next note from its own write_done, so all streams write at the same time
+/// - The last write_done closes its stream
 /// - Wait for all OnDone callbacks
 /// - Verify all complete successfully
 TEST_F(ActiveBidiReactorTest, RouteChat_MultipleConcurrent_AllComplete) {
-  const int kNumStreams = 3;
+  constexpr int kNumStreams = 3;
+  constexpr int kNotesPerStream = 2;
 
-  std::vector<std::promise<RouteChatResult>> promises(kNumStreams);
-  std::vector<std::future<RouteChatResult>> futures;
-  for (auto& p : promises) {
-    futures.push_back(p.get_future());
-  }
+  struct Stream {
+    std::unique_ptr<routeguide::RouteChat::ClientReactor> reactor;
+    std::atomic<int> sent{0};
+    std::atomic<int> received{0};
+    std::promise<RouteChatResult> done;
+  };
+  std::array<Stream, kNumStreams> streams;
 
-  std::vector<std::unique_ptr<routeguide::RouteChat::ClientReactor>> reactors;
-  std::vector<std::atomic<int>> received_counts(kNumStreams);
-  for (auto& count : received_counts) {
-    count = 0;
-  }
-
-  // Per-stream write synchronization: only one write may be in flight at a time on a given
-  // stream (enforced by SendRequest()), so each stream needs its own ready signal.
-  std::vector<std::mutex> write_mutexes(kNumStreams);
-  std::vector<std::condition_variable> write_cvs(kNumStreams);
-  std::vector<bool> write_readies(kNumStreams, true);
+  // Each stream writes to its own location; the server echoes a note back once a second note
+  // arrives at the same location.
+  auto next_note = [](int stream, int note) {
+    return rg_utils::MakeRouteNote("Note " + std::to_string(note + 1), stream * 100, stream * 100);
+  };
 
   for (int i = 0; i < kNumStreams; ++i) {
+    Stream& stream = streams[i];
     routeguide::RouteChat::Callbacks cbs;
-
-    // Capture i by value
-    cbs.read_ok = [&received_counts, i](
-                      grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
-                      const routeguide::RouteNote&) {
-      received_counts[i]++;
+    cbs.read_ok = [&stream](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                            const routeguide::RouteNote&) {
+      stream.received++;
       return false;
     };
     cbs.read_nok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {};
-    cbs.write_done = [&write_mutexes, &write_cvs, &write_readies, i](
+    // Issued from inside the write_done reaction, where OnWriteDone() has already cleared the
+    // pending write, so no write gate is shared with the test thread.
+    cbs.write_done = [&stream, &next_note, i](
                          grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
-                         bool) {
-      std::lock_guard<std::mutex> lock(write_mutexes[i]);
-      write_readies[i] = true;
-      write_cvs[i].notify_one();
+                         bool ok) {
+      EXPECT_TRUE(ok) << "Stream " << i << " write failed";
+      const int note = stream.sent++;
+      if (ok && note < kNotesPerStream) {
+        EXPECT_TRUE(stream.reactor->SendRequest(next_note(i, note)));
+      } else {
+        stream.reactor->CloseRequestStream();
+      }
     };
-    cbs.done = [&promises, i](
-                   grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
-                   const grpc::Status& status) {
+    cbs.done = [&stream](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                         const grpc::Status& status) {
       RouteChatResult result;
       result.status = status;
       result.completed = true;
-      promises[i].set_value(std::move(result));
+      stream.done.set_value(std::move(result));
     };
 
-    reactors.push_back(std::make_unique<routeguide::RouteChat::ClientReactor>(
-        *stub_, CreateClientContext(), std::move(cbs)));
+    stream.reactor = std::make_unique<routeguide::RouteChat::ClientReactor>(
+        *stub_, CreateClientContext(), std::move(cbs));
   }
 
-  // Send messages on each stream - each to its own location, waiting for each write to
-  // complete before sending the next one (only one write may be in flight at a time).
+  // Only each stream's first write comes from the test thread; its write_done sends the rest.
   for (int i = 0; i < kNumStreams; ++i) {
-    {
-      std::unique_lock<std::mutex> lock(write_mutexes[i]);
-      write_cvs[i].wait(lock, [&write_readies, i] { return write_readies[i]; });
-      write_readies[i] = false;
-    }
-    reactors[i]->SendRequest(rg_utils::MakeRouteNote("Note 1", i * 100, i * 100));
-
-    {
-      std::unique_lock<std::mutex> lock(write_mutexes[i]);
-      write_cvs[i].wait_for(lock, std::chrono::seconds(1), [&write_readies, i] { return write_readies[i]; });
-      write_readies[i] = false;
-    }
-    reactors[i]->SendRequest(rg_utils::MakeRouteNote("Note 2", i * 100, i * 100));
+    streams[i].sent = 1;
+    EXPECT_TRUE(streams[i].reactor->SendRequest(next_note(i, 0)));
   }
 
-  // Give time for processing
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-  // Close all streams
-  for (auto& reactor : reactors) {
-    reactor->CloseRequestStream();
-  }
-
-  // Wait for all completions
-  bool all_ready = true;
-  for (auto& f : futures) {
-    auto wait_result = f.wait_for(std::chrono::seconds(5));
-    if (wait_result != std::future_status::ready) {
-      all_ready = false;
-      break;
-    }
-  }
-  ASSERT_TRUE(all_ready) << "Timeout waiting for all streams to complete";
-
-  // Verify all completed successfully
   for (int i = 0; i < kNumStreams; ++i) {
-    RouteChatResult result = futures[i].get();
+    auto future = streams[i].done.get_future();
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(5)), std::future_status::ready)
+        << "Timeout waiting for stream " << i << " to complete";
+    RouteChatResult result = future.get();
     EXPECT_TRUE(result.completed) << "Stream " << i << " did not complete";
     EXPECT_TRUE(result.status.ok()) << "Stream " << i << " failed: " << result.status.error_message();
     // Second note should receive first note as response
-    EXPECT_GE(received_counts[i].load(), 1)
-        << "Stream " << i << " should receive at least 1 response";
+    EXPECT_GE(streams[i].received.load(), 1) << "Stream " << i << " should receive at least 1 response";
   }
 }
 
