@@ -130,8 +130,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_ValidPoint_ReturnsFeature) {
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   // Wait for completion
-  auto wait_result = result_future.wait_for(std::chrono::seconds(5));
-  ASSERT_EQ(wait_result, std::future_status::ready) << "Timeout waiting for RPC completion";
+  ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); })) << "Timeout waiting for RPC completion";
 
   GetFeatureResult result = result_future.get();
 
@@ -180,8 +179,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_UnknownPoint_ReturnsEmptyFeature) {
   auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
-  auto wait_result = result_future.wait_for(std::chrono::seconds(5));
-  ASSERT_EQ(wait_result, std::future_status::ready);
+  ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
   GetFeatureResult result = result_future.get();
 
@@ -222,8 +220,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_ServerError_PropagatesStatus) {
   auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
-  auto wait_result = result_future.wait_for(std::chrono::seconds(5));
-  ASSERT_EQ(wait_result, std::future_status::ready);
+  ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
   GetFeatureResult result = result_future.get();
 
@@ -259,8 +256,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_NotFoundError_PropagatesStatus) {
   auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
-  auto wait_result = result_future.wait_for(std::chrono::seconds(5));
-  ASSERT_EQ(wait_result, std::future_status::ready);
+  ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
   GetFeatureResult result = result_future.get();
 
@@ -303,8 +299,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_TryCancel_TriggersOnDone) {
   // Cancel immediately
   reactor->TryCancel();
 
-  auto wait_result = done_future.wait_for(std::chrono::seconds(5));
-  ASSERT_EQ(wait_result, std::future_status::ready);
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
   grpc::Status status = done_future.get();
 
@@ -345,8 +340,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_DeadlineExceeded_PropagatesStatus) {
   auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor>(
       *stub_, std::move(context), request, std::move(cbs));
 
-  auto wait_result = done_future.wait_for(std::chrono::seconds(5));
-  ASSERT_EQ(wait_result, std::future_status::ready);
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
   grpc::Status status = done_future.get();
 
@@ -391,8 +385,12 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_MultipleConcurrent_AllComplete) {
         *stub_, CreateClientContext(), request, std::move(cbs)));
   }
 
-  auto wait_result = all_done_future.wait_for(std::chrono::seconds(10));
-  ASSERT_EQ(wait_result, std::future_status::ready) << "Timeout waiting for concurrent RPCs";
+  const auto cancel_all = [&] {
+    for (auto& r : reactors) {
+      r->TryCancel();
+    }
+  };
+  ASSERT_TRUE(AwaitRpc(all_done_future, cancel_all, std::chrono::seconds(10))) << "Timeout waiting for concurrent RPCs";
 
   EXPECT_EQ(completed_count.load(), kNumConcurrentRpcs);
   for (int i = 0; i < kNumConcurrentRpcs; ++i) {
@@ -438,8 +436,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_GetResponseBeforeOnDone_ReturnsFalse) 
   bool early_result = reactor->GetResponse(early_response);
   EXPECT_FALSE(early_result) << "GetResponse should return false before OnDone";
 
-  auto wait_result = done_future.wait_for(std::chrono::seconds(5));
-  ASSERT_EQ(wait_result, std::future_status::ready);
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
   EXPECT_TRUE(get_response_after_done) << "GetResponse should return true after OnDone";
 }

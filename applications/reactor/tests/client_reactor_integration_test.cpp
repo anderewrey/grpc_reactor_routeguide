@@ -25,6 +25,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <thread>
@@ -124,7 +126,36 @@ class ClientReactorIntegrationTest : public RouteGuideTestFixtureBase<TestRouteG
     // EventLoop is managed by EventLoopEnvironment (started once for all tests)
   }
 
+  /// Waits for `done`, set by the test's final EventLoop handler. On a timeout, cancels the RPC and
+  /// waits again before reporting the failure: the handlers reference the test's locals, so the test
+  /// must not return while the RPC can still dispatch them. Aborts if the cancelled RPC never ends.
+  template <class ReactorT>
+  static ::testing::AssertionResult WaitForDone(const std::atomic<bool>& done, const ReactorT& reactor,
+                                                const char* what) {
+    if (WaitFor(done)) {
+      return ::testing::AssertionSuccess();
+    }
+    reactor.TryCancel();
+    if (!WaitFor(done)) {
+      std::fprintf(stderr, "A cancelled RPC never completed, aborting\n");
+      std::abort();
+    }
+    return ::testing::AssertionFailure() << "Timeout waiting for " << what;
+  }
+
   std::thread::id main_thread_id_;
+
+ private:
+  static bool WaitFor(const std::atomic<bool>& done) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!done) {
+      if (std::chrono::steady_clock::now() > deadline) {
+        return false;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+  }
 };
 
 /// @test Validates unary RPC with EventLoop dispatch.
@@ -148,6 +179,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop
   std::atomic<bool> done{false};
   routeguide::Feature received_feature;
   grpc::Status received_status;
+  routeguide::GetFeature::ClientReactor* dispatched_reactor = nullptr;
   std::unique_ptr<routeguide::GetFeature::ClientReactor> reactor;
 
   // Register event handler (Servant role in Active Object pattern)
@@ -158,7 +190,9 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
 
     auto* r = static_cast<routeguide::GetFeature::ClientReactor*>(event->getData());
-    EXPECT_EQ(r, reactor.get());
+    // Compared on the main thread once done is set: the reactor's constructor already starts the
+    // RPC, so this handler can run while the main thread is still assigning reactor.
+    dispatched_reactor = r;
 
     received_status = r->Status();
     if (received_status.ok()) {
@@ -184,15 +218,10 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   // Wait for completion - EventLoop runs in background thread (NON_BLOCK mode)
-  auto start = std::chrono::steady_clock::now();
-  while (!done) {
-    if (std::chrono::steady_clock::now() - start > std::chrono::seconds(5)) {
-      FAIL() << "Timeout waiting for RPC completion";
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
+  ASSERT_TRUE(WaitForDone(done, *reactor, "RPC completion"));
 
   // Verify results
+  EXPECT_EQ(dispatched_reactor, reactor.get());
   EXPECT_TRUE(received_status.ok()) << "Status: " << received_status.error_message();
   EXPECT_EQ(received_feature.name(), expected_feature.name());
   EXPECT_EQ(received_feature.location().latitude(), expected_feature.location().latitude());
@@ -279,13 +308,7 @@ TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesTo
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   // Wait for completion
-  auto start = std::chrono::steady_clock::now();
-  while (!done) {
-    if (std::chrono::steady_clock::now() - start > std::chrono::seconds(5)) {
-      FAIL() << "Timeout waiting for stream completion";
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
+  ASSERT_TRUE(WaitForDone(done, *reactor, "stream completion"));
 
   // Verify results
   EXPECT_TRUE(received_status.ok()) << "Status: " << received_status.error_message();
@@ -340,13 +363,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_TryCancel_DispatchesToEventLoop)
   // Cancel immediately
   reactor->TryCancel();
 
-  auto start = std::chrono::steady_clock::now();
-  while (!done) {
-    if (std::chrono::steady_clock::now() - start > std::chrono::seconds(5)) {
-      FAIL() << "Timeout waiting for cancel completion";
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
+  ASSERT_TRUE(WaitForDone(done, *reactor, "cancel completion"));
 
   // Cancel or OK are both valid (depending on timing)
   EXPECT_TRUE(received_status.error_code() == grpc::StatusCode::CANCELLED ||

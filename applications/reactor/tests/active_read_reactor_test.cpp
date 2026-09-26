@@ -166,8 +166,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleResponses_ReceivesAll) {
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   // Wait for completion
-  auto wait_result = done_future.wait_for(std::chrono::seconds(5));
-  ASSERT_EQ(wait_result, std::future_status::ready) << "Timeout waiting for stream completion";
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); })) << "Timeout waiting for stream completion";
 
   grpc::Status status = done_future.get();
 
@@ -218,8 +217,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_EmptyStream_CompletesSuccessfully) {
   auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
-  auto wait_result = done_future.wait_for(std::chrono::seconds(5));
-  ASSERT_EQ(wait_result, std::future_status::ready);
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
   grpc::Status status = done_future.get();
 
@@ -260,8 +258,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_SingleFeature_ReceivesOne) {
   auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
-  auto wait_result = done_future.wait_for(std::chrono::seconds(5));
-  ASSERT_EQ(wait_result, std::future_status::ready);
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
   grpc::Status status = done_future.get();
 
@@ -312,8 +309,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ServerErrorMidStream_PropagatesStatus
   auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
-  auto wait_result = done_future.wait_for(std::chrono::seconds(5));
-  ASSERT_EQ(wait_result, std::future_status::ready);
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
   grpc::Status status = done_future.get();
 
@@ -357,8 +353,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ImmediateError_PropagatesStatus) {
   auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
-  auto wait_result = done_future.wait_for(std::chrono::seconds(5));
-  ASSERT_EQ(wait_result, std::future_status::ready);
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
   grpc::Status status = done_future.get();
 
@@ -407,8 +402,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_TryCancel_TerminatesStream) {
   std::this_thread::sleep_for(std::chrono::milliseconds(1));
   reactor->TryCancel();
 
-  auto wait_result = done_future.wait_for(std::chrono::seconds(5));
-  ASSERT_EQ(wait_result, std::future_status::ready);
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
   grpc::Status status = done_future.get();
 
@@ -456,8 +450,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_DeadlineExceeded_PropagatesStatus) {
   auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
       *stub_, std::move(context), request, std::move(cbs));
 
-  auto wait_result = done_future.wait_for(std::chrono::seconds(5));
-  ASSERT_EQ(wait_result, std::future_status::ready);
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
   grpc::Status status = done_future.get();
 
@@ -511,8 +504,13 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleConcurrent_AllComplete) {
         *stub_, CreateClientContext(), request, std::move(cbs)));
   }
 
-  auto wait_result = all_done_future.wait_for(std::chrono::seconds(10));
-  ASSERT_EQ(wait_result, std::future_status::ready) << "Timeout waiting for concurrent streams";
+  const auto cancel_all = [&] {
+    for (auto& r : reactors) {
+      r->TryCancel();
+    }
+  };
+  ASSERT_TRUE(AwaitRpc(all_done_future, cancel_all, std::chrono::seconds(10)))
+      << "Timeout waiting for concurrent streams";
 
   EXPECT_EQ(completed_count.load(), kNumConcurrentStreams);
   for (int i = 0; i < kNumConcurrentStreams; ++i) {
@@ -557,8 +555,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_NokCallback_FiresOnStreamEnd) {
   auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
-  auto wait_result = done_future.wait_for(std::chrono::seconds(5));
-  ASSERT_EQ(wait_result, std::future_status::ready);
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
   grpc::Status status = done_future.get();
 
