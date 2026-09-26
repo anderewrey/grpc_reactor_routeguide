@@ -148,6 +148,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop
   std::atomic<bool> done{false};
   routeguide::Feature received_feature;
   grpc::Status received_status;
+  routeguide::GetFeature::ClientReactor* dispatched_reactor = nullptr;
   std::unique_ptr<routeguide::GetFeature::ClientReactor> reactor;
 
   // Register event handler (Servant role in Active Object pattern)
@@ -158,7 +159,9 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
 
     auto* r = static_cast<routeguide::GetFeature::ClientReactor*>(event->getData());
-    EXPECT_EQ(r, reactor.get());
+    // Compared on the main thread once done is set: the reactor's constructor already starts the
+    // RPC, so this handler can run while the main thread is still assigning reactor.
+    dispatched_reactor = r;
 
     received_status = r->Status();
     if (received_status.ok()) {
@@ -193,6 +196,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop
   }
 
   // Verify results
+  EXPECT_EQ(dispatched_reactor, reactor.get());
   EXPECT_TRUE(received_status.ok()) << "Status: " << received_status.error_message();
   EXPECT_EQ(received_feature.name(), expected_feature.name());
   EXPECT_EQ(received_feature.location().latitude(), expected_feature.location().latitude());
