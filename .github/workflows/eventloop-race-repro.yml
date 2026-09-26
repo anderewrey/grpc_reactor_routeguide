@@ -11,12 +11,14 @@ permissions:
 
 jobs:
   repro:
-    name: repro (${{ matrix.build }})
+    name: repro (${{ matrix.source }}, ${{ matrix.build }})
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
+        source: [upstream, patched]
+        build: [tsan, plain-O2]
         include:
           - build: tsan
             flags: -O1 -g -fsanitize=thread -fno-omit-frame-pointer
@@ -33,6 +35,11 @@ jobs:
         run: |
           git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop
           git -C /tmp/EventLoop checkout e967d5e6f6856784c77e3aaa35fd39374a275723
+
+      # Same patch as vcpkg/ports/eventloop/fix-thread-safety.patch on the sanitizer branch.
+      - name: Apply the thread-safety patch
+        if: matrix.source == 'patched'
+        run: git -C /tmp/EventLoop apply "$GITHUB_WORKSPACE/.github/eventloop-repro/fix-thread-safety.patch"
 
       - name: Build
         run: |
