@@ -7,6 +7,9 @@ find_package(protobuf CONFIG REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
 # vcpkg's gflags defaults to non-namespaced targets. This enables gflags::gflags target.
 set(GFLAGS_USE_TARGET_NAMESPACE TRUE)
+# gflags-config.cmake falls back to the nothreads variant when it finds no un-namespaced gflags_static
+# target, which the namespace above hides in a static build (x64-linux-clang-asan).
+set(GFLAGS_NOTHREADS FALSE)
 find_package(gflags CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 

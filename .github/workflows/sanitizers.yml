@@ -1,0 +1,136 @@
+name: sanitizers
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  # Weekly, on master only (GitHub runs schedules on the default branch): keeps the vcpkg binary
+  # cache from expiring (7 days unused), and a cache saved on master is readable from every branch.
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Unlike ci.yml's sanitizer variants, which instrument only this project's code against
+  # uninstrumented system packages, this builds the whole dependency stack (gRPC bundle, OpenSSL,
+  # zlib, spdlog, gflags, gtest, EventLoop) through vcpkg with the same sanitizer.
+  sanitize:
+    name: sanitize (${{ matrix.sanitizer }})
+    # No container: TSan needs the host sysctl below, which a job container cannot set.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: asan
+            preset: vcpkg-clang-asan
+            triplet: x64-linux-clang-asan
+            instrumentation_symbol: __asan_report_
+          - sanitizer: tsan
+            preset: vcpkg-clang-tsan
+            triplet: x64-linux-clang-tsan
+            instrumentation_symbol: __tsan_func_entry
+    steps:
+      - uses: actions/checkout@v5
+
+      # Recent kernels' default mmap ASLR entropy collides with the sanitizer runtimes' fixed
+      # shadow memory layout.
+      - name: Lower mmap ASLR entropy
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      # vcpkg fetches its own ninja for the ports, but the project's own configure needs one on PATH.
+      - name: Install Ninja
+        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends ninja-build
+
+      - name: Get vcpkg
+        run: |
+          {
+            echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg"
+            echo "VCPKG_BINCACHE=$RUNNER_TEMP/vcpkg-bincache"
+            echo "VCPKG_BINARY_SOURCES=clear;files,$RUNNER_TEMP/vcpkg-bincache,readwrite"
+          } >> "$GITHUB_ENV"
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/vcpkg"
+          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          mkdir -p "$RUNNER_TEMP/vcpkg-bincache"
+
+      - name: Compute cache key inputs
+        id: cache-key
+        run: echo "compiler=$(clang --version | head -1 | tr -cs '[:alnum:].' '-')" >> "$GITHUB_OUTPUT"
+
+      # Restore and save are split so a cold dependency build is kept even when a later step fails.
+      # Exact key only, no restore-keys: a changed triplet or port rebuilds every package anyway, and
+      # restoring an older cache would re-save its now-unused archives alongside the new ones.
+      - name: Restore vcpkg binary cache
+        id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.VCPKG_BINCACHE }}
+          key: vcpkg-${{ matrix.triplet }}-${{ steps.cache-key.outputs.compiler }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg/ports/**', 'vcpkg/toolchains/**', format('vcpkg/triplets/{0}.cmake', matrix.triplet)) }}
+
+      # Configure runs vcpkg's manifest install. protoc and grpc_cpp_plugin are ASan-instrumented
+      # too and run during the build, so LeakSanitizer is off until the Test step.
+      - name: Configure (builds dependencies)
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: cmake --preset ${{ matrix.preset }}
+
+      # A dependency built without the sanitizer still links and passes (ASan tolerates it), so check
+      # that each installed library actually references the sanitizer runtime.
+      - name: Check dependencies are instrumented
+        run: |
+          lib_dir=cmake-build-vcpkg-${{ matrix.sanitizer }}-clang/vcpkg_installed/${{ matrix.triplet }}/lib
+          status=0
+          for lib in libgrpc++.a libgrpc.a libprotobuf.a libabsl_base.a libcares.a libre2.a libssl.a \
+                     libcrypto.a libz.a libgtest.a libspdlog.a libfmt.a; do
+            if nm -A "$lib_dir/$lib" 2>/dev/null | grep -q "${{ matrix.instrumentation_symbol }}"; then
+              echo "ok      $lib"
+            else
+              echo "MISSING $lib"; status=1
+            fi
+          done
+          # Upstream's CMakeLists.txt always builds EventLoop as a shared library, whatever the triplet.
+          if nm -D "$lib_dir/libEventLoop.so" 2>/dev/null | grep -q "${{ matrix.instrumentation_symbol }}"; then
+            echo "ok      libEventLoop.so"
+          else
+            echo "MISSING libEventLoop.so"; status=1
+          fi
+          exit $status
+
+      - name: Save vcpkg binary cache
+        if: always() && steps.cache-key.outcome == 'success' && steps.restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.VCPKG_BINCACHE }}
+          key: vcpkg-${{ matrix.triplet }}-${{ steps.cache-key.outputs.compiler }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg/ports/**', 'vcpkg/toolchains/**', format('vcpkg/triplets/{0}.cmake', matrix.triplet)) }}
+
+      - name: Report binary cache size
+        if: always()
+        run: du -sh "$VCPKG_BINCACHE"
+
+      - name: Build
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: cmake --build cmake-build-vcpkg-${{ matrix.sanitizer }}-clang
+
+      # ASAN_OPTIONS: same runtime options as ci.yml's sanitizer variants. Each runtime ignores the
+      # other sanitizer's variable, so both are set for every matrix entry.
+      - name: Test
+        env:
+          TSAN_OPTIONS: >-
+            halt_on_error=1 second_deadlock_stack=1
+            external_symbolizer_path=/usr/lib/llvm-18/bin/llvm-symbolizer
+          ASAN_OPTIONS: >-
+            detect_invalid_pointer_pairs=2 quarantine_size_mb=512 strict_string_checks=1
+            detect_stack_use_after_return=1 detect_leaks=1 check_initialization_order=1 strict_init_order=1
+          ASAN_SYMBOLIZER_PATH: /usr/lib/llvm-18/bin/llvm-symbolizer
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: ctest --test-dir cmake-build-vcpkg-${{ matrix.sanitizer }}-clang --output-on-failure
