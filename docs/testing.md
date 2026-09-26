@@ -125,9 +125,9 @@ serialization step in front of all three variants.
 | `clang-debug` | Clang | None | No |
 | `clang-asan-ubsan` | Clang | AddressSanitizer, UndefinedBehaviorSanitizer | No |
 
-`gcc-debug` is the only variant that publishes a per-suite JUnit check-run report, since it is the
-baseline configuration. The other variants are pass/fail gates: a failure needs ctest's raw output
-and stack trace, not a results table.
+`gcc-debug` is the only variant that publishes a per-suite JUnit report to its job summary, since
+it is the baseline configuration. The other variants are pass/fail gates: a failure needs ctest's
+raw output and stack trace, not a results table.
 
 ### Why Clang for the sanitizer job, not GCC
 

@@ -9,8 +9,6 @@ on:
 
 permissions:
   contents: read
-  checks: write
-  pull-requests: write
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -20,7 +18,8 @@ jobs:
   # Three variants of the same job, each an Alpine container with a different compiler and
   # sanitizer combination. fail-fast is off so a failure in one variant doesn't cancel the others -
   # they are pass/fail gates (a failure needs ctest's raw output/stack trace, not a table), except
-  # gcc-debug, the baseline configuration, which also publishes a per-suite JUnit check-run report.
+  # gcc-debug, the baseline configuration, which also publishes a per-suite JUnit report to its job
+  # summary.
   #
   # Alpine's grpc-dev/protobuf-dev/abseil-cpp-dev packages are themselves built with GCC, so the
   # Clang variants also check that Clang-compiled code linking against those GCC-built system
@@ -146,22 +145,23 @@ jobs:
           UBSAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer
         run: ctest --test-dir build --output-on-failure
 
-      - name: Publish test report
+      # annotate_only: a standalone check run lands in whichever same-commit workflow's check suite
+      # GitHub picks (GITHUB_TOKEN cannot target one), so failures are annotated on this job instead.
+      - name: Annotate test failures
         if: always() && matrix.publish_report
         uses: mikepenz/action-junit-report@v6
         with:
           report_paths: build/test-results/*.xml
-          include_passed: true
+          annotate_only: true
           job_summary: false
           group_suite: false
-          include_time_in_summary: true
           check_title_template: '{{SUITE_NAME}}.{{TEST_NAME}}'
 
       # GoogleTest writes one small JUnit XML file per TEST_F case (not one per binary), each with
       # a single self-closing <testcase/> when it passed, or a <testcase>...<failure/></testcase>
       # block when it failed. This groups them by <testsuite name> (the GoogleTest fixture) into
-      # collapsible <details> sections on the check run.
-      - name: Attach detailed results to the check run
+      # collapsible <details> sections on this job's summary.
+      - name: Publish test report to the job summary
         if: always() && matrix.publish_report
         uses: actions/github-script@v9
         with:
@@ -214,30 +214,7 @@ jobs:
               summary += '\n</details>\n\n';
             }
 
-            // context.sha is the ephemeral merge commit GitHub synthesizes for a pull_request
-            // event, not the PR's real head commit - mikepenz/action-junit-report attaches its
-            // check to the head commit instead, so looking it up by context.sha here would find
-            // nothing and silently skip the update.
-            const sha = context.eventName === 'pull_request'
-              ? context.payload.pull_request.head.sha
-              : context.sha;
-            const { data } = await github.rest.checks.listForRef({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: sha,
-            });
-            const check = data.check_runs.find(c => c.name === 'JUnit Test Report');
-            if (check) {
-              await github.rest.checks.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                check_run_id: check.id,
-                output: {
-                  title: check.output.title,
-                  summary,
-                },
-              });
-            }
+            await core.summary.addHeading('JUnit Test Report', 2).addRaw(summary).write();
 
   # openSUSE Tumbleweed's rolling repos ship gRPC/Protobuf/Abseil/spdlog/gflags/gtest as a single
   # version-matched, tested-together bundle (unlike Alpine/Debian/Fedora, where these versions are
