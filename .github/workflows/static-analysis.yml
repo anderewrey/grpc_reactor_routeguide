@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
     branches: [master]
+  # Weekly, without any commit: catches breakage from Alpine package or runner image updates.
+  schedule:
+    - cron: '37 6 * * 1'
   workflow_dispatch:
 
 # Only emits annotations/exit codes, no GitHub API calls, so no checks/pull-requests write needed.
@@ -175,9 +178,10 @@ jobs:
             > analysis-output.txt 2>&1 || true
           cat analysis-output.txt
 
-      # Turns each diagnostic line into a native GitHub Actions warning annotation.
+      # Turns each diagnostic line into a native GitHub Actions warning annotation. A scheduled run
+      # annotates like a push, since failing on an existing warning would keep it red every week.
       - name: Annotate warnings
-        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        if: github.event_name != 'workflow_dispatch'
         run: |
           grep -E ": (${{ matrix.severity_regex }}): " analysis-output.txt | while IFS= read -r diag; do
             file=$(echo "$diag" | cut -d: -f1)
