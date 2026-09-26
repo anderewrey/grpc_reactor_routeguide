@@ -26,6 +26,7 @@ bool WaitForHandled(long target, std::chrono::milliseconds timeout) {
 }  // namespace
 
 int main() {
+  std::setvbuf(stdout, nullptr, _IONBF, 0);  // Keep every line even if the process crashes
   EventLoop::RegisterEvent("tick", [](EventLoop::Event*) { handled.fetch_add(1); });
   EventLoop::SetMode(EventLoop::Mode::NON_BLOCK);
   EventLoop::Run();
@@ -34,6 +35,7 @@ int main() {
   // each other. The producer can push and notify between the loop's predicate check and its wait(),
   // and the event then stays queued until the next TriggerEvent() wakes the loop.
   constexpr int kSequential = 20000;
+  std::printf("part 1: start\n");
   int stalls = 0;
   for (int i = 0; i < kSequential; ++i) {
     const long target = handled.load() + 1;
@@ -48,6 +50,7 @@ int main() {
               kSequential);
 
   // Part 2 - concurrent producers push onto the same unsynchronized std::queue.
+  std::printf("part 2: start\n");
   constexpr int kProducers = 8;
   constexpr int kPerProducer = 20000;
   const long base = handled.load();
@@ -64,6 +67,8 @@ int main() {
   std::printf("part 2: %ld of %d concurrently triggered events never handled\n", missing,
               kProducers * kPerProducer);
 
+  std::printf("halting\n");
   EventLoop::Halt();
+  std::printf("halted\n");
   return (stalls > 0 || missing != 0) ? 1 : 0;
 }
