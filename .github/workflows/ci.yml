@@ -241,8 +241,14 @@ jobs:
             asan_options: ""
           # Same ASan runtime options as the Alpine clang-asan-ubsan variant - see ci.yml history
           # for the rationale behind each one.
+          #
+          # PROTOBUF_MESSAGE_GLOBALS_TEMPORARY_OPTOUT: under ASan, protobuf's port_def.inc defines
+          # PROTOBUF_MESSAGE_GLOBALS, which drops fields from ClassData. The system libprotobuf is not
+          # built with ASan, so it reads ClassData with the other layout and segfaults.
           - id: gcc-asan-ubsan
-            cxx_flags: "-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+            cxx_flags: >-
+              -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+              -DPROTOBUF_MESSAGE_GLOBALS_TEMPORARY_OPTOUT
             linker_flags: "-fsanitize=address,undefined"
             asan_options: >-
               detect_invalid_pointer_pairs=2 quarantine_size_mb=512 strict_string_checks=1
