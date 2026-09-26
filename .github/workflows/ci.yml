@@ -5,6 +5,10 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  # Weekly, without any commit: catches breakage from openSUSE Tumbleweed's rolling packages, the
+  # vcpkg HEAD used for EventLoop and runner image updates. Schedules only run on master.
+  schedule:
+    - cron: '7 6 * * 1'
   workflow_dispatch:
 
 permissions:

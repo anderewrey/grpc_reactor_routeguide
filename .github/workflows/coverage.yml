@@ -5,6 +5,9 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  # Weekly, without any commit: catches breakage from package, vcpkg HEAD or runner image updates.
+  schedule:
+    - cron: '27 6 * * 1'
   workflow_dispatch:
 
 permissions:

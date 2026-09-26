@@ -119,6 +119,11 @@ persistent Docker layer cache between GitHub-hosted runner jobs) than the apk in
 EventLoop's own build cost in the first place, and it added a build-the-image job as a hard
 serialization step in front of all three variants.
 
+`ci.yml`, `coverage.yml` and `static-analysis.yml` also run every Monday on `master`, without any
+commit. Their inputs change on their own: openSUSE Tumbleweed's rolling packages, the vcpkg
+revision cloned for EventLoop, and the runner image. A weekly run reports that breakage before the
+next pull request runs into it.
+
 | Matrix variant | Compiler | Sanitizers | Publishes JUnit report |
 | ----- | ---------- | ------------ | ------------------------- |
 | `gcc-debug` | GCC | None | Yes |
@@ -163,10 +168,10 @@ symlinked to the unversioned `llvm-symbolizer` name the sanitizer runtime expect
 `cppcheck` as their own workflow, separate from the build/test matrix above, on every push. A
 `build` job compiles once and shares `compile_commands.json` and the generated protobuf/gRPC
 headers with both analysis tools, which run as one matrix job's two entries rather than as
-separate jobs. Each entry has two triggers: a `pull_request` or `push` run that annotates
-diagnostics without failing the job, and a `workflow_dispatch` run that fails on any diagnostic
-for a deliberate, whole-repo pass. See `static-analysis.yml` for why it is a separate workflow,
-and `.clang-tidy` for clang-tidy's check selection.
+separate jobs. Each entry has two modes: a `pull_request`, `push` or weekly `schedule` run
+annotates diagnostics without failing the job, and a `workflow_dispatch` run fails on any
+diagnostic for a deliberate, whole-repo pass. See `static-analysis.yml` for why it is a separate
+workflow, and `.clang-tidy` for clang-tidy's check selection.
 
 ## Adding new tests
 
