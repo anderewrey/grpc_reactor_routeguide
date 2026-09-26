@@ -1,0 +1,53 @@
+name: eventloop-race-repro
+
+# Throwaway branch only, never merged: evidence for an upstream EventLoop bug report.
+on:
+  push:
+    branches: [claude/eventloop-race-repro]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    name: repro (${{ matrix.build }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - build: tsan
+            flags: -O1 -g -fsanitize=thread -fno-omit-frame-pointer
+          - build: plain-O2
+            flags: -O2
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Lower mmap ASLR entropy
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      # Same upstream commit the vcpkg overlay port pins.
+      - name: Get EventLoop
+        run: |
+          git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop
+          git -C /tmp/EventLoop checkout e967d5e6f6856784c77e3aaa35fd39374a275723
+
+      - name: Build
+        run: |
+          clang++ -std=c++17 ${{ matrix.flags }} -I/tmp/EventLoop/include \
+            /tmp/EventLoop/src/*.cpp .github/eventloop-repro/repro.cpp -pthread -o repro
+
+      # Several runs: part 1 and part 2 are timing-dependent in the plain build. The step reports
+      # every run's result and fails if any of them did.
+      - name: Run
+        env:
+          TSAN_OPTIONS: halt_on_error=0 report_signal_unsafe=0
+        run: |
+          status=0
+          for run in 1 2 3 4 5; do
+            echo "=== run $run"
+            ./repro || { echo "run $run: exit code $?"; status=1; }
+          done
+          exit $status
