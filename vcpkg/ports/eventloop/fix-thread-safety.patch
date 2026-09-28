@@ -19,60 +19,11 @@ index f156d5c..e0c10bf 100755
      std::thread m_mainLoop, m_scheduler;
      std::mutex m_mutex, m_schMutex;
      std::condition_variable m_conditionVar, m_schCondVar;
-diff --git a/include/EventReceiver.hpp b/include/EventReceiver.hpp
-index 3b96473..8a3812c 100755
---- a/include/EventReceiver.hpp
-+++ b/include/EventReceiver.hpp
-@@ -3,6 +3,7 @@
- #include <unordered_map>
- #include <list>
- #include <functional>
-+#include <mutex>
- #include "Event.h"
- 
- class EventReceiver
-@@ -17,4 +18,7 @@ public:
- 
- private:
-     std::unordered_map<std::string, std::list<std::function<void(EventLoop::Event*)>>> m_recvQueueMap;
-+    // Callbacks are registered and removed from the application's threads while the event loop's
-+    // thread looks them up; they are copied under it and invoked without it.
-+    mutable std::mutex m_mutex;
- };
 diff --git a/src/EventManager.cpp b/src/EventManager.cpp
-index 8f9d22a..dd6b85d 100755
+index 8f9d22a..870dd83 100755
 --- a/src/EventManager.cpp
 +++ b/src/EventManager.cpp
-@@ -29,6 +29,14 @@ EventManager::EventManager() : m_blockPrimary(true), m_shutdown(true), m_haltSch
- 
- EventManager::~EventManager()
- {
-+    // Stop and join both loops first: they still read the queues drained below.
-+    if (!m_shutdown)
-+        stop();
-+    if (!m_blockPrimary && m_mainLoop.joinable())
-+        m_mainLoop.join();
-+    if (m_scheduler.joinable())
-+        m_scheduler.join();
-+
-     while (!m_sender.eventQueueEmpty())
-     {
-         m_sender.dequeue();
-@@ -40,13 +48,6 @@ EventManager::~EventManager()
-             delete evt;
-         m_sender.removeEventSchedule();
-     }
--    
--    if (!m_shutdown)
--        stop();
--    if (!m_blockPrimary && m_mainLoop.joinable())
--        m_mainLoop.join();
--    if (m_scheduler.joinable())
--        m_scheduler.join();
- }
- 
- void EventManager::blockPrimaryThread(bool blockPrimary)
-@@ -61,13 +62,22 @@ void EventManager::registerCallback(const std::string& evtName, const std::funct
+@@ -61,13 +61,22 @@ void EventManager::registerCallback(const std::string& evtName, const std::funct
  
  void EventManager::processEvent(Event* evt)
  {
@@ -97,7 +48,7 @@ index 8f9d22a..dd6b85d 100755
      m_schCondVar.notify_one();
  }
  
-@@ -84,8 +94,12 @@ void EventManager::eventLoop()
+@@ -84,8 +93,12 @@ void EventManager::eventLoop()
      {
          while (!m_sender.eventQueueEmpty())
          {
@@ -110,7 +61,7 @@ index 8f9d22a..dd6b85d 100755
              m_sender.dequeue();
          }
          m_conditionVar.wait(evtLoopLock, [&]{ return !m_sender.eventQueueEmpty() || m_shutdown; });
-@@ -172,7 +186,16 @@ void EventManager::start()
+@@ -172,7 +185,16 @@ void EventManager::start()
  
  void EventManager::stop()
  {
@@ -128,77 +79,3 @@ index 8f9d22a..dd6b85d 100755
      m_conditionVar.notify_all();
      m_schCondVar.notify_all();
  }
-diff --git a/src/EventReceiver.cpp b/src/EventReceiver.cpp
-index edb4850..b4353e1 100755
---- a/src/EventReceiver.cpp
-+++ b/src/EventReceiver.cpp
-@@ -29,6 +29,7 @@ EventReceiver::EventReceiver()
- 
- void EventReceiver::enqueue(const std::string& evtName, const std::function<void(Event*)>& callback)
- {
-+    std::lock_guard<std::mutex> lock(m_mutex);
-     auto evtPos = m_recvQueueMap.find(evtName);
-     if (evtPos != m_recvQueueMap.end()){
-         evtPos->second.push_back(callback);
-@@ -43,31 +44,38 @@ void EventReceiver::enqueue(const std::string& evtName, const std::function<void
- 
- void EventReceiver::notifyAndDequeue(Event* evt)
- {
--    auto evtPos = m_recvQueueMap.find(evt->getName());
--    if (evtPos != m_recvQueueMap.end()){
--        std::list<std::function<void(Event*)>> callbackQueue = evtPos->second;
--        if (!callbackQueue.empty()){
--            callbackQueue.front()(evt);
--            callbackQueue.pop_front();
--        }
-+    std::list<std::function<void(Event*)>> callbackQueue;
-+    {
-+        std::lock_guard<std::mutex> lock(m_mutex);
-+        auto evtPos = m_recvQueueMap.find(evt->getName());
-+        if (evtPos != m_recvQueueMap.end())
-+            callbackQueue = evtPos->second;
-+    }
-+    if (!callbackQueue.empty()){
-+        callbackQueue.front()(evt);
-+        callbackQueue.pop_front();
-     }
- }
- 
- void EventReceiver::notifyAllReceivers(Event* evt)
- {
--    auto evtPos = m_recvQueueMap.find(evt->getName());
--    if (evtPos != m_recvQueueMap.end()){
--        std::list<std::function<void(Event*)>> callbackQueue = evtPos->second;
--        for(auto cbItr = callbackQueue.begin(); cbItr != callbackQueue.end(); ++cbItr)
--        {
--            if (*cbItr != nullptr)
--                (*cbItr)(evt);
--        }
-+    std::list<std::function<void(Event*)>> callbackQueue;
-+    {
-+        std::lock_guard<std::mutex> lock(m_mutex);
-+        auto evtPos = m_recvQueueMap.find(evt->getName());
-+        if (evtPos != m_recvQueueMap.end())
-+            callbackQueue = evtPos->second;
-+    }
-+    for(auto cbItr = callbackQueue.begin(); cbItr != callbackQueue.end(); ++cbItr)
-+    {
-+        if (*cbItr != nullptr)
-+            (*cbItr)(evt);
-     }
- }
- 
- void EventReceiver::remove(const std::string& evtName)
- {
-+    std::lock_guard<std::mutex> lock(m_mutex);
-     auto evtPos = m_recvQueueMap.find(evtName);
-     if (evtPos != m_recvQueueMap.end()){
-         m_recvQueueMap.erase(evtPos);
-@@ -76,6 +84,7 @@ void EventReceiver::remove(const std::string& evtName)
- 
- bool EventReceiver::recevierQueueEmpty(const std::string& evtName) const
- {
-+    std::lock_guard<std::mutex> lock(m_mutex);
-     bool isEmpty{false};
-     auto evtPos = m_recvQueueMap.find(evtName);
-     if (evtPos != m_recvQueueMap.end()){

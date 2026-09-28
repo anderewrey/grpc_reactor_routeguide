@@ -2,7 +2,7 @@ name: sanitizers
 
 on:
   push:
-    branches: [master]
+    branches: [master, claude/new-session-2vvsb5]
   pull_request:
     branches: [master]
   # Weekly, on master only (GitHub runs schedules on the default branch): keeps the vcpkg binary
