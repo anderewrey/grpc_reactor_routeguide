@@ -119,6 +119,11 @@ persistent Docker layer cache between GitHub-hosted runner jobs) than the apk in
 EventLoop's own build cost in the first place, and it added a build-the-image job as a hard
 serialization step in front of all three variants.
 
+`ci.yml`, `coverage.yml` and `static-analysis.yml` also run every Monday on `master`, without any
+commit. Their inputs change on their own: openSUSE Tumbleweed's rolling packages, the vcpkg
+revision cloned for EventLoop, and the runner image. A weekly run reports that breakage before the
+next pull request runs into it.
+
 | Matrix variant | Compiler | Sanitizers | Publishes JUnit report |
 | ----- | ---------- | ------------ | ------------------------- |
 | `gcc-debug` | GCC | None | Yes |
@@ -136,15 +141,41 @@ example `sendmsg`) are written and tested against glibc's struct layouts. They c
 before this project's own code runs. Clang's `compiler-rt` is the sanitizer runtime Alpine's own
 ecosystem maintains musl support for, so the sanitizer job uses Clang exclusively.
 
-### Why no ThreadSanitizer job
+### Why ThreadSanitizer runs only in sanitizers.yml
 
-ThreadSanitizer was tried and dropped. Every suppression strategy attempted (`race:` entries,
-`called_from_lib:`, `ignore_noninstrumented_modules=1`) either failed to converge on a stable
-suppression list, since each run surfaced new gRPC/Abseil/c-ares-internal signatures with no
-repeats, or blinded TSan's synchronization tracking enough to produce a worse class of false
-positive: races reported between this project's own fixture and worker threads that do not
-actually race. Running gRPC, Abseil, and c-ares themselves built with TSan instrumentation would
-be required to get a clean signal, which is out of scope for this project's CI.
+ThreadSanitizer was first tried in `ci.yml`, against the distributions' uninstrumented gRPC, Abseil
+and c-ares, and dropped. TSan only sees the synchronization of code it instruments, so every
+suppression strategy attempted (`race:` entries, `called_from_lib:`,
+`ignore_noninstrumented_modules=1`) either never converged, or hid enough synchronization to
+report races that do not exist. [sanitizers.yml][sanitizers-workflow] instruments that whole stack
+instead, as described below.
+
+### Sanitizers with an instrumented dependency stack
+
+[sanitizers.yml][sanitizers-workflow] builds every vcpkg dependency with the sanitizer under test:
+the gRPC bundle (gRPC, Protobuf, Abseil, c-ares, RE2), OpenSSL, zlib, spdlog, gflags, GoogleTest
+and EventLoop. It has one matrix entry per sanitizer:
+
+| Entry | Triplet | Preset | Sanitizers |
+| ----- | ------- | ------ | ---------- |
+| `asan` | `x64-linux-clang-asan` | `vcpkg-clang-asan` | ASan on the whole stack, UBSan on this project |
+| `tsan` | `x64-linux-clang-tsan` | `vcpkg-clang-tsan` | ThreadSanitizer |
+
+Unlike the `ci.yml` sanitizer variants, headers and libraries agree on every sanitizer-dependent
+layout, and a report can point inside gRPC or EventLoop, not only at this project's code. A job
+step checks that each installed library references the sanitizer runtime, since an
+uninstrumented dependency still links and passes under ASan.
+
+A cold build of one stack takes 30 to 50 minutes. The vcpkg binary cache keeps it to a few minutes
+afterwards. It lives on this repository's GitHub Packages NuGet feed, one package per port and ABI
+hash, so a changed port rebuilds only itself and the ports that depend on it, and every branch and
+pull request reads the same feed. vcpkg is checked out at the registry baseline of
+`vcpkg-configuration.json`, since its helper scripts are part of every ABI hash. The workflow also
+runs every Monday on `master`, to catch runner image and toolchain updates.
+
+EventLoop is patched in its overlay port (`vcpkg/ports/eventloop/fix-thread-safety.patch`). Upstream
+pushes onto its event queue without the mutex its loop reads that queue under, which this workflow's
+TSan entry reported.
 
 ### ASan runtime options
 
@@ -163,10 +194,10 @@ symlinked to the unversioned `llvm-symbolizer` name the sanitizer runtime expect
 `cppcheck` as their own workflow, separate from the build/test matrix above, on every push. A
 `build` job compiles once and shares `compile_commands.json` and the generated protobuf/gRPC
 headers with both analysis tools, which run as one matrix job's two entries rather than as
-separate jobs. Each entry has two triggers: a `pull_request` or `push` run that annotates
-diagnostics without failing the job, and a `workflow_dispatch` run that fails on any diagnostic
-for a deliberate, whole-repo pass. See `static-analysis.yml` for why it is a separate workflow,
-and `.clang-tidy` for clang-tidy's check selection.
+separate jobs. Each entry has two modes: a `pull_request`, `push` or weekly `schedule` run
+annotates diagnostics without failing the job, and a `workflow_dispatch` run fails on any
+diagnostic for a deliberate, whole-repo pass. See `static-analysis.yml` for why it is a separate
+workflow, and `.clang-tidy` for clang-tidy's check selection.
 
 ## Adding new tests
 
@@ -245,6 +276,7 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 <!-- Reference links -->
 [ci-workflow]: /.github/workflows/ci.yml
 [static-analysis-workflow]: /.github/workflows/static-analysis.yml
+[sanitizers-workflow]: /.github/workflows/sanitizers.yml
 [reactor-client]: /applications/reactor/reactor_client.h
 [reactor-client-routeguide]: /applications/reactor/reactor_client_routeguide.h
 [unary-test]: /applications/reactor/tests/active_unary_reactor_test.cpp

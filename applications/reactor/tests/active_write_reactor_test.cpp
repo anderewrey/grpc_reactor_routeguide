@@ -21,11 +21,10 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <condition_variable>
 #include <cstring>
 #include <future>
 #include <memory>
-#include <mutex>
+#include <semaphore>
 #include <string>
 #include <utility>
 #include <vector>
@@ -196,18 +195,12 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_MultiplePoints_ReturnsCorrectSummary)
   std::promise<RecordRouteResult> result_promise;
   std::future<RecordRouteResult> result_future = result_promise.get_future();
 
-  // Synchronization for sequential writes (gRPC requires waiting for OnWriteDone)
-  std::mutex write_mutex;
-  std::condition_variable write_cv;
-  bool write_ready = true;
+  std::binary_semaphore write_slot{1};  // gRPC requires waiting for OnWriteDone between writes
 
   // Create callbacks
   routeguide::RecordRoute::Callbacks cbs;
-  cbs.write_done = [&write_mutex, &write_cv, &write_ready](
-                       grpc::ClientWriteReactor<routeguide::Point>*, bool ok) {
-    std::lock_guard<std::mutex> lock(write_mutex);
-    write_ready = true;
-    write_cv.notify_one();
+  cbs.write_done = [&write_slot](grpc::ClientWriteReactor<routeguide::Point>*, bool) {
+    write_slot.release();
   };
   cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>* base_reactor,
                                 const grpc::Status& status,
@@ -234,20 +227,11 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_MultiplePoints_ReturnsCorrectSummary)
   double expected_distance = CalculateExpectedDistance(points);
 
   for (auto& point : points) {
-    // Wait for previous write to complete before sending next
-    {
-      std::unique_lock<std::mutex> lock(write_mutex);
-      write_cv.wait(lock, [&write_ready] { return write_ready; });
-      write_ready = false;
-    }
-    reactor->SendRequest(std::move(point));
+    EXPECT_TRUE(write_slot.try_acquire_for(std::chrono::seconds(5))) << "Previous write never completed";
+    EXPECT_TRUE(reactor->SendRequest(std::move(point)));
   }
-
   // Wait for last write to complete before WritesDone
-  {
-    std::unique_lock<std::mutex> lock(write_mutex);
-    write_cv.wait_for(lock, std::chrono::seconds(1), [&write_ready] { return write_ready; });
-  }
+  EXPECT_TRUE(write_slot.try_acquire_for(std::chrono::seconds(5))) << "Last write never completed";
 
   // Signal end of stream
   reactor->CloseRequestStream();
@@ -383,17 +367,11 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_OverlappingWrites_RejectedByWritePend
   std::promise<RecordRouteResult> result_promise;
   std::future<RecordRouteResult> result_future = result_promise.get_future();
 
-  // Track write completion for synchronization
-  std::mutex write_mutex;
-  std::condition_variable write_cv;
-  bool write_ready = false;
+  std::binary_semaphore write_slot{0};  // Released by each completed write; the first goes out ungated
 
   routeguide::RecordRoute::Callbacks cbs;
-  cbs.write_done = [&write_mutex, &write_cv, &write_ready](
-                       grpc::ClientWriteReactor<routeguide::Point>*, bool ok) {
-    std::lock_guard<std::mutex> lock(write_mutex);
-    write_ready = true;
-    write_cv.notify_one();
+  cbs.write_done = [&write_slot](grpc::ClientWriteReactor<routeguide::Point>*, bool) {
+    write_slot.release();
   };
   cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>*,
                                 const grpc::Status& status,
@@ -417,21 +395,14 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_OverlappingWrites_RejectedByWritePend
   EXPECT_FALSE(second_accepted) << "Overlapping SendRequest should be rejected";
 
   // Wait for first write to complete
-  {
-    std::unique_lock<std::mutex> lock(write_mutex);
-    write_cv.wait_for(lock, std::chrono::seconds(1), [&write_ready] { return write_ready; });
-    write_ready = false;
-  }
+  EXPECT_TRUE(write_slot.try_acquire_for(std::chrono::seconds(5))) << "First write never completed";
 
   // Third write should now be accepted
   bool third_accepted = reactor->SendRequest(rg_utils::MakePoint(402000000, -740000000));
   EXPECT_TRUE(third_accepted) << "SendRequest after OnWriteDone should be accepted";
 
   // Wait for third write to complete
-  {
-    std::unique_lock<std::mutex> lock(write_mutex);
-    write_cv.wait_for(lock, std::chrono::seconds(1), [&write_ready] { return write_ready; });
-  }
+  EXPECT_TRUE(write_slot.try_acquire_for(std::chrono::seconds(5))) << "Third write never completed";
 
   reactor->CloseRequestStream();
 

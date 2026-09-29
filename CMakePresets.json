@@ -32,6 +32,40 @@
       }
     },
     {
+      "name": "vcpkg-clang-asan",
+      "displayName": "vcpkg Clang ASan+UBSan",
+      "description": "Debug build using Clang with ASan+UBSan, against vcpkg libraries built with ASan (x64-linux-clang-asan)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cmake-build-vcpkg-asan-clang",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_CXX_STANDARD": "20",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -D_GLIBCXX_ASSERTIONS",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-clang-asan",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg/triplets",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg/ports"
+      }
+    },
+    {
+      "name": "vcpkg-clang-tsan",
+      "displayName": "vcpkg Clang TSan",
+      "description": "Debug build using Clang with TSan, against vcpkg libraries built with TSan (x64-linux-clang-tsan)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cmake-build-vcpkg-tsan-clang",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_CXX_STANDARD": "20",
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer -D_GLIBCXX_ASSERTIONS",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-clang-tsan",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg/triplets",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg/ports"
+      }
+    },
+    {
       "name": "vcpkg-gcc-debug",
       "displayName": "vcpkg GCC Debug",
       "description": "Debug build using GCC with vcpkg libraries (Release libs + Debug app for Linux ABI compatibility)",

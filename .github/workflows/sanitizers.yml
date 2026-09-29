@@ -1,0 +1,132 @@
+name: sanitizers
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  # Weekly, on master only (GitHub runs schedules on the default branch): catches breakage from the
+  # runner image and toolchain updates without waiting for a commit.
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+# packages: write lets GITHUB_TOKEN read and publish the vcpkg binary cache on GitHub Packages.
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Unlike ci.yml's sanitizer variants, which instrument only this project's code against
+  # uninstrumented system packages, this builds the whole dependency stack (gRPC bundle, OpenSSL,
+  # zlib, spdlog, gflags, gtest, EventLoop) through vcpkg with the same sanitizer.
+  sanitize:
+    name: sanitize (${{ matrix.sanitizer }})
+    # No container: TSan needs the host sysctl below, which a job container cannot set.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: asan
+            preset: vcpkg-clang-asan
+            triplet: x64-linux-clang-asan
+            instrumentation_symbol: __asan_report_
+          - sanitizer: tsan
+            preset: vcpkg-clang-tsan
+            triplet: x64-linux-clang-tsan
+            instrumentation_symbol: __tsan_func_entry
+    steps:
+      - uses: actions/checkout@v5
+
+      # Recent kernels' default mmap ASLR entropy collides with the sanitizer runtimes' fixed
+      # shadow memory layout.
+      - name: Lower mmap ASLR entropy
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      # vcpkg fetches its own ninja for the ports, but the project's own configure needs one on PATH.
+      # Mono runs the nuget.exe vcpkg uses for its binary cache; ubuntu-24.04 no longer ships it.
+      - name: Install Ninja and Mono
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends ninja-build mono-complete
+
+      # Checked out at the registry baseline of vcpkg-configuration.json rather than master: vcpkg's
+      # helper scripts are part of every package's ABI hash, so a moving vcpkg would invalidate the
+      # whole binary cache whenever they change.
+      - name: Get vcpkg
+        run: |
+          baseline=$(jq -r '."default-registry".baseline' vcpkg-configuration.json)
+          git init -q "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" fetch -q --depth 1 https://github.com/microsoft/vcpkg.git "$baseline"
+          git -C "$RUNNER_TEMP/vcpkg" checkout -q FETCH_HEAD
+          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
+
+      # vcpkg binary cache: one NuGet package per port and ABI hash, on this repository's GitHub
+      # Packages feed. A changed port rebuilds only itself and what depends on it, every branch and
+      # pull request reads the same feed, and each package is uploaded as soon as it is built, so a
+      # cancelled or failed cold run keeps its progress.
+      - name: Set up the vcpkg binary cache
+        env:
+          FEED_URL: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          nuget=$("$VCPKG_ROOT/vcpkg" fetch nuget | tail -n 1)
+          mono "$nuget" sources add -Source "$FEED_URL" -StorePasswordInClearText -Name GitHubPackages \
+            -UserName "${{ github.repository_owner }}" -Password "$GH_TOKEN"
+          mono "$nuget" setapikey "$GH_TOKEN" -Source "$FEED_URL"
+          echo "VCPKG_BINARY_SOURCES=clear;nuget,$FEED_URL,readwrite" >> "$GITHUB_ENV"
+
+      # Configure runs vcpkg's manifest install. protoc and grpc_cpp_plugin are ASan-instrumented
+      # too and run during the build, so LeakSanitizer is off until the Test step.
+      - name: Configure (builds dependencies)
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: cmake --preset ${{ matrix.preset }}
+
+      # A dependency built without the sanitizer still links and passes (ASan tolerates it), so check
+      # that each installed library actually references the sanitizer runtime.
+      - name: Check dependencies are instrumented
+        run: |
+          lib_dir=cmake-build-vcpkg-${{ matrix.sanitizer }}-clang/vcpkg_installed/${{ matrix.triplet }}/lib
+          status=0
+          for lib in libgrpc++.a libgrpc.a libprotobuf.a libabsl_base.a libcares.a libre2.a libssl.a \
+                     libcrypto.a libz.a libgtest.a libspdlog.a libfmt.a; do
+            if nm -A "$lib_dir/$lib" 2>/dev/null | grep -q "${{ matrix.instrumentation_symbol }}"; then
+              echo "ok      $lib"
+            else
+              echo "MISSING $lib"; status=1
+            fi
+          done
+          # Upstream's CMakeLists.txt always builds EventLoop as a shared library, whatever the triplet.
+          if nm -D "$lib_dir/libEventLoop.so" 2>/dev/null | grep -q "${{ matrix.instrumentation_symbol }}"; then
+            echo "ok      libEventLoop.so"
+          else
+            echo "MISSING libEventLoop.so"; status=1
+          fi
+          exit $status
+
+      - name: Build
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: cmake --build cmake-build-vcpkg-${{ matrix.sanitizer }}-clang
+
+      # ASAN_OPTIONS: same runtime options as ci.yml's sanitizer variants. Each runtime ignores the
+      # other sanitizer's variable, so both are set for every matrix entry.
+      - name: Test
+        env:
+          TSAN_OPTIONS: >-
+            halt_on_error=1 second_deadlock_stack=1
+            external_symbolizer_path=/usr/lib/llvm-18/bin/llvm-symbolizer
+          ASAN_OPTIONS: >-
+            detect_invalid_pointer_pairs=2 quarantine_size_mb=512 strict_string_checks=1
+            detect_stack_use_after_return=1 detect_leaks=1 check_initialization_order=1 strict_init_order=1
+          ASAN_SYMBOLIZER_PATH: /usr/lib/llvm-18/bin/llvm-symbolizer
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: ctest --test-dir cmake-build-vcpkg-${{ matrix.sanitizer }}-clang --output-on-failure
