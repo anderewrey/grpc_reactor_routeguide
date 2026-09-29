@@ -167,9 +167,11 @@ step checks that each installed library references the sanitizer runtime, since 
 uninstrumented dependency still links and passes under ASan.
 
 A cold build of one stack takes 30 to 50 minutes. The vcpkg binary cache keeps it to a few minutes
-afterwards: it is keyed on the vcpkg manifest, ports, triplet and compiler, and saved even when a
-later step fails. The workflow also runs every Monday on `master`, since GitHub evicts a cache
-left unused for 7 days, and a cache saved on `master` is readable from every pull request.
+afterwards. It lives on this repository's GitHub Packages NuGet feed, one package per port and ABI
+hash, so a changed port rebuilds only itself and the ports that depend on it, and every branch and
+pull request reads the same feed. vcpkg is checked out at the registry baseline of
+`vcpkg-configuration.json`, since its helper scripts are part of every ABI hash. The workflow also
+runs every Monday on `master`, to catch runner image and toolchain updates.
 
 EventLoop is patched in its overlay port (`vcpkg/ports/eventloop/fix-thread-safety.patch`). Upstream
 pushes onto its event queue without the mutex its loop reads that queue under, which this workflow's

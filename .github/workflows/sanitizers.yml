@@ -5,14 +5,16 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
-  # Weekly, on master only (GitHub runs schedules on the default branch): keeps the vcpkg binary
-  # cache from expiring (7 days unused), and a cache saved on master is readable from every branch.
+  # Weekly, on master only (GitHub runs schedules on the default branch): catches breakage from the
+  # runner image and toolchain updates without waiting for a commit.
   schedule:
     - cron: '17 6 * * 1'
   workflow_dispatch:
 
+# packages: write lets GITHUB_TOKEN read and publish the vcpkg binary cache on GitHub Packages.
 permissions:
   contents: read
+  packages: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -48,33 +50,38 @@ jobs:
         run: sudo sysctl vm.mmap_rnd_bits=28
 
       # vcpkg fetches its own ninja for the ports, but the project's own configure needs one on PATH.
-      - name: Install Ninja
-        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends ninja-build
+      # Mono runs the nuget.exe vcpkg uses for its binary cache; ubuntu-24.04 no longer ships it.
+      - name: Install Ninja and Mono
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends ninja-build mono-complete
 
+      # Checked out at the registry baseline of vcpkg-configuration.json rather than master: vcpkg's
+      # helper scripts are part of every package's ABI hash, so a moving vcpkg would invalidate the
+      # whole binary cache whenever they change.
       - name: Get vcpkg
         run: |
-          {
-            echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg"
-            echo "VCPKG_BINCACHE=$RUNNER_TEMP/vcpkg-bincache"
-            echo "VCPKG_BINARY_SOURCES=clear;files,$RUNNER_TEMP/vcpkg-bincache,readwrite"
-          } >> "$GITHUB_ENV"
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/vcpkg"
+          baseline=$(jq -r '."default-registry".baseline' vcpkg-configuration.json)
+          git init -q "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" fetch -q --depth 1 https://github.com/microsoft/vcpkg.git "$baseline"
+          git -C "$RUNNER_TEMP/vcpkg" checkout -q FETCH_HEAD
           "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
-          mkdir -p "$RUNNER_TEMP/vcpkg-bincache"
+          echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
 
-      - name: Compute cache key inputs
-        id: cache-key
-        run: echo "compiler=$(clang --version | head -1 | tr -cs '[:alnum:].' '-')" >> "$GITHUB_OUTPUT"
-
-      # Restore and save are split so a cold dependency build is kept even when a later step fails.
-      # Exact key only, no restore-keys: a changed triplet or port rebuilds every package anyway, and
-      # restoring an older cache would re-save its now-unused archives alongside the new ones.
-      - name: Restore vcpkg binary cache
-        id: restore
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ env.VCPKG_BINCACHE }}
-          key: vcpkg-${{ matrix.triplet }}-${{ steps.cache-key.outputs.compiler }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg/ports/**', 'vcpkg/toolchains/**', format('vcpkg/triplets/{0}.cmake', matrix.triplet)) }}
+      # vcpkg binary cache: one NuGet package per port and ABI hash, on this repository's GitHub
+      # Packages feed. A changed port rebuilds only itself and what depends on it, every branch and
+      # pull request reads the same feed, and each package is uploaded as soon as it is built, so a
+      # cancelled or failed cold run keeps its progress.
+      - name: Set up the vcpkg binary cache
+        env:
+          FEED_URL: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          nuget=$("$VCPKG_ROOT/vcpkg" fetch nuget | tail -n 1)
+          mono "$nuget" sources add -Source "$FEED_URL" -StorePasswordInClearText -Name GitHubPackages \
+            -UserName "${{ github.repository_owner }}" -Password "$GH_TOKEN"
+          mono "$nuget" setapikey "$GH_TOKEN" -Source "$FEED_URL"
+          echo "VCPKG_BINARY_SOURCES=clear;nuget,$FEED_URL,readwrite" >> "$GITHUB_ENV"
 
       # Configure runs vcpkg's manifest install. protoc and grpc_cpp_plugin are ASan-instrumented
       # too and run during the build, so LeakSanitizer is off until the Test step.
@@ -104,17 +111,6 @@ jobs:
             echo "MISSING libEventLoop.so"; status=1
           fi
           exit $status
-
-      - name: Save vcpkg binary cache
-        if: always() && steps.cache-key.outcome == 'success' && steps.restore.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ env.VCPKG_BINCACHE }}
-          key: vcpkg-${{ matrix.triplet }}-${{ steps.cache-key.outputs.compiler }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg/ports/**', 'vcpkg/toolchains/**', format('vcpkg/triplets/{0}.cmake', matrix.triplet)) }}
-
-      - name: Report binary cache size
-        if: always()
-        run: du -sh "$VCPKG_BINCACHE"
 
       - name: Build
         env:
