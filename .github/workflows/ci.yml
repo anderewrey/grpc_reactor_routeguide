@@ -148,6 +148,7 @@ jobs:
       - name: Test
         env:
           ASAN_OPTIONS: ${{ matrix.asan_options }}
+          UBSAN_OPTIONS: print_stacktrace=1
           ASAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer
           UBSAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer
         run: ctest --test-dir build --output-on-failure
@@ -317,4 +318,5 @@ jobs:
       - name: Test
         env:
           ASAN_OPTIONS: ${{ matrix.asan_options }}
+          UBSAN_OPTIONS: print_stacktrace=1
         run: ctest --test-dir build --output-on-failure
