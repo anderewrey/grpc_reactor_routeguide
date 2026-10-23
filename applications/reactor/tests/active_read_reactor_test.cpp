@@ -18,10 +18,12 @@
 
 #include <grpc/grpc.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
@@ -545,7 +547,11 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ResponseConsumedBeforeCallbackReturns
   }
   test_service_.SetListFeaturesResponse(features);
 
+  // GetResponse() starts the next read before it returns, so the consumer of the next message can
+  // run while the previous one is still storing its feature: guard the vector, and compare it
+  // without relying on arrival order.
   std::vector<routeguide::Feature> received_features;
+  std::mutex received_mutex;
   std::atomic<bool> done_fired{false};
   std::atomic<bool> done_inside_callback{false};
   std::promise<grpc::Status> done_promise;
@@ -554,12 +560,15 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ResponseConsumedBeforeCallbackReturns
   const routeguide::Rectangle request;
 
   routeguide::ListFeatures::Callbacks cbs;
-  cbs.ok = [&received_features, &done_fired, &done_inside_callback](
+  cbs.ok = [&received_features, &received_mutex, &done_fired, &done_inside_callback](
                grpc::ClientReadReactor<routeguide::Feature>* reactor, const routeguide::Feature&) {
     auto* client_reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(reactor);
-    std::thread consumer([client_reactor, &received_features] {
+    std::thread consumer([client_reactor, &received_features, &received_mutex] {
       routeguide::Feature feature;
-      if (client_reactor->GetResponse(feature)) received_features.push_back(std::move(feature));
+      if (client_reactor->GetResponse(feature)) {
+        const std::lock_guard<std::mutex> lock(received_mutex);
+        received_features.push_back(std::move(feature));
+      }
     });
     consumer.join();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -582,9 +591,14 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ResponseConsumedBeforeCallbackReturns
 
   EXPECT_FALSE(done_inside_callback) << "OnDone fired while the ok callback was still running";
   EXPECT_TRUE(status.ok()) << "Status: " << status.error_message();
-  ASSERT_EQ(received_features.size(), features.size());
+  const std::lock_guard<std::mutex> lock(received_mutex);
+  std::vector<std::string> received_names;
+  received_names.reserve(received_features.size());
+  for (const auto& feature : received_features) received_names.push_back(feature.name());
+  std::ranges::sort(received_names);
+  ASSERT_EQ(received_names.size(), features.size());
   for (size_t i = 0; i < features.size(); ++i) {
-    EXPECT_EQ(received_features[i].name(), features[i].name());
+    EXPECT_EQ(received_names[i], features[i].name());
   }
 }
 
