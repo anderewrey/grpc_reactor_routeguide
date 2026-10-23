@@ -117,7 +117,13 @@ vcpkg_copy_tools(
 file(REMOVE "${CURRENT_PACKAGES_DIR}/lib/pkgconfig/grpcpp_otel_plugin.pc")
 
 # Fix pkgconfig
-vcpkg_fixup_pkgconfig()
+# Static grpc.pc lists re2 in Requires, but the RE2 module provider installs no re2.pc, so
+# vcpkg's pkg-config sanity check fails. This project finds gRPC through find_package, not pkg-config.
+if(VCPKG_LIBRARY_LINKAGE STREQUAL "static")
+    vcpkg_fixup_pkgconfig(SKIP_CHECK)
+else()
+    vcpkg_fixup_pkgconfig()
+endif()
 
 # Remove debug include files
 file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
