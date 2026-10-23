@@ -67,7 +67,7 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
   }
 
   grpc::ServerUnaryReactor* GetFeature(grpc::CallbackServerContext* context,
-                                       const routeguide::Point* point,
+                                       const routeguide::Point* /*point*/,
                                        routeguide::Feature* feature) override {
     *feature = configured_feature_;
     auto* reactor = context->DefaultReactor();
@@ -76,8 +76,8 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
   }
 
   grpc::ServerWriteReactor<routeguide::Feature>* ListFeatures(
-      grpc::CallbackServerContext* context,
-      const routeguide::Rectangle* request) override {
+      grpc::CallbackServerContext* /*context*/,
+      const routeguide::Rectangle* /*request*/) override {
     class ListFeaturesReactor : public grpc::ServerWriteReactor<routeguide::Feature> {
      public:
       explicit ListFeaturesReactor(std::vector<routeguide::Feature> features)
@@ -202,7 +202,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop
   });
 
   // Create request
-  routeguide::Point request = rg_utils::MakePoint(123456789, -987654321);
+  const routeguide::Point request = rg_utils::MakePoint(123456789, -987654321);
 
   // Create callbacks (triggered on gRPC thread)
   routeguide::GetFeature::Callbacks cbs;
@@ -248,6 +248,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop
 TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesToEventLoop) {
   // Configure server to return multiple features
   std::vector<routeguide::Feature> expected_features;
+  expected_features.reserve(3);
   for (int i = 0; i < 3; ++i) {
     routeguide::Feature feature;
     feature.set_name("Feature " + std::to_string(i));
@@ -267,7 +268,7 @@ TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesTo
   static constexpr auto kTestOnReadOk = "TestListFeaturesOnReadOk";
   static constexpr auto kTestOnDone = "TestListFeaturesOnDone";
 
-  RpcReactor::EventConnection on_read_ok_guard(kTestOnReadOk, [&](const EventLoop::Event* event) {
+  const RpcReactor::EventConnection on_read_ok_guard(kTestOnReadOk, [&](const EventLoop::Event* event) {
     // Verify we're on EventLoop thread (not main thread)
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
 
@@ -277,7 +278,7 @@ TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesTo
     received_features.push_back(feature);
   });
 
-  RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
+  const RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
 
     auto* r = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
@@ -286,7 +287,7 @@ TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesTo
   });
 
   // Create request
-  routeguide::Rectangle request;
+  const routeguide::Rectangle request;
 
   // Create callbacks
   routeguide::ListFeatures::Callbacks cbs;
@@ -350,7 +351,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_TryCancel_DispatchesToEventLoop)
     done = true;
   });
 
-  routeguide::Point request = rg_utils::MakePoint(123, 0);
+  const routeguide::Point request = rg_utils::MakePoint(123, 0);
 
   routeguide::GetFeature::Callbacks cbs;
   cbs.done = [](grpc::ClientUnaryReactor* r, const grpc::Status&, const routeguide::Feature&) {

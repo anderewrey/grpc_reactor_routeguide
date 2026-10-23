@@ -16,8 +16,10 @@
 #include "rg_service/route_guide_service.h"
 
 namespace routeguide::logger {
-static class RGLoggers {
-public:
+
+namespace {
+class RGLoggers {
+ public:
   RGLoggers() {
     for (size_t i = 0; i < kRpcMethodsQty; ++i) {
       const auto method = static_cast<RpcMethods>(i);
@@ -27,11 +29,17 @@ public:
   auto& operator[](const RpcMethods method) const {
     return *loggers_[std::to_underlying(method)];
   }
-private:
+
+ private:
   std::array<std::shared_ptr<spdlog::logger>, kRpcMethodsQty> loggers_;
-} loggers;
+};
+}  // namespace
 
 spdlog::logger& Get(const RpcMethods method) {
+  // Function-local static: construction (which can throw, since it creates spdlog sinks) happens
+  // on first call rather than before main(), so a failure propagates as a normal, catchable
+  // exception instead of an uncatchable one from static initialization.
+  static const RGLoggers loggers;
   return loggers[method];
 }
 

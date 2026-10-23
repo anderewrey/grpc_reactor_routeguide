@@ -56,7 +56,7 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
 
   /// RecordRoute: Client streams Points, server returns RouteSummary
   grpc::ServerReadReactor<routeguide::Point>* RecordRoute(
-      grpc::CallbackServerContext* context,
+      grpc::CallbackServerContext* /*context*/,
       routeguide::RouteSummary* summary) override {
     class RecordRouteReactor : public grpc::ServerReadReactor<routeguide::Point> {
      public:
@@ -78,7 +78,7 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
         if (ok) {
           point_count_++;
           // Check if point is a known feature
-          if (const auto name = rg_utils::GetFeatureName(point_, feature_list_);
+          if (const auto* const name = rg_utils::GetFeatureName(point_, feature_list_);
               name != nullptr && strlen(name) > 0) {
             feature_count_++;
           }
@@ -99,7 +99,7 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
           summary_->set_point_count(point_count_);
           summary_->set_feature_count(feature_count_);
           summary_->set_distance(static_cast<int>(distance_));
-          summary_->set_elapsed_time(elapsed.count());
+          summary_->set_elapsed_time(static_cast<int32_t>(elapsed.count()));
           Finish(grpc::Status::OK);
         }
       }
@@ -159,7 +159,7 @@ class ActiveWriteReactorTest : public RouteGuideTestFixtureBase<TestRouteGuideSe
   }
 
   /// Calculate expected distance between test points using rg_utils
-  double CalculateExpectedDistance(const std::vector<routeguide::Point>& points) {
+  static double CalculateExpectedDistance(const std::vector<routeguide::Point>& points) {
     double total = 0.0;
     for (size_t i = 1; i < points.size(); ++i) {
       total += rg_utils::GetDistance(points[i - 1], points[i]);
@@ -224,7 +224,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_MultiplePoints_ReturnsCorrectSummary)
 
   // Computed before sending: SendRequest() takes ownership of each point, so points cannot be
   // read again afterward.
-  double expected_distance = CalculateExpectedDistance(points);
+  const double expected_distance = CalculateExpectedDistance(points);
 
   for (auto& point : points) {
     EXPECT_TRUE(write_slot.try_acquire_for(std::chrono::seconds(5))) << "Previous write never completed";
@@ -239,7 +239,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_MultiplePoints_ReturnsCorrectSummary)
   // Wait for completion
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); })) << "Timeout waiting for RPC completion";
 
-  RecordRouteResult result = result_future.get();
+  const RecordRouteResult result = result_future.get();
 
   // Verify results
   EXPECT_TRUE(result.completed);
@@ -290,7 +290,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_EmptyStream_ReturnsZeroCounts) {
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
-  RecordRouteResult result = result_future.get();
+  const RecordRouteResult result = result_future.get();
 
   EXPECT_TRUE(result.status.ok()) << "Status: " << result.status.error_message();
   EXPECT_EQ(result.summary.point_count(), 0);
@@ -335,7 +335,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_SinglePoint_ReturnsZeroDistance) {
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
-  RecordRouteResult result = result_future.get();
+  const RecordRouteResult result = result_future.get();
 
   EXPECT_TRUE(result.status.ok()) << "Status: " << result.status.error_message();
   EXPECT_EQ(result.summary.point_count(), 1);
@@ -384,18 +384,18 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_OverlappingWrites_RejectedByWritePend
       *stub_, CreateClientContext(), std::move(cbs));
 
   // First write should be accepted
-  bool first_accepted = reactor->SendRequest(rg_utils::MakePoint(400000000, -740000000));
+  const bool first_accepted = reactor->SendRequest(rg_utils::MakePoint(400000000, -740000000));
   EXPECT_TRUE(first_accepted) << "First SendRequest should be accepted";
 
   // Second write immediately (without waiting) should be rejected
-  bool second_accepted = reactor->SendRequest(rg_utils::MakePoint(401000000, -740000000));
+  const bool second_accepted = reactor->SendRequest(rg_utils::MakePoint(401000000, -740000000));
   EXPECT_FALSE(second_accepted) << "Overlapping SendRequest should be rejected";
 
   // Wait for first write to complete
   EXPECT_TRUE(write_slot.try_acquire_for(std::chrono::seconds(5))) << "First write never completed";
 
   // Third write should now be accepted
-  bool third_accepted = reactor->SendRequest(rg_utils::MakePoint(402000000, -740000000));
+  const bool third_accepted = reactor->SendRequest(rg_utils::MakePoint(402000000, -740000000));
   EXPECT_TRUE(third_accepted) << "SendRequest after OnWriteDone should be accepted";
 
   // Wait for third write to complete
@@ -405,7 +405,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_OverlappingWrites_RejectedByWritePend
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
-  RecordRouteResult result = result_future.get();
+  const RecordRouteResult result = result_future.get();
 
   EXPECT_TRUE(result.status.ok()) << "Status: " << result.status.error_message();
   // Only 2 points were actually sent (first and third; second was rejected)
@@ -449,7 +449,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_OnWriteDone_FiresForEachWrite) {
 
   // Send 3 points, waiting for each write to complete
   for (int i = 0; i < 3; ++i) {
-    reactor->SendRequest(rg_utils::MakePoint(400000000 + i * 1000000, -740000000));
+    reactor->SendRequest(rg_utils::MakePoint(400000000 + (i * 1000000), -740000000));
     // Wait for write to be acknowledged before sending next
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
@@ -457,7 +457,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_OnWriteDone_FiresForEachWrite) {
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
-  RecordRouteResult result = result_future.get();
+  const RecordRouteResult result = result_future.get();
 
   EXPECT_TRUE(result.status.ok()) << "Status: " << result.status.error_message();
   EXPECT_EQ(result.write_done_count, 3) << "Expected 3 OnWriteDone callbacks";
@@ -495,7 +495,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_TryCancel_TerminatesStream) {
 
   ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   // Cancel may result in CANCELLED or OK (if processed before cancel)
   EXPECT_TRUE(status.error_code() == grpc::StatusCode::CANCELLED ||
@@ -544,7 +544,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_ServerError_PropagatesStatus) {
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
-  RecordRouteResult result = result_future.get();
+  const RecordRouteResult result = result_future.get();
 
   EXPECT_FALSE(result.status.ok());
   EXPECT_EQ(result.status.error_code(), grpc::StatusCode::INTERNAL);

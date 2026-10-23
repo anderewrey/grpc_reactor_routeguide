@@ -39,7 +39,7 @@ class RouteGuideTestFixtureBase : public ::testing::Test {
     ASSERT_NE(server_, nullptr) << "Failed to start in-process server";
     ASSERT_GT(selected_port, 0) << "Failed to get dynamic port";
 
-    std::string server_address = "localhost:" + std::to_string(selected_port);
+    const std::string server_address = "localhost:" + std::to_string(selected_port);
     channel_ = grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
     stub_ = routeguide::RouteGuide::NewStub(channel_);
   }

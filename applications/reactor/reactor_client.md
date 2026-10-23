@@ -145,8 +145,8 @@ These gRPC functions are called internally by the reactor classes and are not ex
 | `StartWrite()`          | Begins async write operation     | Inside `SendRequest()`                            |
 | `StartWriteLast()`      | Write + implied close, one op    | Inside `SendLastRequest()`                        |
 | `StartWritesDone()`     | Signals end of client writes     | Inside `CloseRequestStream()`                     |
-| `AddHold()`             | Prevents OnDone until RemoveHold | Inside `OnReadDone()`                             |
-| `RemoveHold()`          | Releases hold, allows OnDone     | Inside `GetResponse()`                            |
+| `AddHold()`             | Prevents OnDone until RemoveHold | Inside `OnReadDone()`, before the ok callback     |
+| `RemoveHold()`          | Releases hold, allows OnDone     | `GetResponse()`, or `OnReadDone()` if declined    |
 
 ### gRPC callbacks (protected overrides)
 
@@ -329,6 +329,21 @@ regardless of hold state; only the deferred `StartRead()` needs the hold's prote
 `OnDone()` from firing during this window, and `RemoveHold()` in `GetResponse()` releases it once the new
 `StartRead()` is issued (or skipped, if the stream is done). This is the gap gRPC's own callback API leaves open
 by design, and why it added the [hold mechanism][grpc-hold-pr].
+
+#### Hold before handing off, not after
+
+`OnReadDone()` takes the hold before it calls the `OnReadDoneOkCallback`, not once the callback has returned true.
+The callback is what hands the response off to the application thread (e.g. `EventLoop::TriggerEvent()`), so from
+that moment the application thread may already run `GetResponse()`, and its `StartRead()` and `RemoveHold()`, before
+the gRPC thread is back from the callback. gRPC's hold count is a plain counter, not a lock: a `RemoveHold()` that
+lands before its `AddHold()` does not fail, it releases a hold that is not there yet. On the last message of a
+stream, that early release can bring the RPC's outstanding-operation count to zero, so gRPC finishes the call and
+calls `OnDone()`, and the late `AddHold()` and its own release then finish the same call a second time. TSan reports
+that as a data race inside `ClientCallbackReaderImpl::MaybeFinish`, and UBSan as a call through a freed object.
+
+So the order is: hold, then hand off. Publishing the response counts as handing it off too: `OnReadDone()` sets the
+flag `GetResponse()` checks only once the hold is taken. When the callback declines the response (returns false),
+`OnReadDone()` restarts reading itself and then releases the hold it took, since no `GetResponse()` will.
 
 #### Hold semantics per RPC, not per direction
 
@@ -594,16 +609,17 @@ One difference is that callback requires a return value: a boolean flag.
 
 When it returns:
 
-- true, the active reactor will hold the RPC and no more concurrent gRPC events are possible. That way, it is
+- true, the active reactor keeps the RPC on hold (the hold is already taken before the callback is called, see
+"Hold before handing off, not after") and no more concurrent gRPC events are possible. That way, it is
 thread-safe to access the reactor from a different processing thread without concurrent events (e.g. RPC termination).
 Once the proceeding of the response is done, the RPC must be signaled to start a new read and then the hold can be
 removed.
 - false, the active reactor will immediately start a new response reading without waiting, reusing the same response
-storage for that next read. Because no hold is added, any data the callback wants to keep must be extracted (copied
-or moved out) before the callback returns, since the next incoming response overwrites that storage as soon as
-reading resumes. That case can be useful when the response is copied onto a queue for later, application-thread
-processing, or when it is discarded outright. That extraction must stay minimal, since it still executes on the
-gRPC thread; the response's actual processing should happen afterward, on the application thread.
+storage for that next read, then release the hold it took before the callback. Any data the callback wants to keep
+must be extracted (copied or moved out) before the callback returns, since the next incoming response overwrites that
+storage as soon as reading resumes. That case can be useful when the response is copied onto a queue for later,
+application-thread processing, or when it is discarded outright. That extraction must stay minimal, since it still
+executes on the gRPC thread; the response's actual processing should happen afterward, on the application thread.
 
 #### Class functions
 
@@ -650,7 +666,7 @@ The implementation of the `OnReadDoneOkCallback` is different, because it requir
 From the PlantUML sequence diagram, the corresponding points are:
 
 - 1.x : the `std::make_unique<ClientReactor>(...)` line
-- 2.4 : the `cbs.ok = [](auto* reactor, const ResponseT&) -> bool {...}` lines
+- 2.5 : the `cbs.ok = [](auto* reactor, const ResponseT&) -> bool {...}` lines
 - 4.3 : the `cbs.nok = [](auto* reactor) {...}` lines
 - 4.6 : the `cbs.done = [](auto* reactor, const grpc::Status&) {...}` lines
 
@@ -780,8 +796,8 @@ loop
     reactor <[#darkgreen]- grpc : OnReadDone : true
 alt Turn-by-turn | onreaddoneok callback returns true
 group #lightgreen (grpc-thread callback) onreaddoneok
+    reactor [#darkgreen]-\ grpc : AddHold()
     {start1} app /[#darkgreen]- reactor : TriggerEvent : OnReadDoneOk
-    &reactor [#darkgreen]-\ grpc : AddHold()
 end
     deactivate grpc
     &grpc -> grpc : holding RPC
@@ -804,11 +820,13 @@ end
 else continuously | onreaddoneok callback returns false
     activate data #yellow
 group #lightgreen (grpc-thread callback) onreaddoneok
+    reactor [#darkgreen]-\ grpc : AddHold()
     data o-[#darkblue]> reactor : <i>extracts response
     deactivate data
+    {start21} app /[#darkgreen]- reactor : TriggerEvent : OnReadDoneOk\n + response
     data o-[#darkgreen]->> reactor : Response holder
     & reactor -[#darkgreen]\ grpc : StartRead()
-    {start21} app /[#darkgreen]- reactor : TriggerEvent : OnReadDoneOk\n + response
+    reactor [#darkgreen]-\ grpc : RemoveHold()
 end
 group #lightblue (app-thread callback) onreaddoneok
     {end21} app -[#darkblue]> app : <i>update application\nwith response

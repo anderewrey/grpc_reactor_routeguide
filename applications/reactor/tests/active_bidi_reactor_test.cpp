@@ -212,7 +212,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_SendReceive_MatchesNotes) {
     RouteChatResult result;
     result.status = status;
     {
-      std::lock_guard<std::mutex> lock(notes_mutex);
+      const std::lock_guard<std::mutex> lock(notes_mutex);
       result.received_notes = received_notes;
     }
     result.completed = true;
@@ -242,7 +242,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_SendReceive_MatchesNotes) {
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); })) << "Timeout waiting for RPC completion";
 
-  RouteChatResult result = result_future.get();
+  const RouteChatResult result = result_future.get();
 
   EXPECT_TRUE(result.completed);
   EXPECT_TRUE(result.status.ok()) << "Status: " << result.status.error_message();
@@ -285,7 +285,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_InterleavedMessages_AllReceived) {
     RouteChatResult result;
     result.status = status;
     {
-      std::lock_guard<std::mutex> lock(notes_mutex);
+      const std::lock_guard<std::mutex> lock(notes_mutex);
       result.received_notes = received_notes;
     }
     result.completed = true;
@@ -317,7 +317,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_InterleavedMessages_AllReceived) {
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
-  RouteChatResult result = result_future.get();
+  const RouteChatResult result = result_future.get();
 
   EXPECT_TRUE(result.status.ok()) << "Status: " << result.status.error_message();
   ASSERT_EQ(received_count.load(), 2);  // A2 gets A1, B2 gets B1
@@ -367,7 +367,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ClientClosesFirst_ServerContinues) {
     RouteChatResult result;
     result.status = status;
     {
-      std::lock_guard<std::mutex> lock(notes_mutex);
+      const std::lock_guard<std::mutex> lock(notes_mutex);
       result.received_notes = received_notes;
     }
     result.completed = true;
@@ -392,7 +392,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ClientClosesFirst_ServerContinues) {
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
-  RouteChatResult result = result_future.get();
+  const RouteChatResult result = result_future.get();
 
   EXPECT_TRUE(result.status.ok()) << "Status: " << result.status.error_message();
   // Note 2 should receive Note 1 as response
@@ -454,7 +454,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ServerClosesFirst_ClientContinues) {
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
-  RouteChatResult result = result_future.get();
+  const RouteChatResult result = result_future.get();
 
   // Server should have closed after 2 messages
   EXPECT_TRUE(result.completed);
@@ -496,7 +496,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_TryCancel_TriggersOnDone) {
 
   ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   // Cancel may result in CANCELLED or OK (if processed before cancel)
   EXPECT_TRUE(status.error_code() == grpc::StatusCode::CANCELLED ||
@@ -541,7 +541,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_DeadlineExceeded_PropagatesStatus) {
 
   ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   // Should get DEADLINE_EXCEEDED, but may also get CANCELLED or OK depending on timing
   EXPECT_TRUE(status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED ||
@@ -642,12 +642,76 @@ TEST_F(ActiveBidiReactorTest, RouteChat_MultipleConcurrent_AllComplete) {
   }
 
   for (int i = 0; i < kNumStreams; ++i) {
-    RouteChatResult result = futures[i].get();
+    const RouteChatResult result = futures[i].get();
     EXPECT_TRUE(result.completed) << "Stream " << i << " did not complete";
     EXPECT_TRUE(result.status.ok()) << "Stream " << i << " failed: " << result.status.error_message();
     // Second note should receive first note as response
     EXPECT_GE(streams[i].received.load(), 1) << "Stream " << i << " should receive at least 1 response";
   }
+}
+
+
+/// @test Validates the read hold is taken before the read_ok callback hands the response off.
+///
+/// Same forced order as the ActiveReadReactor test of the same name: the read_ok callback hands
+/// the response to another thread, which runs GetResponse() (its StartRead() and RemoveHold()) to
+/// completion before the callback returns, then the callback lingers.
+/// - Send a note, then a second one to the same location with SendLastRequest()
+/// - The server answers the second note with the first, then finishes the RPC
+/// - That only response is consumed through GetResponse() while read_ok is still running
+///
+/// Verifies that:
+/// - OnDone never fires while a read_ok callback is still running
+/// - The response is received through GetResponse(), and the final status is OK
+TEST_F(ActiveBidiReactorTest, RouteChat_ResponseConsumedBeforeCallbackReturns_HoldsUntilReturn) {
+  std::vector<routeguide::RouteNote> received_notes;
+  std::atomic<bool> done_fired{false};
+  std::atomic<bool> done_inside_callback{false};
+  std::promise<grpc::Status> done_promise;
+  std::future<grpc::Status> done_future = done_promise.get_future();
+
+  std::binary_semaphore write_slot{0};  // Released once the first write completes
+
+  routeguide::RouteChat::Callbacks cbs;
+  cbs.read_ok = [&received_notes, &done_fired, &done_inside_callback](
+                    grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>* reactor,
+                    const routeguide::RouteNote&) {
+    auto* client_reactor = static_cast<routeguide::RouteChat::ClientReactor*>(reactor);
+    std::thread consumer([client_reactor, &received_notes] {
+      routeguide::RouteNote note;
+      if (client_reactor->GetResponse(note)) received_notes.push_back(std::move(note));
+    });
+    consumer.join();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    if (done_fired) done_inside_callback = true;
+    return true;  // Hold: the response was already consumed through GetResponse() above
+  };
+  cbs.read_nok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {};
+  cbs.write_done = [&write_slot](
+                       grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                       bool) { write_slot.release(); };
+  cbs.done = [&done_promise, &done_fired](
+                 grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
+                 const grpc::Status& status) {
+    done_fired = true;
+    done_promise.set_value(status);
+  };
+
+  auto reactor = std::make_unique<routeguide::RouteChat::ClientReactor>(
+      *stub_, CreateClientContext(), std::move(cbs));
+
+  EXPECT_TRUE(reactor->SendRequest(rg_utils::MakeRouteNote("First note", 100, 200)));
+  EXPECT_TRUE(write_slot.try_acquire_for(std::chrono::seconds(5))) << "First write never completed";
+  EXPECT_TRUE(reactor->SendLastRequest(rg_utils::MakeRouteNote("Second note", 100, 200)));
+
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); })) << "Timeout waiting for RPC completion";
+
+  const grpc::Status status = done_future.get();
+
+  EXPECT_FALSE(done_inside_callback) << "OnDone fired while the read_ok callback was still running";
+  EXPECT_TRUE(status.ok()) << "Status: " << status.error_message();
+  ASSERT_EQ(received_notes.size(), 1);
+  EXPECT_EQ(received_notes[0].message(), "First note");
 }
 
 }  // namespace
