@@ -51,6 +51,19 @@ Unlike the four unit test files, this single fixture accumulates one case per re
 instead of splitting into one file per type. Every case exercises the same dispatch path and
 differs only in RPC shape.
 
+### Callback application smoke test
+
+[callback_smoke_test.sh][callback-smoke-test] runs the callback example applications themselves,
+which have no unit tests: it starts `route_guide_callback_server`, runs `route_guide_callback_client`
+against it twice, and checks how many `RouteChat` replies each run receives. The second run's
+count depends on the notes the first run left on the server, so a server that resends earlier
+replies fails it. Any sanitizer report from either process fails it too, which is how the
+sanitizer jobs cover the server's reactors.
+
+Both applications use the fixed port 50051, so the test holds a CTest `RESOURCE_LOCK` on it. The
+server is killed at the end, so its exit-time checks (LeakSanitizer, coverage profiles) do not
+run.
+
 ### When to use each approach
 
 | Scenario | Approach |
@@ -290,4 +303,5 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [write-test]: /applications/reactor/tests/active_write_reactor_test.cpp
 [bidi-test]: /applications/reactor/tests/active_bidi_reactor_test.cpp
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp
+[callback-smoke-test]: /applications/callback/tests/callback_smoke_test.sh
 [test-fixture]: /applications/reactor/tests/route_guide_test_fixture.h

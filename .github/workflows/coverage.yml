@@ -171,8 +171,9 @@ jobs:
           # A merged profdata has no record of which binaries produced it, so llvm-cov needs every
           # instrumented binary passed explicitly. gcovr/lcov instead scan the whole build/ tree for
           # .gcno files, so they see every compiled translation unit regardless of which binary it
-          # ended up in - including the four standalone example apps ctest never runs. Passing those
-          # four here too (all built with the same instrumentation, just never executed) keeps
+          # ended up in - including the standalone example apps, which ctest never runs except for the
+          # callback client (its smoke test kills the server, which then writes no profile). Passing them
+          # here too (all built with the same instrumentation, mostly never executed) keeps
           # llvm-cov's file set the same as gcovr/lcov's: without them, this project's ~800 lines of
           # untested example-app code would silently vanish from llvm-cov's denominator instead of
           # showing up as 0%, making the tools look further apart than they actually are.
