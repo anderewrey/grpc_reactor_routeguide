@@ -83,10 +83,18 @@ jobs:
           # yet). Off by default because it is expensive and rarely relevant, but this project's
           # per-RPC logger registry (rg_logger) and reactor maps are exactly the kind of static
           # state that pattern breaks.
+          #
+          # NDEBUG_SANITIZER: under ASan, Abseil's raw_hash_set.h enables swisstable "generations",
+          # which add fields to CommonFields and the backing array. Alpine's libabsl is not built with
+          # ASan, and binding its calls to this build's inline copies of those functions made
+          # route_guide_callback_server fail during protobuf's static initialization (a UBSan report
+          # in CommonFields::control()). The macro is Abseil's own opt-out.
           - id: clang-asan-ubsan
             packages: clang compiler-rt gcc binutils llvm22
             cxx_compiler: clang++
-            cxx_flags: "-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+            cxx_flags: >-
+              -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+              -DNDEBUG_SANITIZER
             linker_flags: "-fsanitize=address,undefined"
             asan_options: >-
               detect_invalid_pointer_pairs=2 quarantine_size_mb=512 strict_string_checks=1
