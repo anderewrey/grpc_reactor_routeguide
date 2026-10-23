@@ -166,12 +166,18 @@ layout, and a report can point inside gRPC or EventLoop, not only at this projec
 step checks that each installed library references the sanitizer runtime, since an
 uninstrumented dependency still links and passes under ASan.
 
-A cold build of one stack takes 30 to 50 minutes. The vcpkg binary cache keeps it to a few minutes
-afterwards. It lives on this repository's GitHub Packages NuGet feed, one package per port and ABI
-hash, so a changed port rebuilds only itself and the ports that depend on it, and every branch and
-pull request reads the same feed. vcpkg is checked out at the registry baseline of
+A cold build of one stack takes 35 to 50 minutes. The vcpkg binary cache keeps it to a few minutes
+afterwards. It uses vcpkg's `files` provider, one zip per package and ABI hash, kept in the GitHub
+Actions cache: no extra tool is needed, and it is the same mechanism vcpkg uses for its local cache
+(`~/.cache/vcpkg/archives`). Each run restores its branch's latest archive, or `master`'s, so a
+changed port rebuilds only itself and the ports that depend on it, and saves a new archive only when
+a package was built or pruned. Every run marks the packages it installed as used, and a package no
+run saved as used for 30 days is deleted. Pruning by age, not by one run's use, keeps the packages of
+branches still on older ports. GitHub itself deletes an archive left unused for 7 days, and the
+repository's caches are capped at 10 GB. vcpkg is checked out at the registry baseline of
 `vcpkg-configuration.json`, since its helper scripts are part of every ABI hash. The workflow also
-runs every Monday on `master`, to catch runner image and toolchain updates.
+runs every Monday on `master`, to catch runner image and toolchain updates, which also keeps
+`master`'s archive from expiring.
 
 This workflow's TSan entry found that EventLoop pushed onto its event queue without the mutex its
 loop reads that queue under. Upstream fixed it, along with a race on its callback map, and the

@@ -11,10 +11,8 @@ on:
     - cron: '17 6 * * 1'
   workflow_dispatch:
 
-# packages: write lets GITHUB_TOKEN read and publish the vcpkg binary cache on GitHub Packages.
 permissions:
   contents: read
-  packages: write
 
 # The event is part of the key: the weekly run and a push to master share the ref, and would
 # otherwise cancel each other.
@@ -52,11 +50,10 @@ jobs:
         run: sudo sysctl vm.mmap_rnd_bits=28
 
       # vcpkg fetches its own ninja for the ports, but the project's own configure needs one on PATH.
-      # Mono runs the nuget.exe vcpkg uses for its binary cache; ubuntu-24.04 no longer ships it.
-      - name: Install Ninja and Mono
+      - name: Install Ninja
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends ninja-build mono-complete
+          sudo apt-get install -y --no-install-recommends ninja-build
 
       # Checked out at the registry baseline of vcpkg-configuration.json rather than master: vcpkg's
       # helper scripts are part of every package's ABI hash, so a moving vcpkg would invalidate the
@@ -70,20 +67,28 @@ jobs:
           "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
           echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
 
-      # vcpkg binary cache: one NuGet package per port and ABI hash, on this repository's GitHub
-      # Packages feed. A changed port rebuilds only itself and what depends on it, every branch and
-      # pull request reads the same feed, and each package is uploaded as soon as it is built, so a
-      # cancelled or failed cold run keeps its progress.
+      # vcpkg binary cache: vcpkg's files provider, one zip per package and ABI hash, kept in the
+      # Actions cache. Each run restores its branch's latest archive, or master's, so a changed port
+      # rebuilds only itself and what depends on it. A new archive is saved only when a package was
+      # built or pruned (see "Prune the vcpkg binary cache").
+      - name: Restore the vcpkg binary cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: vcpkg-${{ matrix.triplet }}-${{ github.ref }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            vcpkg-${{ matrix.triplet }}-${{ github.ref }}-
+            vcpkg-${{ matrix.triplet }}-refs/heads/master-
+
       - name: Set up the vcpkg binary cache
-        env:
-          FEED_URL: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        id: setup-cache
         run: |
-          nuget=$("$VCPKG_ROOT/vcpkg" fetch nuget | tail -n 1)
-          mono "$nuget" sources add -Source "$FEED_URL" -StorePasswordInClearText -Name GitHubPackages \
-            -UserName "${{ github.repository_owner }}" -Password "$GH_TOKEN"
-          mono "$nuget" setapikey "$GH_TOKEN" -Source "$FEED_URL"
-          echo "VCPKG_BINARY_SOURCES=clear;nuget,$FEED_URL,readwrite" >> "$GITHUB_ENV"
+          cache="$RUNNER_TEMP/vcpkg-binary-cache"
+          mkdir -p "$cache"
+          find "$cache" -name '*.zip' -printf '%P\n' | sort > "$RUNNER_TEMP/cache-before.txt"
+          echo "Restored $(wc -l < "$RUNNER_TEMP/cache-before.txt") packages"
+          echo "VCPKG_BINARY_SOURCES=clear;files,$cache,readwrite" >> "$GITHUB_ENV"
 
       # Configure runs vcpkg's manifest install. protoc and grpc_cpp_plugin are ASan-instrumented
       # too and run during the build, so LeakSanitizer is off until the Test step.
@@ -144,3 +149,43 @@ jobs:
             tail -n 300 "$log"
             echo "::endgroup::"
           done
+
+      # Marks every package this run installed as used (its zip's modification time, which the cache
+      # archive preserves), then deletes the packages no run saved as used for 30 days. Pruning by
+      # age rather than by this run's use keeps the packages of branches still on older ports; a
+      # branch's own archive expires once unused for 7 days (GitHub's cache eviction). Skipped when
+      # vcpkg recorded no ABI hash, so a run that failed early deletes nothing.
+      - name: Prune the vcpkg binary cache
+        id: prune
+        if: ${{ always() && steps.setup-cache.outcome == 'success' }}
+        run: |
+          cache="$RUNNER_TEMP/vcpkg-binary-cache"
+          status_file=cmake-build-vcpkg-${{ matrix.sanitizer }}-clang/vcpkg_installed/vcpkg/status
+          used="$RUNNER_TEMP/used-abis.txt"
+          if [ -f "$status_file" ]; then
+            sed -n 's/^Abi: //p' "$status_file" | sort -u > "$used"
+          fi
+          if [ -s "$used" ]; then
+            find "$cache" -name '*.zip' | while read -r zip; do
+              if grep -qxF "$(basename "$zip" .zip)" "$used"; then touch "$zip"; fi
+            done
+            echo "Pruning packages unused for 30 days:"
+            find "$cache" -name '*.zip' -mtime +30 -print -delete
+          else
+            echo "::warning::No ABI hash recorded by vcpkg, the binary cache is not pruned"
+          fi
+          find "$cache" -name '*.zip' -printf '%P\n' | sort > "$RUNNER_TEMP/cache-after.txt"
+          if cmp -s "$RUNNER_TEMP/cache-before.txt" "$RUNNER_TEMP/cache-after.txt"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Saved even when a later step failed or the run was cancelled, so a cold build keeps what it
+      # already built.
+      - name: Save the vcpkg binary cache
+        if: ${{ always() && steps.prune.outputs.changed == 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: ${{ steps.cache.outputs.cache-primary-key }}
