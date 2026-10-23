@@ -188,6 +188,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
           // See "Comparison with direct callbacks" in reactor_client.md for why.
           mu_.lock();
           logger_.info("REQUEST  | RouteNote: {}", protobuf_utils::ToString(note_));
+          to_send_notes_.clear();
           std::ranges::copy_if(received_notes_, std::back_inserter(to_send_notes_),
                                [this](const RouteNote& note) {
                                  return (note.location() == note_.location());
