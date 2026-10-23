@@ -21,6 +21,8 @@ using routeguide::RouteGuide;
 using routeguide::RouteNote;
 using routeguide::RouteSummary;
 
+// latitude/longitude is the coordinate pair this whole file works with.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 Point rg_utils::MakePoint(const int32_t latitude, const int32_t longitude) {
   Point p;
   p.set_latitude(latitude);
@@ -28,6 +30,8 @@ Point rg_utils::MakePoint(const int32_t latitude, const int32_t longitude) {
   return p;
 }
 
+// Two coordinate pairs, same rationale as MakePoint above.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 Rectangle rg_utils::MakeRectangle(const int32_t latitude_lo, const int32_t longitude_lo,
                                           const int32_t latitude_hi, const int32_t longitude_hi) {
   Rectangle rect;
@@ -68,7 +72,7 @@ double rg_utils::GetDistance(const Point& start, const Point& end) {
   const auto delta_lon_rad = to_radian(lon_2 - lon_1);
 
   const auto a = pow(sin(delta_lat_rad / 2), 2) +
-                 cos(lat_rad_1) * cos(lat_rad_2) * pow(sin(delta_lon_rad / 2), 2);
+                 (cos(lat_rad_1) * cos(lat_rad_2) * pow(sin(delta_lon_rad / 2), 2));
   const auto c = 2 * atan2(sqrt(a), sqrt(1 - a));
   return kR * c;
 }
@@ -94,7 +98,7 @@ bool rg_utils::IsPointWithinRectangle(const Rectangle& rectangle, const Point& p
 
 Feature rg_utils::GetFeatureFromPoint(const FeatureList& feature_list, const Point& point) {
   Feature feature;
-  if (const auto name = GetFeatureName(point, feature_list)) {
+  if (const auto* const name = GetFeatureName(point, feature_list)) {
     if (strlen(name) > 0) {
       feature.set_name(name);
     }
@@ -104,14 +108,14 @@ Feature rg_utils::GetFeatureFromPoint(const FeatureList& feature_list, const Poi
 }
 
 const Point& rg_utils::GetRandomPoint(const FeatureList& feature_list) {
-  static unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
+  static const unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
   static std::default_random_engine generator(seed);
   std::uniform_int_distribution<unsigned> feature_distribution(0, feature_list.size() - 1);
   return feature_list[feature_distribution(generator)].location();
 }
 
 unsigned rg_utils::GetRandomTimeDelay() {
-  static unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
+  static const unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
   static std::default_random_engine generator(seed);
   static std::uniform_int_distribution<unsigned> delay_distribution(500, 1500);
   return delay_distribution(generator);

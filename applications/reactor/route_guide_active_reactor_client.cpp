@@ -253,7 +253,7 @@ class RouteGuideClient {
 
     // (Point 1.1) Create reactor
     reactor_map_[RpcKey] =
-        std::make_unique<ClientReactor>(*stub_, std::move(CreateClientContext()), std::move(point), std::move(cbs));
+        std::make_unique<ClientReactor>(*stub_, CreateClientContext(), std::move(point), std::move(cbs));
     logger.info("         | reactor[{}] created", fmt::ptr(reactor_map_[RpcKey].get()));
   }
 
@@ -292,7 +292,7 @@ class RouteGuideClient {
 
     // (Point 1.1) Create reactor
     reactor_map_[RpcKey] =
-        std::make_unique<ClientReactor>(*stub_, std::move(CreateClientContext()), std::move(rect), std::move(cbs));
+        std::make_unique<ClientReactor>(*stub_, CreateClientContext(), std::move(rect), std::move(cbs));
     logger.info("         | reactor[{}] created", fmt::ptr(reactor_map_[RpcKey].get()));
   }
 

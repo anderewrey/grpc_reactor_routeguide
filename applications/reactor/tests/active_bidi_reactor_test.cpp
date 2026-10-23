@@ -212,7 +212,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_SendReceive_MatchesNotes) {
     RouteChatResult result;
     result.status = status;
     {
-      std::lock_guard<std::mutex> lock(notes_mutex);
+      const std::lock_guard<std::mutex> lock(notes_mutex);
       result.received_notes = received_notes;
     }
     result.completed = true;
@@ -242,7 +242,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_SendReceive_MatchesNotes) {
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); })) << "Timeout waiting for RPC completion";
 
-  RouteChatResult result = result_future.get();
+  const RouteChatResult result = result_future.get();
 
   EXPECT_TRUE(result.completed);
   EXPECT_TRUE(result.status.ok()) << "Status: " << result.status.error_message();
@@ -285,7 +285,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_InterleavedMessages_AllReceived) {
     RouteChatResult result;
     result.status = status;
     {
-      std::lock_guard<std::mutex> lock(notes_mutex);
+      const std::lock_guard<std::mutex> lock(notes_mutex);
       result.received_notes = received_notes;
     }
     result.completed = true;
@@ -317,7 +317,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_InterleavedMessages_AllReceived) {
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
-  RouteChatResult result = result_future.get();
+  const RouteChatResult result = result_future.get();
 
   EXPECT_TRUE(result.status.ok()) << "Status: " << result.status.error_message();
   ASSERT_EQ(received_count.load(), 2);  // A2 gets A1, B2 gets B1
@@ -367,7 +367,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ClientClosesFirst_ServerContinues) {
     RouteChatResult result;
     result.status = status;
     {
-      std::lock_guard<std::mutex> lock(notes_mutex);
+      const std::lock_guard<std::mutex> lock(notes_mutex);
       result.received_notes = received_notes;
     }
     result.completed = true;
@@ -392,7 +392,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ClientClosesFirst_ServerContinues) {
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
-  RouteChatResult result = result_future.get();
+  const RouteChatResult result = result_future.get();
 
   EXPECT_TRUE(result.status.ok()) << "Status: " << result.status.error_message();
   // Note 2 should receive Note 1 as response
@@ -454,7 +454,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ServerClosesFirst_ClientContinues) {
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
-  RouteChatResult result = result_future.get();
+  const RouteChatResult result = result_future.get();
 
   // Server should have closed after 2 messages
   EXPECT_TRUE(result.completed);
@@ -496,7 +496,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_TryCancel_TriggersOnDone) {
 
   ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   // Cancel may result in CANCELLED or OK (if processed before cancel)
   EXPECT_TRUE(status.error_code() == grpc::StatusCode::CANCELLED ||
@@ -541,7 +541,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_DeadlineExceeded_PropagatesStatus) {
 
   ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   // Should get DEADLINE_EXCEEDED, but may also get CANCELLED or OK depending on timing
   EXPECT_TRUE(status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED ||
@@ -642,7 +642,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_MultipleConcurrent_AllComplete) {
   }
 
   for (int i = 0; i < kNumStreams; ++i) {
-    RouteChatResult result = futures[i].get();
+    const RouteChatResult result = futures[i].get();
     EXPECT_TRUE(result.completed) << "Stream " << i << " did not complete";
     EXPECT_TRUE(result.status.ok()) << "Stream " << i << " failed: " << result.status.error_message();
     // Second note should receive first note as response
@@ -706,7 +706,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ResponseConsumedBeforeCallbackReturns_Ho
 
   ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); })) << "Timeout waiting for RPC completion";
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   EXPECT_FALSE(done_inside_callback) << "OnDone fired while the read_ok callback was still running";
   EXPECT_TRUE(status.ok()) << "Status: " << status.error_message();
