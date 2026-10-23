@@ -206,9 +206,9 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
      private:
       void NextWrite() {
         if (notes_iterator_ != to_send_notes_.end()) {
-          logger_.info("RESPONSE | RouteNote: {}", protobuf_utils::ToString(*notes_iterator_));
-          StartWrite(&*notes_iterator_);
-          ++notes_iterator_;
+          const RouteNote& n = *notes_iterator_++;
+          logger_.info("RESPONSE | RouteNote: {}", protobuf_utils::ToString(n));
+          StartWrite(&n);
         } else {
           mu_.lock();
           received_notes_.push_back(note_);
