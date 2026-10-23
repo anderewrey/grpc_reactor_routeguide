@@ -273,7 +273,7 @@ class RouteGuideClient {
     }
 
     Callbacks cbs;
-    // (Point 2.4) TriggerEvent: OnReadDoneOk
+    // (Point 2.5) TriggerEvent: OnReadDoneOk
     cbs.ok = [](auto* reactor, const ResponseT&) -> bool {
       assert(main_thread != std::this_thread::get_id());  // gRPC thread
       EventLoop::TriggerEvent(kListFeaturesOnReadDoneOk, reactor);

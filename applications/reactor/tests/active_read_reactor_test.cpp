@@ -23,6 +23,7 @@
 #include <future>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -516,6 +517,68 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleConcurrent_AllComplete) {
   for (int i = 0; i < kNumConcurrentStreams; ++i) {
     EXPECT_TRUE(statuses[i].ok()) << "Stream " << i << " failed: " << statuses[i].error_message();
     EXPECT_EQ(feature_counts[i], 10) << "Stream " << i << " received wrong feature count";
+  }
+}
+
+/// @test Validates the hold is taken before the ok callback hands the response off.
+///
+/// Forces the order that broke when OnReadDone() called AddHold() only after the ok callback
+/// returned: the callback hands each response to another thread, which runs GetResponse() (its
+/// StartRead() and RemoveHold()) to completion before the callback returns. The callback then
+/// lingers, giving gRPC time to finish the RPC if that early RemoveHold() released the reactor's
+/// last outstanding operation. On the last message it did: OnDone() fired while the reaction was
+/// still running, and the late AddHold() then reached an already destroyed call.
+///
+/// Verifies that:
+/// - OnDone never fires while an ok callback is still running
+/// - All features are received through GetResponse(), and the final status is OK
+TEST_F(ActiveReadReactorTest, ListFeatures_ResponseConsumedBeforeCallbackReturns_HoldsUntilReturn) {
+  std::vector<routeguide::Feature> features;
+  for (int i = 0; i < 3; ++i) {
+    features.push_back(rg_utils::MakeFeature("Feature " + std::to_string(i), i * 100, i * -100));
+  }
+  test_service_.SetListFeaturesResponse(features);
+
+  std::vector<routeguide::Feature> received_features;
+  std::atomic<bool> done_fired{false};
+  std::atomic<bool> done_inside_callback{false};
+  std::promise<grpc::Status> done_promise;
+  std::future<grpc::Status> done_future = done_promise.get_future();
+
+  routeguide::Rectangle request;
+
+  routeguide::ListFeatures::Callbacks cbs;
+  cbs.ok = [&received_features, &done_fired, &done_inside_callback](
+               grpc::ClientReadReactor<routeguide::Feature>* reactor, const routeguide::Feature&) {
+    auto* client_reactor = static_cast<routeguide::ListFeatures::ClientReactor*>(reactor);
+    std::thread consumer([client_reactor, &received_features] {
+      routeguide::Feature feature;
+      if (client_reactor->GetResponse(feature)) received_features.push_back(std::move(feature));
+    });
+    consumer.join();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    if (done_fired) done_inside_callback = true;
+    return true;  // Hold: the response was already consumed through GetResponse() above
+  };
+  cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
+  cbs.done = [&done_promise, &done_fired](grpc::ClientReadReactor<routeguide::Feature>*,
+                                          const grpc::Status& status) {
+    done_fired = true;
+    done_promise.set_value(status);
+  };
+
+  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
+      *stub_, CreateClientContext(), request, std::move(cbs));
+
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); })) << "Timeout waiting for stream completion";
+
+  grpc::Status status = done_future.get();
+
+  EXPECT_FALSE(done_inside_callback) << "OnDone fired while the ok callback was still running";
+  EXPECT_TRUE(status.ok()) << "Status: " << status.error_message();
+  ASSERT_EQ(received_features.size(), features.size());
+  for (size_t i = 0; i < features.size(); ++i) {
+    EXPECT_EQ(received_features[i].name(), features[i].name());
   }
 }
 

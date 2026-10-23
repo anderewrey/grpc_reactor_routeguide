@@ -209,7 +209,7 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
   /// @return true when the returned response is valid, false otherwise.
   bool GetResponse(ResponseT& response) {
     if (!response_ready_) return false;
-    // (Point 2.8, 2.14) extracts response
+    // (Point 2.8, 2.15) extracts response
     swap(response_, response);  // Moving the read content on the user side
     response_ready_ = false;
     if (!stream_no_more_) {
@@ -244,17 +244,22 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
       return;
     }
     // (Point 2.3) OnReadDone: true
-    if (cbs_.ok && cbs_.ok(this, response_)) {
-      // Hold the RPC until the application thread calls StartRead() again from GetResponse().
-      // See "Why OnReadDone holds before returning" in reactor_client.md for why this hold
-      // exists: https://github.com/grpc/grpc/pull/18072
-      // (Point 2.5) Holding the RPC
-      this->AddHold();
-      return;
-    }
+    // Hold the RPC until the application thread calls StartRead() again from GetResponse().
+    // The hold is taken before the callback, never after: the callback is what hands the
+    // response off, so GetResponse() and its RemoveHold() can run on the application thread
+    // before the callback even returns. See "Why OnReadDone holds before returning" in
+    // reactor_client.md for why this hold exists: https://github.com/grpc/grpc/pull/18072
+    // (Point 2.4, 2.14) Holding the RPC
+    this->AddHold();
+    // (Point 2.5) TriggerEvent: OnReadDoneOk
+    if (cbs_.ok && cbs_.ok(this, response_)) return;
     response_ready_ = false;
-    // (Point 2.15, 2.16) Restart reading
+    // (Point 2.16, 2.17) Restart reading
     this->StartRead(&response_);
+    // The response was declined, so no GetResponse() will release the hold: release it here,
+    // after StartRead(), which keeps the RPC alive on its own.
+    // (Point 2.18) Resuming RPC
+    this->RemoveHold();
   }
   /// This event function is called by gRPC when the RPC is done and no more operation is possible with that reactor
   /// instance. The OnDoneCallback is then called, but on the same gRPC thread. The received status
@@ -693,15 +698,16 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
       if (cbs_.read_nok) cbs_.read_nok(this);
       return;
     }
-    if (cbs_.read_ok && cbs_.read_ok(this, response_)) {
-      // Hold the RPC until the application thread calls StartRead() again from GetResponse().
-      // See "Why OnReadDone holds before returning" in reactor_client.md for why this hold
-      // exists: https://github.com/grpc/grpc/pull/18072
-      this->AddHold();
-      return;
-    }
+    // Hold the RPC until the application thread calls StartRead() again from GetResponse().
+    // Taken before the callback, for the same reason as ActiveReadReactor::OnReadDone(). See
+    // "Why OnReadDone holds before returning" in reactor_client.md for why this hold exists:
+    // https://github.com/grpc/grpc/pull/18072
+    this->AddHold();
+    if (cbs_.read_ok && cbs_.read_ok(this, response_)) return;
     response_ready_ = false;
     this->StartRead(&response_);
+    // Declined: no GetResponse() will release the hold, so release it here, after StartRead().
+    this->RemoveHold();
   }
 
   /// This event function is called by gRPC when a write operation completes.
