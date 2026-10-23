@@ -74,6 +74,9 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
         logger_.info("REQUEST  | Rectangle: {}", protobuf_utils::ToString(rectangle_));
         NextWrite();
       }
+      // gRPC calls OnDone() only once every reaction has returned, so touching members after Finish()
+      // inside a reaction would still be safe. The reactors keep Finish() last anyway, so their
+      // correctness does not hang on that guarantee.
       void OnDone() override {
         logger_.info("EXIT     |");
         delete this;
@@ -100,9 +103,9 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
           }
         }
         // Didn't write anything, all is done.
-        logger_.info("EXIT     | Pre-Finish()");
+        // Finish() is the reactor's last action: its OnDone() deletes `this` (see the note in OnDone()).
+        logger_.info("EXIT     | Finish()");
         Finish(Status::OK);
-        logger_.info("EXIT     | Post-Finish()");
       }
       spdlog::logger& logger_ = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures);
       const Rectangle& rectangle_;
@@ -172,6 +175,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
         logger_.info("ENTER    |");
         StartRead(&note_);
       }
+      // Same as Lister: Finish() and StartWriteAndFinish() stay the last action of their reaction.
       void OnDone() override {
         logger_.info("EXIT     | OnDone()");
         delete this;
@@ -180,8 +184,9 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
         if (ok) {
           if (note_.message().empty()) {
             logger_.info("RESPONSE | RouteNote: {}", protobuf_utils::ToString(note_));
-            StartWriteAndFinish(&note_, grpc::WriteOptions(), Status::OK);
+            // StartWriteAndFinish() is the reactor's last action, see the note in OnDone().
             logger_.info("EXIT     | StartWriteAndFinish()");
+            StartWriteAndFinish(&note_, grpc::WriteOptions(), Status::OK);
             return;
           }
           // Unlike the non-reactor examples, locks twice instead of once around the whole exchange.
@@ -196,9 +201,9 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
           notes_iterator_ = to_send_notes_.begin();
           NextWrite();
         } else {
-          logger_.info("EXIT     | Pre-Finish()");
+          // Finish() is the reactor's last action, see the note in OnDone().
+          logger_.info("EXIT     | Finish()");
           Finish(Status::OK);
-          logger_.info("EXIT     | Post-Finish()");
         }
       }
       void OnWriteDone(bool /*ok*/) override { NextWrite(); }
