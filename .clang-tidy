@@ -14,7 +14,6 @@ Checks: >
   -readability-identifier-length,
   -misc-non-private-member-variables-in-classes,
   -misc-include-cleaner,
-  -misc-unused-using-decls,
   -portability-avoid-pragma-once,
   -readability-braces-around-statements,
   -performance-enum-size
@@ -25,8 +24,6 @@ Checks: >
 # it (see "gRPC callbacks (protected overrides)" in reactor_client.md), suppressed there with
 # targeted NOLINT comments rather than disabled project-wide, so the check still catches an
 # accidental visibility narrowing anywhere else.
-# misc-unused-using-decls is disabled: rg_utils.cpp keeps a couple of using-decls reserved for
-# planned, not-yet-written code.
 # portability-avoid-pragma-once is disabled: #pragma once is this project's chosen header-guard
 # style, not a portability defect worth flagging (all supported toolchains here support it).
 # readability-braces-around-statements is disabled: single-line, brace-free if/loop bodies are an

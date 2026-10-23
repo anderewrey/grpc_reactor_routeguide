@@ -237,8 +237,8 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
   // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnReadDone(const bool ok) override {
     // (Point 2.1, 2.2, 2.3, 4.1, 4.2) Event received from stream
-    response_ready_ = ok;
     if (!ok) {
+      response_ready_ = false;
       stream_no_more_ = true;
       // (Point 4.2) OnReadDone: False
       if (cbs_.nok) cbs_.nok(this);
@@ -252,14 +252,17 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
     // reactor_client.md for why this hold exists: https://github.com/grpc/grpc/pull/18072
     // (Point 2.4, 2.14) Holding the RPC
     this->AddHold();
-    // (Point 2.5) TriggerEvent: OnReadDoneOk
+    // Published only once the hold is taken: response_ready_ is what GetResponse() checks, so
+    // setting it is already part of the hand-off.
+    response_ready_ = true;
+    // (Point 2.5, 2.16) TriggerEvent: OnReadDoneOk
     if (cbs_.ok && cbs_.ok(this, response_)) return;
     response_ready_ = false;
-    // (Point 2.16, 2.17) Restart reading
+    // (Point 2.17, 2.18) Restart reading
     this->StartRead(&response_);
     // The response was declined, so no GetResponse() will release the hold: release it here,
     // after StartRead(), which keeps the RPC alive on its own.
-    // (Point 2.18) Resuming RPC
+    // (Point 2.19) Resuming RPC
     this->RemoveHold();
   }
   /// This event function is called by gRPC when the RPC is done and no more operation is possible with that reactor
@@ -696,8 +699,8 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// @param ok true: a response is received. false: the read stream is closed.
   // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnReadDone(const bool ok) override {
-    response_ready_ = ok;
     if (!ok) {
+      response_ready_ = false;
       stream_no_more_ = true;
       if (cbs_.read_nok) cbs_.read_nok(this);
       return;
@@ -707,6 +710,8 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
     // "Why OnReadDone holds before returning" in reactor_client.md for why this hold exists:
     // https://github.com/grpc/grpc/pull/18072
     this->AddHold();
+    // Published only once the hold is taken, as in ActiveReadReactor::OnReadDone().
+    response_ready_ = true;
     if (cbs_.read_ok && cbs_.read_ok(this, response_)) return;
     response_ready_ = false;
     this->StartRead(&response_);

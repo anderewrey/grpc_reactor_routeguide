@@ -341,8 +341,9 @@ stream, that early release can bring the RPC's outstanding-operation count to ze
 calls `OnDone()`, and the late `AddHold()` and its own release then finish the same call a second time. TSan reports
 that as a data race inside `ClientCallbackReaderImpl::MaybeFinish`, and UBSan as a call through a freed object.
 
-So the order is: hold, then hand off. When the callback declines the response (returns false), `OnReadDone()`
-restarts reading itself and then releases the hold it took, since no `GetResponse()` will.
+So the order is: hold, then hand off. Publishing the response counts as handing it off too: `OnReadDone()` sets the
+flag `GetResponse()` checks only once the hold is taken. When the callback declines the response (returns false),
+`OnReadDone()` restarts reading itself and then releases the hold it took, since no `GetResponse()` will.
 
 #### Hold semantics per RPC, not per direction
 
@@ -614,11 +615,11 @@ thread-safe to access the reactor from a different processing thread without con
 Once the proceeding of the response is done, the RPC must be signaled to start a new read and then the hold can be
 removed.
 - false, the active reactor will immediately start a new response reading without waiting, reusing the same response
-storage for that next read. Because no hold is added, any data the callback wants to keep must be extracted (copied
-or moved out) before the callback returns, since the next incoming response overwrites that storage as soon as
-reading resumes. That case can be useful when the response is copied onto a queue for later, application-thread
-processing, or when it is discarded outright. That extraction must stay minimal, since it still executes on the
-gRPC thread; the response's actual processing should happen afterward, on the application thread.
+storage for that next read, then release the hold it took before the callback. Any data the callback wants to keep
+must be extracted (copied or moved out) before the callback returns, since the next incoming response overwrites that
+storage as soon as reading resumes. That case can be useful when the response is copied onto a queue for later,
+application-thread processing, or when it is discarded outright. That extraction must stay minimal, since it still
+executes on the gRPC thread; the response's actual processing should happen afterward, on the application thread.
 
 #### Class functions
 
@@ -822,10 +823,10 @@ group #lightgreen (grpc-thread callback) onreaddoneok
     reactor [#darkgreen]-\ grpc : AddHold()
     data o-[#darkblue]> reactor : <i>extracts response
     deactivate data
+    {start21} app /[#darkgreen]- reactor : TriggerEvent : OnReadDoneOk\n + response
     data o-[#darkgreen]->> reactor : Response holder
     & reactor -[#darkgreen]\ grpc : StartRead()
     reactor [#darkgreen]-\ grpc : RemoveHold()
-    {start21} app /[#darkgreen]- reactor : TriggerEvent : OnReadDoneOk\n + response
 end
 group #lightblue (app-thread callback) onreaddoneok
     {end21} app -[#darkblue]> app : <i>update application\nwith response
