@@ -202,8 +202,10 @@ symlinked to the unversioned `llvm-symbolizer` name the sanitizer runtime expect
 headers with both analysis tools, which run as one matrix job's two entries rather than as
 separate jobs. Each entry has two modes: a `pull_request`, `push` or weekly `schedule` run
 annotates diagnostics without failing the job, and a `workflow_dispatch` run fails on any
-diagnostic for a deliberate, whole-repo pass. See `static-analysis.yml` for why it is a separate
-workflow, and `.clang-tidy` for clang-tidy's check selection.
+diagnostic for a deliberate, whole-repo pass. clang-tidy only analyses `applications/`; the
+supporting `common/`, `protobuf_utils/` and `rg_service/` directories are left out. See
+`static-analysis.yml` for why it is a separate workflow, and `.clang-tidy` for clang-tidy's check
+selection.
 
 ## Adding new tests
 

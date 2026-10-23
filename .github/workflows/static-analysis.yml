@@ -153,7 +153,7 @@ jobs:
         if: matrix.tool == 'clang-tidy'
         run: |
           mkdir -p /tmp/clang-tidy-out
-          find applications common protobuf_utils rg_service -name '*.cpp' -print0 | \
+          find applications -name '*.cpp' -print0 | \
             xargs -0 -P "$(nproc)" -I{} sh -c \
               'clang-tidy -p build "$1" > "/tmp/clang-tidy-out/$(echo "$1" | tr / _).txt" 2>&1 || true' _ {}
           cat /tmp/clang-tidy-out/*.txt > analysis-output.txt

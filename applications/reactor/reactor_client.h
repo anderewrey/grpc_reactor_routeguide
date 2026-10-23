@@ -102,7 +102,6 @@ class ActiveUnaryReactor : public grpc::ClientUnaryReactor {
   /// is also copied into the reactor.
   /// This OnDone is also the relevent event acknowledging the response reception.
   /// @param status info coming from gRPC
-  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnDone(const grpc::Status& status) override {
     // (Point 3.1, 3.2, 3.3) RPC termination
     response_ready_ = status.ok();
@@ -234,7 +233,6 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
   /// is called.
   /// @param ok true: a response is received. false: the stream reader is closed
   ///           (but not the RPC itself).
-  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnReadDone(const bool ok) override {
     // (Point 2.1, 2.2, 2.3, 4.1, 4.2) Event received from stream
     if (!ok) {
@@ -269,7 +267,6 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
   /// instance. The OnDoneCallback is then called, but on the same gRPC thread. The received status
   /// is also copied into the reactor.
   /// @param status info coming from gRPC
-  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnDone(const grpc::Status& status) override {
     // (Point 4.4, 4.5) RPC termination
     stream_no_more_ = true;
@@ -448,7 +445,6 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// This event function is called by gRPC when a write operation completes.
   /// The OnWriteDoneCallback is then called, but on the same gRPC thread.
   /// @param ok true if the write was successful
-  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnWriteDone(bool ok) override {
     write_pending_ = false;
     if (!ok) stream_no_more_ = true;
@@ -460,14 +456,12 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// SendLastRequest()). Either way, the write side is conclusively over once this fires, so it
   /// is tracked the same as OnDone() for that purpose.
   /// @param ok true if the close was successful
-  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnWritesDoneDone(bool /*ok*/) override { stream_no_more_ = true; }
 
   /// This event function is called by gRPC when the RPC is done. The OnDoneCallback
   /// callback is then called, but on the same gRPC thread. The received status
   /// is also copied into the reactor.
   /// @param status info coming from gRPC
-  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnDone(const grpc::Status& status) override {
     stream_no_more_ = true;
     response_ready_ = status.ok();
@@ -697,7 +691,6 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// Based on the value of the `ok` flag, the OnReadDoneOkCallback or OnReadDoneNOkCallback
   /// is called.
   /// @param ok true: a response is received. false: the read stream is closed.
-  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnReadDone(const bool ok) override {
     if (!ok) {
       response_ready_ = false;
@@ -722,7 +715,6 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// This event function is called by gRPC when a write operation completes.
   /// The OnWriteDoneCallback is then called, but on the same gRPC thread.
   /// @param ok true if the write was successful
-  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnWriteDone(bool ok) override {
     write_pending_ = false;
     if (!ok) stream_no_more_ = true;
@@ -734,14 +726,12 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// SendLastRequest()). Either way, the write side is conclusively over once this fires, so it
   /// is tracked the same as OnDone() for that purpose.
   /// @param ok true if the close was successful
-  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnWritesDoneDone(bool /*ok*/) override { stream_no_more_ = true; }
 
   /// This event function is called by gRPC when the RPC is done and no more operation is possible
   /// with that reactor instance. The OnDoneCallback is then called, but on the same gRPC thread.
   /// The received status is also copied into the reactor.
   /// @param status info coming from gRPC
-  // NOLINTNEXTLINE(misc-override-with-different-visibility): intentional, see reactor_client.md
   void OnDone(const grpc::Status& status) override {
     stream_no_more_ = true;
     if (cbs_.done) {
