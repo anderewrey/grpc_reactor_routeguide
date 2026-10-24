@@ -1554,7 +1554,7 @@ From the PlantUML sequence diagram, the corresponding points are:
 
 - 1.x : the `std::make_unique<ClientReactor>(...)` line
 - 2.6 : the `cbs.write_done = [](auto* reactor, bool) {...}` lines
-- 4.4 : the `cbs.done = [](auto*, const grpc::Status&, std::unique_ptr<ResponseT> response) {...}` lines
+- 5.4 : the `cbs.done = [](auto*, const grpc::Status&, std::unique_ptr<ResponseT> response) {...}` lines
 
 ````cpp
 #include "applications/reactor/reactor_client_routeguide.h"
@@ -1582,7 +1582,7 @@ void RecordRoute(std::vector<routeguide::Point> points) {
 The write flow advances one request per `OnWriteDone`. The pump sends the final request through
 `SendLastRequest()`, so no separate close is needed.
 
-From the PlantUML sequence diagram, the corresponding points are 2.1 and 2.8.
+From the PlantUML sequence diagrams, the corresponding points are 2.1 and 2.8, and 3.1 for the last request.
 
 ````cpp
 void SendNextRecordRoutePoint() {
@@ -1609,7 +1609,8 @@ EventLoop::RegisterEvent(kRecordRouteOnWriteDone, [this](const Event*) {
 > The last action to do when handling that event is to delete the reactor instance: that instance can't be
 > reused by gRPC and a new instance must be allocated for a new usage.
 
-Under `Delivery::kPull`, the handler pulls the terminal response out of the reactor:
+Under `Delivery::kPull`, the handler pulls the terminal response out of the reactor. From the `Delivery::kPull`
+sequence diagram, the corresponding points are from 5.5 to 5.9.
 
 ````cpp
 EventLoop::RegisterEvent(kRecordRouteOnDone, [this](const Event*) {
@@ -1625,7 +1626,7 @@ EventLoop::RegisterEvent(kRecordRouteOnDone, [this](const Event*) {
 Under `Delivery::kPush`, the handler reclaims the terminal response the gRPC-thread callback released into the
 queue, and reads `Status()` from the reactor it already holds.
 
-From the PlantUML sequence diagram, the corresponding points are from 4.5 to 4.7.
+From the `Delivery::kPush` sequence diagram, the corresponding points are from 5.5 to 5.7.
 
 ````cpp
 EventLoop::RegisterEvent(kRecordRouteOnDone, [this](const Event* event) {
@@ -1640,9 +1641,126 @@ EventLoop::RegisterEvent(kRecordRouteOnDone, [this](const Event* event) {
 
 ### PlantUML sequence flow
 
-The diagram shows `Delivery::kPush`. Under `Delivery::kPull`, only section 4 differs: the `OnDone` event carries the
-reactor pointer instead of the owned response, and the app-thread handler pulls the response through
-`GetResponse()` before destroying the reactor, as in the unary `kPull` diagram.
+The two diagrams differ only in section 5, where the terminal response reaches the application, exactly as the two
+unary diagrams do. Sections 2 and 3 show the write path's guards, and what it lacks: no hold covers a write issued from
+the application thread, so the `stream_no_more_` guard narrows a race it cannot close. The reason is under
+[Why the write side of ActiveWriteReactor has no hold](/docs/architecture.md#why-the-write-side-of-activewritereactor-has-no-hold).
+
+#### Delivery::kPull
+
+```plantuml
+!pragma teoz true
+skinparam lifelineStrategy solid
+skinparam ParticipantPadding 50
+
+title gRPC Client reactor for client-side stream RPC, Delivery::kPull
+
+boundary    app      as "Application\nside"
+box "ActiveWriteReactor" #beige
+collections data     as "Data"
+control     reactor  as "ClientWriteReactor"
+end box
+entity      grpc     as "gRPC\nClientCallbackWriter"
+
+legend top center
+  <font color=blue><b>blue</b>: main application thread
+  <font color=green><b>green</b>: gRPC thread pool
+endlegend
+
+activate app #lightblue
+
+autonumber 1.1
+== 1. Stream establishment ==
+    app -[#darkblue]> reactor : Create Reactor
+    activate reactor
+    data o-[#darkblue]->> reactor : Response holder
+    & reactor -[#darkblue]\ grpc : async RPC service call\nstub.async()->RpcMethod()
+    activate grpc #lightgreen
+    reactor -[#darkblue]\ grpc : StartCall()
+    activate grpc #green
+
+...
+autonumber 2.1
+== 2. Request streaming ==
+loop one request at a time, while more than one remains
+    app -[#darkblue]> reactor : SendRequest()
+alt Accepted | the stream is open, and no write is in flight
+    reactor -[#darkblue]> reactor : <i>moves request into\nthe write buffer
+    reactor -[#darkblue]\ grpc : StartWrite()
+    & grpc --\? : send Request\nto server
+    note right of reactor
+      No hold covers this write. A gRPC thread
+      can end the RPC between the guards above
+      and StartWrite(): the residual race.
+    end note
+    deactivate grpc
+group #lightgreen (grpc-thread callback) onwritedone
+    reactor <[#darkgreen]- grpc : OnWriteDone : true
+    activate grpc #green
+    activate reactor #gold
+    {start2} app /[#darkgreen]- reactor : TriggerEvent : OnWriteDone
+    deactivate reactor
+end
+    {end2} app -[#darkblue]> reactor : ProceedEvent: OnWriteDone
+    {start2} <-> {end2} : Eventloop
+group #lightblue (app-thread callback) onwritedone
+    app -[#darkblue]> app : <i>sends the next request
+    activate app #blue
+    deactivate app
+end
+else Rejected | the stream is over or closed, or a write is in flight
+    reactor -[#darkblue]-> app : false
+end
+end
+
+autonumber 3.1
+== 3. Request stream closing ==
+alt the last request closes the stream with it
+    app -[#darkblue]> reactor : SendLastRequest()
+    reactor -[#darkblue]\ grpc : StartWriteLast()
+    & grpc --\? : send the last Request\nand close the stream
+    reactor <[#darkgreen]- grpc : OnWriteDone : true\n<i>handled as in section 2,\n<i>with nothing left to send
+else the stream is closed after the last request
+    app -[#darkblue]> reactor : CloseRequestStream()
+    reactor -[#darkblue]\ grpc : StartWritesDone()
+    & grpc --\? : close the\nrequest stream
+    reactor <[#darkgreen]- grpc : OnWritesDoneDone
+end
+
+...
+autonumber 4.1
+== 4. Client-side cancellation ==
+    app -[#darkblue]> reactor : TryCancel()
+    & reactor -[#darkblue]\ grpc : TryCancel()
+    & grpc --\? : RPC termination\nbehest
+
+autonumber 5.1
+== 5. RPC completion ==
+    grpc <--? : receive Response\nand RPC termination
+    &grpc -[#darkgreen]> data : <i>writes terminal response
+    activate data #yellow
+    deactivate grpc
+    reactor <[#darkgreen]- grpc : OnDone
+    deactivate grpc
+group #lightgreen (grpc-thread callback) ondone
+    {start5} app /[#darkgreen]- reactor : TriggerEvent : OnDone
+end
+    ...
+    {end5} app -[#darkblue]> reactor : ProceedEvent: OnDone
+    {start5} <-> {end5} : Eventloop
+group #lightblue (app-thread callback) ondone
+    app -[#darkblue]> reactor : GetResponse()
+    data o-[#darkblue]> reactor : <i>swaps response out
+    deactivate data
+    reactor -[#darkblue]> app : <i>update application with response
+    activate app #blue
+    deactivate app
+    app -[#darkblue]> reactor : Destroy Reactor
+    destroy reactor
+end
+```
+
+#### Delivery::kPush
 
 ```plantuml
 !pragma teoz true
@@ -1678,13 +1796,21 @@ autonumber 1.1
 ...
 autonumber 2.1
 == 2. Request streaming ==
-loop one request at a time, the last one via SendLastRequest()
+loop one request at a time, while more than one remains
     app -[#darkblue]> reactor : SendRequest()
+alt Accepted | the stream is open, and no write is in flight
     reactor -[#darkblue]> reactor : <i>moves request into\nthe write buffer
     reactor -[#darkblue]\ grpc : StartWrite()
     & grpc --\? : send Request\nto server
+    note right of reactor
+      No hold covers this write. A gRPC thread
+      can end the RPC between the guards above
+      and StartWrite(): the residual race.
+    end note
+    deactivate grpc
 group #lightgreen (grpc-thread callback) onwritedone
     reactor <[#darkgreen]- grpc : OnWriteDone : true
+    activate grpc #green
     activate reactor #gold
     {start2} equeue /[#darkgreen]- reactor : TriggerEvent : OnWriteDone
     activate equeue #blue
@@ -1694,21 +1820,38 @@ end
     {start2} <-> {end2} : Eventloop
     deactivate equeue
 group #lightblue (app-thread callback) onwritedone
-    app -[#darkblue]> app : <i>sends the next request,\nif any remains
+    app -[#darkblue]> app : <i>sends the next request
     activate app #blue
     deactivate app
 end
+else Rejected | the stream is over or closed, or a write is in flight
+    reactor -[#darkblue]-> app : false
+end
+end
+
+autonumber 3.1
+== 3. Request stream closing ==
+alt the last request closes the stream with it
+    app -[#darkblue]> reactor : SendLastRequest()
+    reactor -[#darkblue]\ grpc : StartWriteLast()
+    & grpc --\? : send the last Request\nand close the stream
+    reactor <[#darkgreen]- grpc : OnWriteDone : true\n<i>handled as in section 2,\n<i>with nothing left to send
+else the stream is closed after the last request
+    app -[#darkblue]> reactor : CloseRequestStream()
+    reactor -[#darkblue]\ grpc : StartWritesDone()
+    & grpc --\? : close the\nrequest stream
+    reactor <[#darkgreen]- grpc : OnWritesDoneDone
 end
 
 ...
-autonumber 3.1
-== 3. Client-side cancellation ==
+autonumber 4.1
+== 4. Client-side cancellation ==
     app -[#darkblue]> reactor : TryCancel()
     & reactor -[#darkblue]\ grpc : TryCancel()
     & grpc --\? : RPC termination\nbehest
 
-autonumber 4.1
-== 4. RPC completion ==
+autonumber 5.1
+== 5. RPC completion ==
     grpc <--? : receive Response\nand RPC termination
     &grpc -[#darkgreen]> reactor : <i>writes terminal response
     activate reactor #gold
@@ -1716,13 +1859,13 @@ autonumber 4.1
     reactor <[#darkgreen]- grpc : OnDone
     deactivate grpc
 group #lightgreen (grpc-thread callback) ondone
-    {start4} equeue /[#darkgreen]- reactor : TriggerEvent : OnDone\n+ owned response
+    {start5} equeue /[#darkgreen]- reactor : TriggerEvent : OnDone\n+ owned response
     activate equeue #blue
     deactivate reactor
 end
     ...
-    {end4} equeue -[#darkblue]> app : ProceedEvent: OnDone\n+ owned response
-    {start4} <-> {end4} : Eventloop
+    {end5} equeue -[#darkblue]> app : ProceedEvent: OnDone\n+ owned response
+    {start5} <-> {end5} : Eventloop
     deactivate equeue
 group #lightblue (app-thread callback) ondone
     app -[#darkblue]> app : <i>update application with response
@@ -1921,11 +2064,187 @@ EventLoop::RegisterEvent(kRouteChatOnDone, [this](const Event*) {
 
 ### PlantUML sequence flow
 
-The diagram shows `Delivery::kPush` with the default `ReadPacing::kPerMessage`, whose kept and declined branches in
-section 3 are what `kTurnByTurn` and `kContinuous` do with every message. Every other combination changes section 3
-only, exactly as the mapping table under the `ActiveReadReactor` diagrams describes. Under `Delivery::kPull`, the event
-carries the reactor pointer, and the app-thread handler's `GetResponse()` re-arms the read and releases the hold. The
-write side keeps running while a read hold is outstanding.
+The two diagrams draw the default `ReadPacing::kPerMessage`, once per `Delivery`. Their kept and declined branches in
+section 3 are what `kTurnByTurn` and `kContinuous` do with every message, exactly as the mapping table under the
+`ActiveReadReactor` diagrams describes, and sections 1, 2, 4 and 5 differ only in what each event carries. The write
+side keeps running while a read hold is outstanding.
+
+#### Delivery::kPull, ReadPacing::kPerMessage
+
+```plantuml
+!pragma teoz true
+skinparam lifelineStrategy solid
+skinparam ParticipantPadding 50
+
+title gRPC Client reactor for bidirectional stream RPC, Delivery::kPull, ReadPacing::kPerMessage
+
+boundary    app      as "Application\nside"
+box "ActiveBidiReactor" #beige
+collections data     as "Data"
+control     reactor  as "ClientBidiReactor"
+end box
+entity      grpc     as "gRPC\nClientCallbackReaderWriter"
+
+legend top center
+  <font color=blue><b>blue</b>: main application thread
+  <font color=green><b>green</b>: gRPC thread pool
+endlegend
+
+activate app #lightblue
+
+autonumber 1.1
+== 1. Stream establishment ==
+    app -[#darkblue]> reactor : Create Reactor
+    activate reactor
+    & reactor -[#darkblue]\ grpc : async RPC service call\nstub.async()->RpcMethod()
+    activate grpc #lightgreen
+    data o-[#darkblue]->> reactor : Response holder
+    & reactor -[#darkblue]\ grpc : StartRead()
+    reactor -[#darkblue]\ grpc : AddHold()
+    note right of reactor
+      Covers the writes the application
+      issues from its own thread. Held
+      only while the write stream is idle.
+    end note
+    reactor -[#darkblue]\ grpc : StartCall()
+    activate grpc #green
+
+...
+note across
+  Sections 2 and 3 are independent. The write side is driven by the application
+  thread, the read side by gRPC, and neither waits for the other.
+end note
+
+autonumber 2.1
+== 2. Request streaming (write side) ==
+loop one request at a time, the last one via SendLastRequest()
+    app -[#darkblue]> reactor : SendRequest()
+    reactor -[#darkblue]> reactor : <i>claims the idle hold,\nwhich permits the write
+    reactor -[#darkblue]> reactor : <i>moves request into\nthe write buffer
+    reactor -[#darkblue]\ grpc : StartWrite()
+    & grpc --\? : send Request\nto server
+    reactor -[#darkblue]\ grpc : RemoveHold()
+group #lightgreen (grpc-thread callback) onwritedone
+    reactor <[#darkgreen]- grpc : OnWriteDone : true
+    activate reactor #gold
+    reactor -[#darkgreen]\ grpc : AddHold()
+    {start2} app /[#darkgreen]- reactor : TriggerEvent : OnWriteDone
+    deactivate reactor
+end
+    {end2} app -[#darkblue]> reactor : ProceedEvent: OnWriteDone
+    {start2} <-> {end2} : Eventloop
+group #lightblue (app-thread callback) onwritedone
+    app -[#darkblue]> app : <i>sends the next request,\nif any remains
+    activate app #blue
+    deactivate app
+end
+end
+
+...
+autonumber 3.1
+== 3. Response streaming (read side) ==
+loop
+    grpc <--? : receive Response\nfrom server
+    &grpc -[#darkgreen]> data : <i>writes response
+    activate data #yellow
+    reactor <[#darkgreen]- grpc : OnReadDone : true
+group #lightgreen (grpc-thread callback) onreaddoneok
+    data o-[#darkgreen]> reactor : <i>lends response\nto read_ok
+    reactor [#darkgreen]-\ grpc : AddHold()\nbefore read_ok answers
+end
+alt Kept | read_ok returns true, as ReadPacing::kTurnByTurn does for every message
+group #lightgreen (grpc-thread callback) onreaddoneok
+    {start3} app /[#darkgreen]- reactor : TriggerEvent : OnReadDoneOk
+end
+    deactivate grpc
+    &grpc -> grpc : holding the read side\n(no read armed)\nthe write side keeps running
+    activate grpc
+    {end3} app -[#darkblue]> reactor : ProceedEvent: OnReadDoneOk
+    {start3} <-> {end3} : Eventloop
+group #lightblue (app-thread callback) onreaddoneok
+    app -[#darkblue]> reactor : GetResponse()
+    data o-[#darkblue]> reactor : <i>swaps response out
+    deactivate data
+    data o-[#darkblue]->> reactor : Response holder
+    & reactor -[#darkblue]\ grpc : StartRead()
+    reactor -[#darkblue]\ grpc : RemoveHold()
+    &reactor -[#darkblue]> app : <i>update application with response
+    activate app #blue
+    deactivate app
+end
+    deactivate grpc
+    &grpc -> grpc : resuming RPC
+    activate grpc #green
+else Declined | read_ok returns false, as ReadPacing::kContinuous does for every message, without the hold
+    activate data #yellow
+group #lightgreen (grpc-thread callback) onreaddoneok
+    data o-[#darkgreen]> reactor : <i>read_ok copies\nwhat it keeps
+    deactivate data
+    {start31} app /[#darkgreen]- reactor : TriggerEvent : OnReadDoneOk\n+ copy, if any
+    data o-[#darkgreen]->> reactor : Response holder
+    & reactor -[#darkgreen]\ grpc : StartRead()
+    reactor [#darkgreen]-\ grpc : RemoveHold()
+end
+    grpc -> grpc : reading continues
+group #lightblue (app-thread callback) onreaddoneok
+    {end31} app -[#darkblue]> app : <i>update application\nwith the copy
+    {start31} <-> {end31} : Eventloop
+    activate app #blue
+    deactivate app
+end
+end
+end
+
+...
+autonumber 4.1
+== 4. Client-side cancellation ==
+    app -[#darkblue]> reactor : TryCancel()
+    & reactor -[#darkblue]\ grpc : TryCancel()
+    & grpc --\? : RPC termination\nbehest
+
+autonumber 5.1
+== 5. Stream termination ==
+    grpc <--? : depleted stream
+    & reactor <[#darkgreen]- grpc : OnReadDone : false
+    deactivate grpc
+group #lightgreen (grpc-thread callback) onreaddonenok
+    reactor -[#darkgreen]> reactor : <i>no more read or write\n(stream_no_more_)
+    reactor -[#darkgreen]\ grpc : RemoveHold()\n<i>only if still held
+    note right of reactor
+      Frees a write side left idle. Claimed first,
+      so a write already in flight, or a stream
+      closed via SendLastRequest(), is a no-op here.
+      Without it, an RPC ending with no application
+      write pending could never reach OnDone().
+    end note
+    {start5} app /[#darkgreen]- reactor : TriggerEvent : OnReadDoneNok
+end
+
+    grpc <--? : RPC termination
+    & reactor <[#darkgreen]- grpc : OnDone
+    deactivate grpc
+group #lightgreen (grpc-thread callback) ondone
+    app /[#darkgreen]- reactor : TriggerEvent : OnDone
+end
+...
+    app -[#darkblue]> reactor : ProceedEvent: OnReadDoneNok
+group #lightblue (app-thread callback) onreaddonenok
+    app -[#darkblue]> app : <i>update application
+    activate app #blue
+    deactivate app
+end
+    {end5} app -[#darkblue]> reactor : ProceedEvent: OnDone
+group #lightblue (app-thread callback) ondone
+    app -[#darkblue]> app : <i>update application with status
+    activate app #blue
+    deactivate app
+    {start5} <-> {end5} : Eventloop
+    app -[#darkblue]> reactor : Destroy Reactor
+    destroy reactor
+end
+```
+
+#### Delivery::kPush, ReadPacing::kPerMessage
 
 ```plantuml
 !pragma teoz true

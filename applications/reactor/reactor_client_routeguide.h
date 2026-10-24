@@ -135,10 +135,11 @@ class ClientReactor final : public RpcReactor::Client::ActiveWriteReactor<Reques
                 std::unique_ptr<grpc::ClientContext> context,
                 Callbacks<kDelivery>&& cbs)
       : Base(std::move(context), std::move(cbs)) {
-    // async RPC call - gRPC writes the final response into the reactor's read target directly when
-    // the RPC completes; there is no separate read event for a client-streaming RPC's response.
+    // (Point 1.3) async RPC call - gRPC writes the final response into the reactor's read target
+    // directly when the RPC completes; there is no separate read event for a client-streaming RPC's
+    // response.
     stub.async()->RecordRoute(this->context_.get(), this->response_.get(), this);
-    // Starting RPC call
+    // (Point 1.4) Starting RPC call
     this->StartCall();
   }
 };
