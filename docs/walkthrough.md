@@ -6,6 +6,8 @@ This walkthrough follows two RPCs through the demo application, so every step po
   the moment it destroys its reactor, and ends with the one choice it asks of you.
 - [Part 2](#part-2-a-stream-reader) follows a server-streaming RPC, `ListFeatures`, message by message, and shows
   the second choice a stream adds, and the hold that comes with it.
+- [Part 3](#part-3-a-stream-writer) follows a client-streaming RPC, `RecordRoute`, whose application drives the
+  stream one write at a time, and shows the one place where the library has no hold to offer.
 
 The unary RPC is the right place to start because it is the simplest reactor. It has a single choice to make, the
 `Delivery` approach, and it needs no hold. Everything else in the library builds on what this one call shows.
@@ -131,7 +133,8 @@ handlers take on the obligations listed under
 
 The constraints that decide it, and the reasoning behind each, are in
 [Choosing for a single terminal response](/docs/architecture.md#choosing-for-a-single-terminal-response). The same
-reasoning applies to `RecordRoute`, whose reactor also delivers one terminal response.
+reasoning applies to `RecordRoute`, whose reactor also delivers one terminal response, as
+[Part 3](#part-3-a-stream-writer) shows.
 
 ## Part 2: a stream reader
 
@@ -299,6 +302,126 @@ Which combination suits which stream is argued under
 [Choosing for a stream of messages](/docs/architecture.md#choosing-for-a-stream-of-messages), and what each fixed
 mode rules out under
 [Why kPerMessage is the default, and the two others still exist](/docs/architecture.md#why-kpermessage-is-the-default-and-the-two-others-still-exist).
+
+## Part 3: a stream writer
+
+A client-streaming RPC turns Part 2 around: the application streams the messages, and the server answers once, with a
+single response at the end. `RecordRoute` sends a route as a stream of points, and the server replies with a
+`RouteSummary`. Its reactor, `ActiveWriteReactor`, takes a `Delivery` for that single response, exactly as in Part 1,
+and no `ReadPacing`, since there is no read stream to pace. What is new is that your application drives the stream,
+one write at a time.
+
+### Step 11: run the writer scenarios
+
+Run the server and the demo as in [Step 1](#step-1-run-the-demo), and filter on the two writer scenarios:
+
+```bash
+./$DIR/applications/reactor/route_guide_active_reactor_client | grep RecordRoute
+```
+
+The output looks like this:
+
+```text
+[12:16:14.400920][Main][9663][I] -------------- RecordRoute kPull --------------
+[12:16:14.400953][RecordRoute.pull][9663][I]          | reactor[0x5646a6466440] created
+[12:16:14.400964][Main][9663][I] -------------- RecordRoute kPush --------------
+[12:16:14.400999][RecordRoute.push][9663][I]          | reactor[0x5646a6469f40] created
+[12:16:14.402173][RecordRoute.pull][9663][I]          | RecordRoutePullOnWriteDone reactor: 0x5646a6466440
+[12:16:14.402215][RecordRoute.push][9663][I]          | RecordRoutePushOnWriteDone reactor: 0x5646a6469f40
+[12:16:14.402405][RecordRoute.pull][9663][I]          | RecordRoutePullOnWriteDone reactor: 0x5646a6466440
+[12:16:14.402485][RecordRoute.push][9663][I]          | RecordRoutePushOnWriteDone reactor: 0x5646a6469f40
+[12:16:14.402570][RecordRoute.pull][9663][I]          | RecordRoutePullOnWriteDone reactor: 0x5646a6466440
+[12:16:14.402712][RecordRoute.push][9663][I]          | RecordRoutePushOnWriteDone reactor: 0x5646a6469f40
+[12:16:14.408311][RecordRoute.push][9663][I] RESPONSE | routeguide.RouteSummary: point_count: 3 feature_count: 2 ...
+[12:16:14.408352][RecordRoute.push][9663][I]          | reactor[0x5646a6469f40] ended
+[12:16:14.408362][RecordRoute.pull][9663][I] RESPONSE | routeguide.RouteSummary: point_count: 3 feature_count: 2 ...
+[12:16:14.408385][RecordRoute.pull][9663][I]          | reactor[0x5646a6466440] ended
+```
+
+Every line comes from the application thread again, as in Part 1, because these scenarios log nothing on a gRPC
+thread. Each scenario sends three points and logs three `OnWriteDone` lines, one per completed write, before its one
+`RESPONSE`. Both report the same summary, since they send the same route.
+
+### Step 12: follow the request stream
+
+Open [record_route_pull.cpp](/applications/reactor/scenarios/record_route_pull.cpp). The route goes through these
+steps.
+
+1. `RecordRoute::Start()` keeps the points in its own queue, creates the reactor, and sends the first point itself,
+   through `SendNextPoint()`.
+2. The reactor's constructor, in
+   [reactor_client_routeguide.h](/applications/reactor/reactor_client_routeguide.h), binds itself to the RPC with the
+   address where gRPC must write the final response, then calls `StartCall()`. Unlike `ListFeatures`, it arms no read:
+   there is nothing to read until the RPC ends.
+3. `SendNextPoint()` takes the next point out of the queue and hands it to `SendRequest()`, or to `SendLastRequest()`
+   for the last one. The reactor moves it into its own write buffer, since the caller gives it up.
+4. gRPC sends the point, then calls `OnWriteDone()` on one of its own threads. The `write_done` slot only calls
+   `TriggerEvent()`.
+5. The EventLoop runs `RecordRoute::OnWriteDone()` on the application thread, and it sends the next point, if any
+   remains. The point sent through `SendLastRequest()` completes with an `OnWriteDone` too, which is the third line in
+   Step 11. By then the queue is empty, so the handler sends nothing.
+6. Once the request stream is closed, the server answers. gRPC writes the `RouteSummary` into the reactor and calls
+   `OnDone()`, and from there it is Part 1's [Step 2](#step-2-follow-one-call) again: the `done` slot queues the
+   event, and the handler pulls the response with `GetResponse()` and destroys the reactor.
+
+The sequence diagrams under
+[Client-side streaming RPC client](/applications/reactor/reactor_client.md#client-side-streaming-rpc-client) draw
+these steps: section 2 is the pump, section 3 the closing, and section 5 the response.
+
+### Step 13: keep one write in flight
+
+gRPC allows one write in flight per stream. `SendRequest()` returns `false`, and sends nothing, if a write is still
+in flight, if the stream is already closed, or if the RPC is already over. The pump never meets that refusal, because
+it sends only from `Start()` and from the `OnWriteDone` handler, each time the previous write has completed. Sending
+from anywhere else, such as a timer, has to be ready for `false`.
+
+A refusal is a dead end for the pump: the point has already left the queue, and no `OnWriteDone` will come to drive
+the next one. That is why `SendNextPoint()` checks the result, and logs `write rejected` instead of stalling in
+silence.
+
+The stream can be closed in two ways, which the diagrams draw as section 3:
+
+| Call | When | Completes with |
+| --- | --- | --- |
+| `SendLastRequest()` | With the last request, in one operation | `OnWriteDone`, as any write |
+| `CloseRequestStream()` | After the last request's `OnWriteDone` | `OnWritesDoneDone`, which reaches no slot |
+
+The pump uses `SendLastRequest()`: it saves an operation, and leaves no moment between the last write and the close.
+
+### Step 14: find the write that has no hold
+
+Part 2's rule says that an operation issued from the application thread, outside any reaction, needs a hold.
+`SendRequest()` is exactly that: it calls `StartWrite()` on the application thread. Yet `ActiveWriteReactor` takes no
+hold.
+
+Open [reactor_client.h](/applications/reactor/reactor_client.h) at `ActiveWriteReactor::SendRequest()`. Before it
+writes, it checks that the RPC is not over yet. That check narrows the window but cannot close it: a deadline or a
+server cancellation can end the RPC on a gRPC thread right after the check passes, and the write then reaches into a
+finished RPC. The writer diagrams mark that spot with a note. It is the library's one known residual race.
+
+Now compare `ActiveBidiReactor::SendRequest()` in the same file. A bidirectional reactor keeps a hold while its write
+side is idle, and a write starts by claiming it. That works because the bidi reactor has a read side: when the RPC
+ends on its own, `OnReadDone(false)` arrives, and releases the idle hold. A client-streaming RPC has no read side, so
+no reaction would ever arrive to release such a hold, and an RPC ending on its own could then never reach `OnDone()`.
+The full reasoning, including the approach tried and rejected, is under
+[Why the write side of ActiveWriteReactor has no hold](/docs/architecture.md#why-the-write-side-of-activewritereactor-has-no-hold).
+
+### Step 15: choose for your writer
+
+`ReadPacing` does not apply, so the only choice is the `Delivery`, and it is Part 1's choice again: who owns the single
+response while it waits in your event queue. Compare the two scenarios:
+
+```bash
+diff applications/reactor/scenarios/record_route_pull.cpp applications/reactor/scenarios/record_route_push.cpp
+```
+
+As for `GetFeature`, they differ only in the `done` slot and the `OnDone` handler. The write pump is identical, since
+the `Delivery` changes nothing on the write side. The constraints that decide the choice are under
+[Choosing for a single terminal response](/docs/architecture.md#choosing-for-a-single-terminal-response).
+
+`RouteChat` puts Part 2 and Part 3 together on one bidirectional stream: a read side paced as in Part 2, and a write
+side pumped as here, but covered by the idle hold. Its diagrams are under
+[Bidirectional streaming RPC client](/applications/reactor/reactor_client.md#bidirectional-streaming-rpc-client).
 
 ## Where to go next
 
