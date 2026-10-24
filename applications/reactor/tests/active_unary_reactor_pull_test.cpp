@@ -33,6 +33,10 @@
 
 namespace {
 
+/// Every reactor in this file is instantiated with Delivery::kPull; its push counterpart is
+/// covered by active_unary_reactor_push_test.cpp.
+constexpr auto kDelivery = RpcReactor::Client::Delivery::kPull;
+
 /// Controllable test service for unary RPC testing
 class TestRouteGuideService final : public routeguide::RouteGuide::CallbackService {
  public:
@@ -111,14 +115,14 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_ValidPoint_ReturnsFeature) {
   const routeguide::Point request = rg_utils::MakePoint(407128000, -740060000);
 
   // Create callbacks
-  routeguide::GetFeature::Callbacks cbs;
+  routeguide::GetFeature::Callbacks<kDelivery> cbs;
   cbs.done = [&result_promise](grpc::ClientUnaryReactor* base_reactor,
                                 const grpc::Status& status,
                                 const routeguide::Feature& response) {
     GetFeatureResult result;
     result.status = status;
     if (status.ok()) {
-      auto* reactor = static_cast<routeguide::GetFeature::ClientReactor*>(base_reactor);
+      auto* reactor = static_cast<routeguide::GetFeature::ClientReactor<kDelivery>*>(base_reactor);
       reactor->GetResponse(result.feature);
     }
     result.completed = true;
@@ -126,7 +130,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_ValidPoint_ReturnsFeature) {
   };
 
   // Create reactor
-  auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor<kDelivery>>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   // Wait for completion
@@ -162,21 +166,21 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_UnknownPoint_ReturnsEmptyFeature) {
 
   const routeguide::Point request = rg_utils::MakePoint(0, 0);
 
-  routeguide::GetFeature::Callbacks cbs;
+  routeguide::GetFeature::Callbacks<kDelivery> cbs;
   cbs.done = [&result_promise](grpc::ClientUnaryReactor* base_reactor,
                                 const grpc::Status& status,
                                 const routeguide::Feature& response) {
     GetFeatureResult result;
     result.status = status;
     if (status.ok()) {
-      auto* reactor = static_cast<routeguide::GetFeature::ClientReactor*>(base_reactor);
+      auto* reactor = static_cast<routeguide::GetFeature::ClientReactor<kDelivery>*>(base_reactor);
       reactor->GetResponse(result.feature);
     }
     result.completed = true;
     result_promise.set_value(std::move(result));
   };
 
-  auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor<kDelivery>>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
@@ -207,7 +211,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_ServerError_PropagatesStatus) {
 
   const routeguide::Point request = rg_utils::MakePoint(123, 456);
 
-  routeguide::GetFeature::Callbacks cbs;
+  routeguide::GetFeature::Callbacks<kDelivery> cbs;
   cbs.done = [&result_promise](grpc::ClientUnaryReactor*,
                                 const grpc::Status& status,
                                 const routeguide::Feature&) {
@@ -217,7 +221,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_ServerError_PropagatesStatus) {
     result_promise.set_value(std::move(result));
   };
 
-  auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor<kDelivery>>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
@@ -243,7 +247,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_NotFoundError_PropagatesStatus) {
 
   const routeguide::Point request = rg_utils::MakePoint(999999999, 999999999);
 
-  routeguide::GetFeature::Callbacks cbs;
+  routeguide::GetFeature::Callbacks<kDelivery> cbs;
   cbs.done = [&result_promise](grpc::ClientUnaryReactor*,
                                 const grpc::Status& status,
                                 const routeguide::Feature&) {
@@ -253,7 +257,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_NotFoundError_PropagatesStatus) {
     result_promise.set_value(std::move(result));
   };
 
-  auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor<kDelivery>>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
@@ -286,14 +290,14 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_TryCancel_TriggersOnDone) {
 
   const routeguide::Point request = rg_utils::MakePoint(123, 456);
 
-  routeguide::GetFeature::Callbacks cbs;
+  routeguide::GetFeature::Callbacks<kDelivery> cbs;
   cbs.done = [&done_promise](grpc::ClientUnaryReactor*,
                               const grpc::Status& status,
                               const routeguide::Feature&) {
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor<kDelivery>>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   // Cancel immediately
@@ -326,7 +330,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_DeadlineExceeded_PropagatesStatus) {
 
   const routeguide::Point request = rg_utils::MakePoint(123, 456);
 
-  routeguide::GetFeature::Callbacks cbs;
+  routeguide::GetFeature::Callbacks<kDelivery> cbs;
   cbs.done = [&done_promise](grpc::ClientUnaryReactor*,
                               const grpc::Status& status,
                               const routeguide::Feature&) {
@@ -337,7 +341,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_DeadlineExceeded_PropagatesStatus) {
   auto context = std::make_unique<grpc::ClientContext>();
   context->set_deadline(std::chrono::system_clock::now() - std::chrono::milliseconds(100));
 
-  auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor<kDelivery>>(
       *stub_, std::move(context), request, std::move(cbs));
 
   ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
@@ -366,14 +370,14 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_MultipleConcurrent_AllComplete) {
   std::promise<void> all_done_promise;
   const std::future<void> all_done_future = all_done_promise.get_future();
 
-  std::vector<std::unique_ptr<routeguide::GetFeature::ClientReactor>> reactors;
+  std::vector<std::unique_ptr<routeguide::GetFeature::ClientReactor<kDelivery>>> reactors;
   reactors.reserve(kNumConcurrentRpcs);
   std::vector<grpc::Status> statuses(kNumConcurrentRpcs);
 
   for (int i = 0; i < kNumConcurrentRpcs; ++i) {
     const routeguide::Point request = rg_utils::MakePoint(i * 100, i * -100);
 
-    routeguide::GetFeature::Callbacks cbs;
+    routeguide::GetFeature::Callbacks<kDelivery> cbs;
     cbs.done = [&completed_count, &all_done_promise, &statuses, i, kNumConcurrentRpcs](
                    grpc::ClientUnaryReactor*, const grpc::Status& status, const routeguide::Feature&) {
       statuses[i] = status;
@@ -382,7 +386,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_MultipleConcurrent_AllComplete) {
       }
     };
 
-    reactors.push_back(std::make_unique<routeguide::GetFeature::ClientReactor>(
+    reactors.push_back(std::make_unique<routeguide::GetFeature::ClientReactor<kDelivery>>(
         *stub_, CreateClientContext(), request, std::move(cbs)));
   }
 
@@ -417,19 +421,19 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_GetResponseBeforeOnDone_ReturnsFalse) 
 
   const routeguide::Point request = rg_utils::MakePoint(123, 456);
 
-  routeguide::GetFeature::Callbacks cbs;
+  routeguide::GetFeature::Callbacks<kDelivery> cbs;
   cbs.done = [&done_promise, &get_response_after_done](grpc::ClientUnaryReactor* base_reactor,
                                                         const grpc::Status& status,
                                                         const routeguide::Feature&) {
     if (status.ok()) {
-      auto* reactor = static_cast<routeguide::GetFeature::ClientReactor*>(base_reactor);
+      auto* reactor = static_cast<routeguide::GetFeature::ClientReactor<kDelivery>*>(base_reactor);
       routeguide::Feature response;
       get_response_after_done = reactor->GetResponse(response);
     }
     done_promise.set_value();
   };
 
-  auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::GetFeature::ClientReactor<kDelivery>>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   // Try GetResponse immediately - should return false

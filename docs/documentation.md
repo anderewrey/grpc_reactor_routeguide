@@ -56,10 +56,11 @@ guidance in this document applies to whoever is writing next.
 - **Reference**: technical facts, structured to mirror what they describe.
 - **Explanation**: the reasoning and context behind a design, answering "why."
 
-This project's existing docs map onto three of the four:
+This project's existing docs map onto all four:
 
 | Document | Kind | Content |
 | ---------- | ------ | --------- |
+| [walkthrough.md](/docs/walkthrough.md) | Tutorial | A unary RPC, a stream reader, a stream writer and a bidi stream, followed through the demo |
 | [developing.md](/docs/developing.md), [testing.md](/docs/testing.md) | How-to guide | Build, run, and test steps |
 | [reactor_client.md](/applications/reactor/reactor_client.md) | Reference | Class-by-class API, mirroring the actual reactor hierarchy |
 | [architecture.md](/docs/architecture.md) | Explanation | Design rationale: why this pattern, why these choices |
@@ -67,4 +68,5 @@ This project's existing docs map onto three of the four:
 Before adding to a document, decide which of these four kinds the new content is, and put it in the document
 that matches. Reasoning and trade-offs belong in `architecture.md`, not `reactor_client.md`. Class-by-class
 mechanics belong in `reactor_client.md`, not `architecture.md`. Neither should carry step-by-step build commands;
-those belong in `developing.md`.
+those belong in `developing.md`. A guided first contact that walks through running code belongs in `walkthrough.md`,
+which links to the reference and the explanation rather than repeating them.
