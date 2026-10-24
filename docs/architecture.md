@@ -47,6 +47,9 @@ application, and `kPerMessage`, in the middle, is the default:
 | `kTurnByTurn` | The application, through `GetResponse()` or            | One per message, which keeps the RPC alive |
 |               | `ResumeRead()`, from outside any reaction              | across that gap                            |
 
+Why these two choices, and why only these, follows from one model, described under
+[The model behind the reactors' choices](#the-model-behind-the-reactors-choices).
+
 The implementation follows this component structure:
 
 ```text
@@ -193,6 +196,72 @@ EventLoop::RegisterEvent(kGetFeatureOnDone, [&app_state](const Event* event) {
 1. **Simple API**: `TriggerEvent()` / `RegisterEvent()` / `Run()`
 2. **Thread-safe**: Safe cross-thread event dispatching
 3. **Replaceable**: Interface allows swapping with other event systems
+
+### The model behind the reactors' choices
+
+Every reactor moves messages in up to two directions, incoming and outgoing, and each direction carries either a
+single message or a stream. Three rules decide which choices apply to a direction:
+
+1. **Push or pull applies to every direction that carries a message.** It answers who starts each transfer between
+   the reactor and the application. Incoming, that is `Delivery`: the reactor pushes the message into the callback
+   (`kPush`), or the application pulls it with `GetResponse()` (`kPull`). Outgoing, the application pushes each request
+   with `SendRequest()`, or the reactor could pull the next one from the application.
+2. **Pacing applies only to an incoming stream.** Only there does the peer decide when messages arrive, so only there
+   does the reactor have to decide whether the stream waits for the application. That decision is `ReadPacing`. An
+   outgoing stream needs none: its messages exist only when the application produces them, so the producer already
+   sets the pace, whichever side starts each transfer.
+3. **A single message gets push or pull only.** A final response arrives once, together with `OnDone()`, so there is
+   no next read to arm and nothing that could wait for the application.
+
+| Reactor              | Incoming                                       | Outgoing                          |
+|----------------------|------------------------------------------------|-----------------------------------|
+| `ActiveUnaryReactor` | Final response: `Delivery`                     | None                              |
+| `ActiveReadReactor`  | Stream of messages: `Delivery`, `ReadPacing`   | None                              |
+| `ActiveWriteReactor` | Final response: `Delivery`                     | Stream of requests: push or pull  |
+| `ActiveBidiReactor`  | Stream of messages: `Delivery`, `ReadPacing`   | Stream of requests: push or pull  |
+
+Today the outgoing direction has one value: the application pushes. A reactor that pulls each request from the
+application would need no write-side hold at all, since every write would then start inside a reaction.
+
+The two directions name their values after who starts the transfer, and the words come out reversed. Incoming, the
+application starts the transfer by pulling; outgoing, it starts it by pushing. So the outgoing axis cannot reuse
+`kPull` and `kPush`, which would make one word mean opposite things in one reactor.
+
+#### Where backpressure goes
+
+gRPC carries backpressure from the reader to the writer by itself. A stream allows one write in flight, and HTTP/2
+gives it a flow-control window. A reader that stops arming reads stops granting window, the writer's `OnWriteDone`
+waits, and the writer cannot start another write. gRPC buffers about a window's worth per stream, never an unbounded
+amount, and one slow stream stalls itself rather than its whole channel. The two choices then decide where the backlog
+sits:
+
+- **The reader's pacing decides whether backpressure reaches the writer at all.** Under `kContinuous` the reader keeps
+  reading as fast as the network allows, so the writer feels nothing, and the backlog moves into the reader's own event
+  queue. Under `kTurnByTurn`, or `kPerMessage` while a message is held, the reader stops reading, and the writer waits.
+- **The writer's push or pull decides where its surplus waits.** When the application pushes, whatever it produces
+  between two `OnWriteDone` waits in its own queue, which grows without limit if production outpaces the reader. When
+  the reactor pulls, it asks the producer for the next message only once the previous one was accepted, so the
+  backpressure reaches the production itself.
+
+That is why no stream needs a write pacing: an outgoing stream's pace is set by its peer's reads.
+
+#### The server side mirrors it
+
+On the server, the incoming direction carries requests and the outgoing one carries responses, so the same three rules
+give the mirror image of the client table. The single incoming message becomes an initial request, which arrives with
+the call rather than with its end.
+
+| Server reactor | Incoming                                     | Outgoing                             |
+|----------------|----------------------------------------------|--------------------------------------|
+| Unary          | Initial request: push or pull                | Final response, sent with `Finish()` |
+| Read           | Stream of requests: push or pull, and pacing | Final response, sent with `Finish()` |
+| Write          | Initial request: push or pull                | Stream of responses: push or pull    |
+| Bidi           | Stream of requests: push or pull, and pacing | Stream of responses: push or pull    |
+
+One difference makes the server simpler. gRPC's server reactors have no `AddHold()`: a server RPC cannot complete
+before the server calls `Finish()`, and `OnDone()` comes only after it. An operation started from the application
+thread is therefore safe until `Finish()`, with no hold, and the obligation the client writer carries, ending its write
+side, is built into every server RPC as the obligation to finish it.
 
 ### Why the reactors offer two delivery approaches
 

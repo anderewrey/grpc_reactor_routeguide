@@ -18,7 +18,8 @@ Under `Delivery::kPull` the callback is lent the message, which stays in the rea
 application pulls it with `GetResponse()`. Under `Delivery::kPush` the callback is given the message as an owned
 object, and the reactor keeps nothing. The two axes are independent, so each reading reactor has six combinations, one
 per `Delivery` and `ReadPacing` pair. See [Delivery approaches](#delivery-approaches) and
-[Read pacing modes](#read-pacing-modes).
+[Read pacing modes](#read-pacing-modes). Why these choices apply where they do, by direction and by single message or
+stream, is under [The model behind the reactors' choices](/docs/architecture.md#the-model-behind-the-reactors-choices).
 
 ## API naming conventions
 
