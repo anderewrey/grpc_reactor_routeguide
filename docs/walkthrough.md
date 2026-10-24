@@ -144,10 +144,10 @@ The middle one, `kPerMessage`, is the default, so `ClientReactor<Delivery::kPull
 `true` to hold a message for your handler, or `false` to let the stream run on. The two ends fix that answer for the
 whole RPC, for a design that has already made it, as in `ClientReactor<Delivery::kPull, ReadPacing::kTurnByTurn>`.
 
-That makes six combinations, and the demo runs all six for `ListFeatures`. Whenever your handler arms the next
-read, it does so from the application thread, which needs a hold, so the hold rule now matters. Run the demo again
-and filter on `ListFeatures.pull.msg`, the default pacing used as a filter. The `read_ok` and `skipped` lines carry
-a different thread id from the `pulled` and `RESPONSE` lines, because `read_ok` is logged on the gRPC thread. A
+That makes six combinations, and the demo runs all six for `ListFeatures` and for `RouteChat`. Whenever your handler
+arms the next read, it does so from the application thread, which needs a hold, so the hold rule now matters. Run the
+demo again and filter on `ListFeatures.pull.msg`, the default pacing used as a filter. The `read_ok` and `skipped` lines
+carry a different thread id from the `pulled` and `RESPONSE` lines, because `read_ok` is logged on the gRPC thread. A
 skipped feature is one `read_ok` declined, so no handler line follows it.
 
 Three comparisons show the two axes, one at a time:

@@ -34,10 +34,14 @@ add_executable(route_guide_active_reactor_client
     scenarios/record_route_push.cpp
     scenarios/route_chat_pull_continuous.h
     scenarios/route_chat_pull_continuous.cpp
+    scenarios/route_chat_pull_per_message.h
+    scenarios/route_chat_pull_per_message.cpp
     scenarios/route_chat_pull_turn_by_turn.h
     scenarios/route_chat_pull_turn_by_turn.cpp
     scenarios/route_chat_push_continuous.h
     scenarios/route_chat_push_continuous.cpp
+    scenarios/route_chat_push_per_message.h
+    scenarios/route_chat_push_per_message.cpp
     scenarios/route_chat_push_turn_by_turn.h
     scenarios/route_chat_push_turn_by_turn.cpp
 )

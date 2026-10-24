@@ -26,8 +26,10 @@
 #include "applications/reactor/scenarios/record_route_pull.h"
 #include "applications/reactor/scenarios/record_route_push.h"
 #include "applications/reactor/scenarios/route_chat_pull_continuous.h"
+#include "applications/reactor/scenarios/route_chat_pull_per_message.h"
 #include "applications/reactor/scenarios/route_chat_pull_turn_by_turn.h"
 #include "applications/reactor/scenarios/route_chat_push_continuous.h"
+#include "applications/reactor/scenarios/route_chat_push_per_message.h"
 #include "applications/reactor/scenarios/route_chat_push_turn_by_turn.h"
 #include "applications/reactor/scenarios/support.h"
 #include "rg_service/rg_db.h"
@@ -74,16 +76,19 @@
  * - rg_demo::pull::RecordRoute                 write, Delivery::kPull
  * - rg_demo::push::RecordRoute                 write, Delivery::kPush
  * - rg_demo::pull::continuous::RouteChat       bidi, as its ListFeatures namesake on the read side
+ * - rg_demo::pull::per_message::RouteChat      bidi, a filter: read_ok keeps a note the first time it
+ *                                              is seen, to be pulled, and declines the server's repeats
  * - rg_demo::pull::turn_by_turn::RouteChat     bidi, as its ListFeatures namesake on the read side
  * - rg_demo::push::continuous::RouteChat       bidi, as its ListFeatures namesake on the read side
+ * - rg_demo::push::per_message::RouteChat      bidi, as its ListFeatures namesake on the read side
  * - rg_demo::push::turn_by_turn::RouteChat     bidi, as its ListFeatures namesake on the read side
  *
- * ListFeatures covers all six cells of the two axes. Its two kPerMessage scenarios name only their
- * Delivery, since kPerMessage is the default pacing; the four others name the fixed pacing they
- * commit to. RouteChat covers only the four fixed-pacing cells: the read side of ActiveBidiReactor behaves exactly as ActiveReadReactor does, so a
- * kPerMessage RouteChat would repeat what the ListFeatures per-message cells already show. RouteChat's
- * own lesson is the write side, an identical pump in every cell, running next to each delivery and
- * each fixed pacing of the read side.
+ * ListFeatures and RouteChat each cover all six cells of the two axes. Their kPerMessage scenarios
+ * name only their Delivery, since kPerMessage is the default pacing; the others name the fixed pacing
+ * they commit to. The read side of ActiveBidiReactor behaves exactly as ActiveReadReactor does, so each
+ * RouteChat cell mirrors its ListFeatures namesake, except for the kPull filter, which declines the
+ * server's repeated notes rather than unnamed features. RouteChat's own lesson is the write side, an
+ * identical pump in every cell, running next to each delivery and each pacing of the read side.
  *
  * A flavoured family is cloned rather than parameterised, which is the teaching device: its members
  * are files with identical structure, each cloned from its nearest sibling, so a diff between two
@@ -112,10 +117,10 @@
  * - A kContinuous kPull scenario emits only read_ok lines, each carrying the message it consumed on
  *   the gRPC thread, and no RESPONSE line; its OnDone handler then logs a "totals   |" line with the
  *   aggregate.
- * - The kPull kPerMessage scenario logs a declined message as "skipped  | #j", numbered on its own,
+ * - A kPull kPerMessage scenario logs a declined message as "skipped  | #j", numbered on its own,
  *   from the gRPC thread, with no application-thread line after it; its read_ok, pulled and RESPONSE
  *   lines count kept messages only. It ends with a "totals   |" line of kept and skipped messages.
- * - The kPush kPerMessage scenario ends each read_ok line with the number of messages in flight and
+ * - A kPush kPerMessage scenario ends each read_ok line with the number of messages in flight and
  *   "held" or "not held". Only a held message gets a "resumed  | #k" line, from its own handler once
  *   the messages before it are handled, and the ordering rule above applies to it.
  *
@@ -150,8 +155,10 @@ int main(int argc, char** argv) {
   rg_demo::pull::RecordRoute record_route_pull{*stub};
   rg_demo::push::RecordRoute record_route_push{*stub};
   rg_demo::pull::continuous::RouteChat route_chat_pull_continuous{*stub};
+  rg_demo::pull::per_message::RouteChat route_chat_pull_per_message{*stub};
   rg_demo::pull::turn_by_turn::RouteChat route_chat_pull_turn_by_turn{*stub};
   rg_demo::push::continuous::RouteChat route_chat_push_continuous{*stub};
+  rg_demo::push::per_message::RouteChat route_chat_push_per_message{*stub};
   rg_demo::push::turn_by_turn::RouteChat route_chat_push_turn_by_turn{*stub};
 
   // A flavoured family receives the same input, so its transcripts differ in the order their lines
@@ -197,10 +204,14 @@ int main(int argc, char** argv) {
   record_route_push.Start(route);
   spdlog::info("-------------- RouteChat kPull kContinuous --------------");
   route_chat_pull_continuous.Start(notes);
+  spdlog::info("-------------- RouteChat kPull kPerMessage --------------");
+  route_chat_pull_per_message.Start(notes);
   spdlog::info("-------------- RouteChat kPull kTurnByTurn --------------");
   route_chat_pull_turn_by_turn.Start(notes);
   spdlog::info("-------------- RouteChat kPush kContinuous --------------");
   route_chat_push_continuous.Start(notes);
+  spdlog::info("-------------- RouteChat kPush kPerMessage --------------");
+  route_chat_push_per_message.Start(notes);
   spdlog::info("-------------- RouteChat kPush kTurnByTurn --------------");
   route_chat_push_turn_by_turn.Start(notes);
   EventLoop::Run();  // Scheduler component: Continuously processes queued events on main application thread

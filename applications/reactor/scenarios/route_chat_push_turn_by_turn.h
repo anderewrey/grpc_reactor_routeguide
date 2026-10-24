@@ -30,6 +30,7 @@ namespace rg_demo::push::turn_by_turn {
 /// Clone of its siblings, for the reason recorded on the ListFeatures scenarios: one class instantiated
 /// twice would register the same event names twice. Each sibling differs from this file along one axis:
 /// - route_chat_push_continuous.h, the pacing: the reactor re-arms the read side by itself
+/// - route_chat_push_per_message.h, the pacing: read_ok decides per message whether to hold
 /// - route_chat_pull_turn_by_turn.h, the delivery: the message is pulled with GetResponse()
 class RouteChat {
   // The reactor flavour this scenario exhibits: its Delivery approach, then its ReadPacing mode.
