@@ -244,8 +244,12 @@ mode, `SetEndEarly()`, where the server ends the RPC as soon as it starts, so th
 
 The first one was mutation-verified: against the reactor without the write-flow hold, `OnDone` fired about 7 ms after
 the server ended the RPC, while the application could still write. The write path is identical under both `Delivery`
-approaches, so the tests run under `kPush` only. `RecordRoute_NoDoneCallbackBound_RpcStillCompletes` retries its close
-until it is accepted, since an unclosed write side would now keep the RPC from completing.
+approaches, so the tests run under `kPush` only. Since an unclosed write side keeps the RPC from completing, every
+writer test now checks that its close is accepted, and `RecordRoute_OnWriteDone_FiresForEachWrite` waits for each
+write's acknowledgement instead of sleeping, which a slow run under ThreadSanitizer outlasted.
+`RecordRoute_NoDoneCallbackBound_RpcStillCompletes` binds no `done` slot, so it has no way to know when the reactor may
+be destroyed, and ThreadSanitizer caught it destroying the reactor while a reaction still ran. It now runs a test-only
+subclass of `ActiveWriteReactor` that signals once `OnDone()` has run, and destroys the reactor only then.
 
 ### Naming convention
 

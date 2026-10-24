@@ -238,7 +238,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_MultiplePoints_ReturnsCorrectSummary)
   EXPECT_TRUE(write_slot.try_acquire_for(std::chrono::seconds(5))) << "Last write never completed";
 
   // Signal end of stream
-  reactor->CloseRequestStream();
+  EXPECT_TRUE(reactor->CloseRequestStream());
 
   // Wait for completion
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); })) << "Timeout waiting for RPC completion";
@@ -290,7 +290,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_EmptyStream_ReturnsZeroCounts) {
       *stub_, CreateClientContext(), std::move(cbs));
 
   // Immediately signal end of stream without sending any points
-  reactor->CloseRequestStream();
+  EXPECT_TRUE(reactor->CloseRequestStream());
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
@@ -460,13 +460,17 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_OnWriteDone_FiresForEachWrite) {
   auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
-  // Send 3 points, waiting for each write to complete
+  // Send 3 points, waiting for each write to be acknowledged before sending the next. A fixed sleep is
+  // not enough on a slow run, such as under ThreadSanitizer: a write still in flight makes the next
+  // SendRequest() and the close below refused.
   for (int i = 0; i < 3; ++i) {
-    reactor->SendRequest(rg_utils::MakePoint(400000000 + (i * 1000000), -740000000));
-    // Wait for write to be acknowledged before sending next
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    ASSERT_TRUE(reactor->SendRequest(rg_utils::MakePoint(400000000 + (i * 1000000), -740000000)));
+    for (int wait = 0; wait < 1000 && write_done_count.load() <= i; ++wait) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
   }
-  reactor->CloseRequestStream();
+  // Accepted, not merely attempted: an unclosed write side keeps the write-flow hold.
+  EXPECT_TRUE(reactor->CloseRequestStream());
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
