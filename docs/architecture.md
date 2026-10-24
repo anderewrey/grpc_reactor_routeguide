@@ -677,13 +677,15 @@ project-specific settings:
 | ------- | ------------- | --------------------- |
 | `ActiveUnaryReactor<ResponseT, kDelivery>` | Unary | Response type, `Delivery` |
 | `ActiveReadReactor<ResponseT, kDelivery, kPacing>` | Server-streaming | Response type, `Delivery`, `ReadPacing` |
-| `ActiveWriteReactor<RequestT, ResponseT, kDelivery>` | Client-streaming | Request and response types, `Delivery` |
-| `ActiveBidiReactor<RequestT, ResponseT, kDelivery, kPacing>` | Bidirectional | Request and response types, |
-| | | `Delivery`, `ReadPacing` |
+| `ActiveWriteReactor<RequestT, ResponseT, kDelivery, kSubmission>` | Client-streaming | Request and response |
+| | | types, `Delivery`, `Submission` |
+| `ActiveBidiReactor<RequestT, ResponseT, kDelivery, kSubmission, kPacing>` | Bidirectional | Request and response |
+| | | types, `Delivery`, `Submission`, `ReadPacing` |
 
-`Delivery` has no default, so every instantiation names its approach. The two reading reactors also take
-`ReadPacing` as a template parameter, which defaults to `kPerMessage`, so an instantiation names it only to fix the
-pacing to `kContinuous` or `kTurnByTurn`. No constructor takes a pacing argument.
+`Delivery` has no default, so every instantiation names its approach, and neither has `Submission`, which the two
+writing reactors take for their outgoing direction. The two reading reactors also take `ReadPacing` as a template
+parameter, which defaults to `kPerMessage`, so an instantiation names it only to fix the pacing to `kContinuous` or
+`kTurnByTurn`. No constructor takes a pacing argument.
 
 **Service-Specific Adapters** (`applications/reactor/reactor_client_routeguide.h`):
 
@@ -691,18 +693,18 @@ pacing to `kContinuous` or `kTurnByTurn`. No constructor takes a pacing argument
 | --------------- | ------------------- | ------------ |
 | `ActiveUnaryReactor<Feature, D>` | `routeguide::GetFeature::ClientReactor<D>` | `GetFeature` |
 | `ActiveReadReactor<Feature, D, P>` | `routeguide::ListFeatures::ClientReactor<D, P>` | `ListFeatures` |
-| `ActiveWriteReactor<Point, RouteSummary, D>` | `routeguide::RecordRoute::ClientReactor<D>` | `RecordRoute` |
-| `ActiveBidiReactor<RouteNote, RouteNote, D, P>` | `routeguide::RouteChat::ClientReactor<D, P>` | `RouteChat` |
+| `ActiveWriteReactor<Point, RouteSummary, D, S>` | `routeguide::RecordRoute::ClientReactor<D, S>` | `RecordRoute` |
+| `ActiveBidiReactor<RouteNote, RouteNote, D, S, P>` | `routeguide::RouteChat::ClientReactor<D, S, P>` | `RouteChat` |
 
-Here `D` is the `Delivery` and `P` the `ReadPacing` the application chose for that RPC. The adapters forward both
-untouched, for the reason given under
+Here `D` is the `Delivery`, `S` the `Submission` and `P` the `ReadPacing` the application chose for that RPC. The
+adapters forward them untouched, for the reason given under
 [Why the generic layer offers every combination](#why-the-generic-layer-offers-every-combination).
 
 ### Callback struct patterns
 
-Each reactor type has a corresponding callback struct, templated on the same `Delivery` as its reactor, and on the
-same `ReadPacing` for the two reading reactors. The slot names are the same in every combination; only the slot
-that carries a message changes signature:
+Each reactor type has a corresponding callback struct, templated on the same `Delivery` as its reactor, on the same
+`Submission` for the two writing reactors, and on the same `ReadPacing` for the two reading reactors. The slot names
+are the same in every combination; only the slot that carries a message changes signature:
 
 **Unary** (`ActiveUnaryCallbacks<ResponseT, kDelivery>`):
 
@@ -718,12 +720,12 @@ that carries a message changes signature:
 - `read_nok`: called when stream ends (no more reads)
 - `done`: called on RPC completion
 
-**Client-streaming** (`ActiveWriteCallbacks<RequestT, ResponseT, kDelivery>`):
+**Client-streaming** (`ActiveWriteCallbacks<RequestT, ResponseT, kDelivery, kSubmission>`):
 
 - `write_done`: called after each write completes
 - `done`: called on RPC completion, receives the status and the terminal response, as for the unary `done`
 
-**Bidirectional** (`ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kPacing>`):
+**Bidirectional** (`ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kSubmission, kPacing>`):
 
 - `read_ok`: called on successful read, as for the server-streaming `read_ok`
 - `read_nok`: called when read stream ends

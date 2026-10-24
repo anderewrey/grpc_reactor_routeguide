@@ -48,6 +48,7 @@ namespace {
 /// Every reactor in this file is instantiated with Delivery::kPull; its push counterpart is
 /// covered by active_bidi_reactor_push_test.cpp.
 constexpr auto kDelivery = RpcReactor::Client::Delivery::kPull;
+constexpr auto kSubmission = RpcReactor::Client::Submission::kApplicationPushes;
 
 using routeguide::RouteChat::ReadPacing;
 
@@ -56,28 +57,34 @@ using routeguide::RouteChat::ReadPacing;
 // =============================================================================
 
 /// GetResponse() pulls a held message out, and kContinuous holds none, so it does not exist there.
-static_assert(!pacing_test::HasGetResponse<routeguide::RouteChat::ClientReactor<kDelivery, ReadPacing::kContinuous>,
-                                           routeguide::RouteNote>);
-static_assert(pacing_test::HasGetResponse<routeguide::RouteChat::ClientReactor<kDelivery, ReadPacing::kTurnByTurn>,
-                                          routeguide::RouteNote>);
-static_assert(pacing_test::HasGetResponse<routeguide::RouteChat::ClientReactor<kDelivery, ReadPacing::kPerMessage>,
-                                          routeguide::RouteNote>);
+static_assert(!pacing_test::HasGetResponse<
+              routeguide::RouteChat::ClientReactor<kDelivery, kSubmission, ReadPacing::kContinuous>,
+              routeguide::RouteNote>);
+static_assert(pacing_test::HasGetResponse<
+              routeguide::RouteChat::ClientReactor<kDelivery, kSubmission, ReadPacing::kTurnByTurn>,
+              routeguide::RouteNote>);
+static_assert(pacing_test::HasGetResponse<
+              routeguide::RouteChat::ClientReactor<kDelivery, kSubmission, ReadPacing::kPerMessage>,
+              routeguide::RouteNote>);
 /// ResumeRead() is a Delivery::kPush method, so no pull reactor offers it, whatever its pacing.
-static_assert(!pacing_test::HasResumeRead<routeguide::RouteChat::ClientReactor<kDelivery, ReadPacing::kTurnByTurn>>);
-static_assert(!pacing_test::HasResumeRead<routeguide::RouteChat::ClientReactor<kDelivery, ReadPacing::kPerMessage>>);
+static_assert(!pacing_test::HasResumeRead<
+              routeguide::RouteChat::ClientReactor<kDelivery, kSubmission, ReadPacing::kTurnByTurn>>);
+static_assert(!pacing_test::HasResumeRead<
+              routeguide::RouteChat::ClientReactor<kDelivery, kSubmission, ReadPacing::kPerMessage>>);
 /// The read_ok slot is lent the message, and returns the hold decision only under kPerMessage.
 static_assert(std::is_same_v<
-              routeguide::RouteChat::Callbacks<kDelivery, ReadPacing::kContinuous>::OnReadDoneOkCallback,
+              routeguide::RouteChat::Callbacks<kDelivery, kSubmission, ReadPacing::kContinuous>::OnReadDoneOkCallback,
               std::function<void(grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                                  const routeguide::RouteNote&)>>);
 /// kPerMessage is the default ReadPacing, in the generic layer and in the RouteGuide one alike: naming only
 /// the Delivery selects it.
 static_assert(
-    std::is_same_v<RpcReactor::Client::ActiveBidiReactor<routeguide::RouteNote, routeguide::RouteNote, kDelivery>,
-                   RpcReactor::Client::ActiveBidiReactor<routeguide::RouteNote, routeguide::RouteNote, kDelivery,
-                                                         ReadPacing::kPerMessage>>);
-static_assert(std::is_same_v<routeguide::RouteChat::ClientReactor<kDelivery>,
-                             routeguide::RouteChat::ClientReactor<kDelivery, ReadPacing::kPerMessage>>);
+    std::is_same_v<
+        RpcReactor::Client::ActiveBidiReactor<routeguide::RouteNote, routeguide::RouteNote, kDelivery, kSubmission>,
+        RpcReactor::Client::ActiveBidiReactor<routeguide::RouteNote, routeguide::RouteNote, kDelivery, kSubmission,
+                                              ReadPacing::kPerMessage>>);
+static_assert(std::is_same_v<routeguide::RouteChat::ClientReactor<kDelivery, kSubmission>,
+                             routeguide::RouteChat::ClientReactor<kDelivery, kSubmission, ReadPacing::kPerMessage>>);
 
 /// Test service implementing RouteChat for bidirectional streaming tests.
 /// Stores received notes by location and sends back all previously stored notes
@@ -216,8 +223,8 @@ using BidiReactorBase = grpc::ClientBidiReactor<routeguide::RouteNote, routeguid
 
 /// The pacing of master's bool read_ok contract, which the ActiveBidiReactorTest cases written for it
 /// keep: every message is held, unless read_ok returns false.
-using PerMessageReactor = routeguide::RouteChat::ClientReactor<kDelivery, ReadPacing::kPerMessage>;
-using PerMessageCallbacks = routeguide::RouteChat::Callbacks<kDelivery, ReadPacing::kPerMessage>;
+using PerMessageReactor = routeguide::RouteChat::ClientReactor<kDelivery, kSubmission, ReadPacing::kPerMessage>;
+using PerMessageCallbacks = routeguide::RouteChat::Callbacks<kDelivery, kSubmission, ReadPacing::kPerMessage>;
 
 /// Fixture for the behaviours that must hold identically under every read pacing. The pacing changes
 /// only who arms the next read, so everything an application observes on either direction is expected
@@ -227,8 +234,8 @@ template <class PacingTagT>
 class ActiveBidiReactorPacingTest : public ActiveBidiReactorTest {
  protected:
   static constexpr ReadPacing kPacing = PacingTagT::value;
-  using Reactor = routeguide::RouteChat::ClientReactor<kDelivery, kPacing>;
-  using Callbacks = routeguide::RouteChat::Callbacks<kDelivery, kPacing>;
+  using Reactor = routeguide::RouteChat::ClientReactor<kDelivery, kSubmission, kPacing>;
+  using Callbacks = routeguide::RouteChat::Callbacks<kDelivery, kSubmission, kPacing>;
 
   /// Builds a read_ok callback that gives a copy of every lent message to `keep`, then consumes it the
   /// way the pacing requires: nothing more under kContinuous, where the reactor re-arms by itself and
@@ -263,8 +270,8 @@ template <class PacingTagT>
 class ActiveBidiReactorHeldPacingTest : public ActiveBidiReactorTest {
  protected:
   static constexpr ReadPacing kPacing = PacingTagT::value;
-  using Reactor = routeguide::RouteChat::ClientReactor<kDelivery, kPacing>;
-  using Callbacks = routeguide::RouteChat::Callbacks<kDelivery, kPacing>;
+  using Reactor = routeguide::RouteChat::ClientReactor<kDelivery, kSubmission, kPacing>;
+  using Callbacks = routeguide::RouteChat::Callbacks<kDelivery, kSubmission, kPacing>;
 };
 
 TYPED_TEST_SUITE(ActiveBidiReactorHeldPacingTest, pacing_test::HeldPacings);

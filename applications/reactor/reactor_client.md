@@ -1607,8 +1607,9 @@ From the PlantUML sequence diagram, the corresponding points are:
 #include "applications/reactor/reactor_client_routeguide.h"
 void RecordRoute(std::vector<routeguide::Point> points) {
   using routeguide::RecordRoute::Delivery;
-  using Callbacks = routeguide::RecordRoute::Callbacks<Delivery::kPush>;
-  using ClientReactor = routeguide::RecordRoute::ClientReactor<Delivery::kPush>;
+  using routeguide::RecordRoute::Submission;
+  using Callbacks = routeguide::RecordRoute::Callbacks<Delivery::kPush, Submission::kApplicationPushes>;
+  using ClientReactor = routeguide::RecordRoute::ClientReactor<Delivery::kPush, Submission::kApplicationPushes>;
   using routeguide::RecordRoute::ResponseT;
   record_route_pending_ = std::move(points);
   Callbacks cbs;
@@ -2045,9 +2046,12 @@ From the PlantUML sequence diagram, the corresponding points are:
 #include "applications/reactor/reactor_client_routeguide.h"
 void RouteChat(std::vector<routeguide::RouteNote> notes) {
   using routeguide::RouteChat::Delivery;
+  using routeguide::RouteChat::Submission;
   using routeguide::RouteChat::ReadPacing;
-  using Callbacks = routeguide::RouteChat::Callbacks<Delivery::kPush, ReadPacing::kContinuous>;
-  using ClientReactor = routeguide::RouteChat::ClientReactor<Delivery::kPush, ReadPacing::kContinuous>;
+  using Callbacks =
+      routeguide::RouteChat::Callbacks<Delivery::kPush, Submission::kApplicationPushes, ReadPacing::kContinuous>;
+  using ClientReactor =
+      routeguide::RouteChat::ClientReactor<Delivery::kPush, Submission::kApplicationPushes, ReadPacing::kContinuous>;
   using routeguide::RouteChat::ResponseT;
   route_chat_pending_ = std::move(notes);
   Callbacks cbs;

@@ -30,8 +30,9 @@ namespace rg_demo::pull {
 class RecordRoute {
   // The reactor flavour this scenario exhibits starts with its Delivery approach.
   using Delivery = routeguide::RecordRoute::Delivery;
-  using Callbacks = routeguide::RecordRoute::Callbacks<Delivery::kPull>;
-  using ClientReactor = routeguide::RecordRoute::ClientReactor<Delivery::kPull>;
+  using Submission = routeguide::RecordRoute::Submission;
+  using Callbacks = routeguide::RecordRoute::Callbacks<Delivery::kPull, Submission::kApplicationPushes>;
+  using ClientReactor = routeguide::RecordRoute::ClientReactor<Delivery::kPull, Submission::kApplicationPushes>;
 
  public:
   /// Registers the event handlers this scenario needs, for its own lifetime.

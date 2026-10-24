@@ -34,9 +34,12 @@ namespace rg_demo::push::continuous {
 class RouteChat {
   // The reactor flavour this scenario exhibits: its Delivery approach, then its ReadPacing mode.
   using Delivery = routeguide::RouteChat::Delivery;
+  using Submission = routeguide::RouteChat::Submission;
   using ReadPacing = routeguide::RouteChat::ReadPacing;
-  using Callbacks = routeguide::RouteChat::Callbacks<Delivery::kPush, ReadPacing::kContinuous>;
-  using ClientReactor = routeguide::RouteChat::ClientReactor<Delivery::kPush, ReadPacing::kContinuous>;
+  using Callbacks =
+      routeguide::RouteChat::Callbacks<Delivery::kPush, Submission::kApplicationPushes, ReadPacing::kContinuous>;
+  using ClientReactor =
+      routeguide::RouteChat::ClientReactor<Delivery::kPush, Submission::kApplicationPushes, ReadPacing::kContinuous>;
 
  public:
   /// Registers the event handlers this scenario needs, for its own lifetime.

@@ -114,16 +114,21 @@ namespace routeguide::RecordRoute {
 /// How the reactor hands the final response over, see RpcReactor::Client::Delivery
 using Delivery = RpcReactor::Client::Delivery;
 
+/// Who starts the transfer of each request, see RpcReactor::Client::Submission
+using Submission = RpcReactor::Client::Submission;
+
 /// Specialized callback slots for RouteGuide::RecordRoute stream-writer RPC client
-template <Delivery kDelivery>
-using Callbacks = RpcReactor::Client::ActiveWriteCallbacks<RequestT, ResponseT, kDelivery>;
+template <Delivery kDelivery, Submission kSubmission>
+using Callbacks = RpcReactor::Client::ActiveWriteCallbacks<RequestT, ResponseT, kDelivery, kSubmission>;
 
 /// Specialized reactor class for RouteGuide::RecordRoute stream-writer RPC client.
 /// Specializes the generic ActiveWriteReactor (Method Request component).
 /// @tparam kDelivery how the reactor hands the final response over, chosen by the application per RPC
-template <Delivery kDelivery>
-class ClientReactor final : public RpcReactor::Client::ActiveWriteReactor<RequestT, ResponseT, kDelivery> {
-  using Base = RpcReactor::Client::ActiveWriteReactor<RequestT, ResponseT, kDelivery>;
+/// @tparam kSubmission who starts the transfer of each request, chosen by the application per RPC
+template <Delivery kDelivery, Submission kSubmission>
+class ClientReactor final
+    : public RpcReactor::Client::ActiveWriteReactor<RequestT, ResponseT, kDelivery, kSubmission> {
+  using Base = RpcReactor::Client::ActiveWriteReactor<RequestT, ResponseT, kDelivery, kSubmission>;
 
  public:
   /// Constructor of the specialized class. It calls the RPC method with the address pointer where
@@ -133,7 +138,7 @@ class ClientReactor final : public RpcReactor::Client::ActiveWriteReactor<Reques
   /// @param cbs given to the reactor to be used as callable functions
   ClientReactor(RouteGuide::Stub& stub,
                 std::unique_ptr<grpc::ClientContext> context,
-                Callbacks<kDelivery>&& cbs)
+                Callbacks<kDelivery, kSubmission>&& cbs)
       : Base(std::move(context), std::move(cbs)) {
     // (Point 1.3) async RPC call - gRPC writes the final response into the reactor's read target
     // directly when the RPC completes; there is no separate read event for a client-streaming RPC's
@@ -153,12 +158,15 @@ namespace routeguide::RouteChat {
 /// How the reactor hands each message over, see RpcReactor::Client::Delivery
 using Delivery = RpcReactor::Client::Delivery;
 
+/// Who starts the transfer of each request, see RpcReactor::Client::Submission
+using Submission = RpcReactor::Client::Submission;
+
 /// Who arms the read that follows a delivered message, see RpcReactor::Client::ReadPacing
 using ReadPacing = RpcReactor::Client::ReadPacing;
 
 /// Specialized callback slots for RouteGuide::RouteChat bidirectional streaming RPC client
-template <Delivery kDelivery, ReadPacing kPacing = ReadPacing::kPerMessage>
-using Callbacks = RpcReactor::Client::ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kPacing>;
+template <Delivery kDelivery, Submission kSubmission, ReadPacing kPacing = ReadPacing::kPerMessage>
+using Callbacks = RpcReactor::Client::ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kSubmission, kPacing>;
 
 /// Specialized reactor class for RouteGuide::RouteChat bidirectional streaming RPC client.
 /// Specializes the generic ActiveBidiReactor (Method Request component).
@@ -180,11 +188,12 @@ using Callbacks = RpcReactor::Client::ActiveBidiCallbacks<RequestT, ResponseT, k
 ///
 /// GetResponse() and ResumeRead() are not offered under ReadPacing::kContinuous, which holds nothing.
 /// @tparam kDelivery how the reactor hands each message over, chosen by the application per RPC
+/// @tparam kSubmission who starts the transfer of each request, chosen by the application per RPC
 /// @tparam kPacing who arms the next read, chosen by the application per RPC
-template <Delivery kDelivery, ReadPacing kPacing = ReadPacing::kPerMessage>
+template <Delivery kDelivery, Submission kSubmission, ReadPacing kPacing = ReadPacing::kPerMessage>
 class ClientReactor final
-    : public RpcReactor::Client::ActiveBidiReactor<RequestT, ResponseT, kDelivery, kPacing> {
-  using Base = RpcReactor::Client::ActiveBidiReactor<RequestT, ResponseT, kDelivery, kPacing>;
+    : public RpcReactor::Client::ActiveBidiReactor<RequestT, ResponseT, kDelivery, kSubmission, kPacing> {
+  using Base = RpcReactor::Client::ActiveBidiReactor<RequestT, ResponseT, kDelivery, kSubmission, kPacing>;
 
  public:
   /// Constructor of the specialized class. It calls the RPC method and starts the stream reading
@@ -194,7 +203,7 @@ class ClientReactor final
   /// @param cbs given to the reactor to be used as callable functions
   ClientReactor(RouteGuide::Stub& stub,
                 std::unique_ptr<grpc::ClientContext> context,
-                Callbacks<kDelivery, kPacing>&& cbs)
+                Callbacks<kDelivery, kSubmission, kPacing>&& cbs)
       : Base(std::move(context), std::move(cbs)) {
     // (Point 1.2, 1.3) async RPC call - establishes bidirectional stream
     stub.async()->RouteChat(this->context_.get(), this);

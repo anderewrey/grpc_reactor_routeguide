@@ -40,6 +40,7 @@ namespace {
 /// Every reactor in this file is instantiated with Delivery::kPush; its pull counterpart is
 /// covered by active_write_reactor_pull_test.cpp.
 constexpr auto kDelivery = RpcReactor::Client::Delivery::kPush;
+constexpr auto kSubmission = RpcReactor::Client::Submission::kApplicationPushes;
 
 /// Test service implementing RecordRoute with distance/feature counting
 /// Mirrors route_guide_callback_server.cpp implementation using rg_utils
@@ -217,7 +218,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_MultiplePoints_ReturnsCorrectSummary)
   std::binary_semaphore write_slot{1};  // gRPC requires waiting for OnWriteDone between writes
 
   // Create callbacks
-  routeguide::RecordRoute::Callbacks<kDelivery> cbs;
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   cbs.write_done = [&write_slot](grpc::ClientWriteReactor<routeguide::Point>*, bool) {
     write_slot.release();
   };
@@ -232,7 +233,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_MultiplePoints_ReturnsCorrectSummary)
   };
 
   // Create reactor
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery>>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
   // Send points - two are known features, one is not
@@ -289,7 +290,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_EmptyStream_ReturnsZeroCounts) {
   std::promise<RecordRouteResult> result_promise;
   std::future<RecordRouteResult> result_future = result_promise.get_future();
 
-  routeguide::RecordRoute::Callbacks<kDelivery> cbs;
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   cbs.write_done = [](grpc::ClientWriteReactor<routeguide::Point>*, bool) {};
   cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>*,
                                const grpc::Status& status,
@@ -301,7 +302,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_EmptyStream_ReturnsZeroCounts) {
     result_promise.set_value(std::move(result));
   };
 
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery>>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
   // Immediately signal end of stream without sending any points
@@ -334,7 +335,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_SinglePoint_ReturnsZeroDistance) {
 
   std::binary_semaphore write_done{0};  // Released once the single write completes
 
-  routeguide::RecordRoute::Callbacks<kDelivery> cbs;
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   cbs.write_done = [&write_done](grpc::ClientWriteReactor<routeguide::Point>*, bool) { write_done.release(); };
   cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>*,
                                const grpc::Status& status,
@@ -346,7 +347,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_SinglePoint_ReturnsZeroDistance) {
     result_promise.set_value(std::move(result));
   };
 
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery>>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
   // Send single point (known feature)
@@ -388,7 +389,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_OverlappingWrites_RejectedByWritePend
 
   std::atomic<int> completed{0};
 
-  routeguide::RecordRoute::Callbacks<kDelivery> cbs;
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   cbs.write_done = [&completed](grpc::ClientWriteReactor<routeguide::Point>*, bool) { ++completed; };
   cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>*,
                                const grpc::Status& status,
@@ -400,7 +401,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_OverlappingWrites_RejectedByWritePend
     result_promise.set_value(std::move(result));
   };
 
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery>>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
   // Runs until it has seen both an acceptance and a rejection, since a fast transport can complete
@@ -455,7 +456,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_OnWriteDone_FiresForEachWrite) {
   std::future<RecordRouteResult> result_future = result_promise.get_future();
   std::atomic<int> write_done_count{0};
 
-  routeguide::RecordRoute::Callbacks<kDelivery> cbs;
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   cbs.write_done = [&write_done_count](grpc::ClientWriteReactor<routeguide::Point>*, bool ok) {
     if (ok) {
       ++write_done_count;
@@ -472,7 +473,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_OnWriteDone_FiresForEachWrite) {
     result_promise.set_value(std::move(result));
   };
 
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery>>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
   // Send 3 points, waiting for each write to be acknowledged before sending the next. A fixed sleep is
@@ -510,7 +511,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_TryCancel_TerminatesStream) {
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::RecordRoute::Callbacks<kDelivery> cbs;
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   cbs.write_done = [](grpc::ClientWriteReactor<routeguide::Point>*, bool) {};
   cbs.done = [&done_promise](grpc::ClientWriteReactor<routeguide::Point>*,
                              const grpc::Status& status,
@@ -518,7 +519,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_TryCancel_TerminatesStream) {
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery>>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
   // Send a point then cancel
@@ -556,7 +557,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_ServerError_PropagatesStatus) {
 
   std::binary_semaphore write_done{0};  // Released once the single write completes
 
-  routeguide::RecordRoute::Callbacks<kDelivery> cbs;
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   cbs.write_done = [&write_done](grpc::ClientWriteReactor<routeguide::Point>*, bool) { write_done.release(); };
   cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>*,
                                const grpc::Status& status,
@@ -568,7 +569,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_ServerError_PropagatesStatus) {
     result_promise.set_value(std::move(result));
   };
 
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery>>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
   // Send a point and end stream
@@ -596,12 +597,14 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_ServerError_PropagatesStatus) {
 /// outlive OnDone(), so destroying it after a fixed sleep races any reaction still running, which
 /// ThreadSanitizer reports. Built as routeguide::RecordRoute::ClientReactor is, since that class is final.
 class ObservedRecordRouteReactor final
-    : public RpcReactor::Client::ActiveWriteReactor<routeguide::Point, routeguide::RouteSummary, kDelivery> {
-  using Base = RpcReactor::Client::ActiveWriteReactor<routeguide::Point, routeguide::RouteSummary, kDelivery>;
+    : public RpcReactor::Client::ActiveWriteReactor<routeguide::Point, routeguide::RouteSummary, kDelivery,
+                                                    kSubmission> {
+  using Base =
+      RpcReactor::Client::ActiveWriteReactor<routeguide::Point, routeguide::RouteSummary, kDelivery, kSubmission>;
 
  public:
   ObservedRecordRouteReactor(routeguide::RouteGuide::Stub& stub, std::unique_ptr<grpc::ClientContext> context,
-                             routeguide::RecordRoute::Callbacks<kDelivery>&& cbs, std::promise<void>& done)
+                             routeguide::RecordRoute::Callbacks<kDelivery, kSubmission>&& cbs, std::promise<void>& done)
       : Base(std::move(context), std::move(cbs)), done_(done) {
     stub.async()->RecordRoute(this->context_.get(), this->response_.get(), this);
     this->StartCall();
@@ -629,7 +632,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_NoDoneCallbackBound_RpcStillCompletes
   std::promise<void> done_promise;
   std::future<void> done_future = done_promise.get_future();
 
-  routeguide::RecordRoute::Callbacks<kDelivery> cbs;
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   // cbs.done deliberately left unbound.
   cbs.write_done = [&write_done_count](grpc::ClientWriteReactor<routeguide::Point>*, bool ok) {
     if (ok) ++write_done_count;
@@ -668,12 +671,12 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_ServerEndsWhileIdle_OnDoneWaitsForWri
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::RecordRoute::Callbacks<kDelivery> cbs;
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   cbs.write_done = [](grpc::ClientWriteReactor<routeguide::Point>*, bool) {};
   cbs.done = [&done_promise](grpc::ClientWriteReactor<routeguide::Point>*, const grpc::Status& status,
                              std::unique_ptr<routeguide::RouteSummary>) { done_promise.set_value(status); };
 
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery>>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
   EXPECT_EQ(done_future.wait_for(std::chrono::milliseconds(300)), std::future_status::timeout)
@@ -697,14 +700,14 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_ServerEndsWhileIdle_FailedWriteEndsWr
   std::future<grpc::Status> done_future = done_promise.get_future();
   std::atomic<int> failed_writes{0};
 
-  routeguide::RecordRoute::Callbacks<kDelivery> cbs;
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   cbs.write_done = [&failed_writes](grpc::ClientWriteReactor<routeguide::Point>*, bool ok) {
     if (!ok) ++failed_writes;
   };
   cbs.done = [&done_promise](grpc::ClientWriteReactor<routeguide::Point>*, const grpc::Status& status,
                              std::unique_ptr<routeguide::RouteSummary>) { done_promise.set_value(status); };
 
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery>>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
   // A write may still succeed while the server's status is on its way, and a write is refused while
@@ -729,12 +732,12 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_TryCancelWhileIdle_CompletesWithoutWr
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::RecordRoute::Callbacks<kDelivery> cbs;
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   cbs.write_done = [](grpc::ClientWriteReactor<routeguide::Point>*, bool) {};
   cbs.done = [&done_promise](grpc::ClientWriteReactor<routeguide::Point>*, const grpc::Status& status,
                              std::unique_ptr<routeguide::RouteSummary>) { done_promise.set_value(status); };
 
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery>>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
   reactor->TryCancel();
@@ -753,7 +756,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_EndedWriteSide_RejectsEveryWriteCall)
   std::promise<RecordRouteResult> result_promise;
   std::future<RecordRouteResult> result_future = result_promise.get_future();
 
-  routeguide::RecordRoute::Callbacks<kDelivery> cbs;
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   cbs.write_done = [](grpc::ClientWriteReactor<routeguide::Point>*, bool) {};
   cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>*, const grpc::Status& status,
                                std::unique_ptr<routeguide::RouteSummary> response) {
@@ -764,7 +767,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_EndedWriteSide_RejectsEveryWriteCall)
     result_promise.set_value(std::move(result));
   };
 
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery>>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
   ASSERT_TRUE(reactor->SendLastRequest(rg_utils::MakePoint(407128000, -740060000)));
@@ -790,14 +793,14 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_TryCancelRacingWrites_CompletesOnce) 
   std::future<grpc::Status> done_future = done_promise.get_future();
   std::atomic<int> done_count{0};
 
-  routeguide::RecordRoute::Callbacks<kDelivery> cbs;
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   cbs.write_done = [](grpc::ClientWriteReactor<routeguide::Point>*, bool) {};
   cbs.done = [&done_promise, &done_count](grpc::ClientWriteReactor<routeguide::Point>*,
                                           const grpc::Status& status, std::unique_ptr<routeguide::RouteSummary>) {
     if (++done_count == 1) done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery>>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
   std::atomic<bool> stop{false};

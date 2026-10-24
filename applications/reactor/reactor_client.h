@@ -62,6 +62,25 @@ enum class ReadPacing {
   kTurnByTurn,
 };
 
+/// Selects who starts the transfer of each outgoing message on a writing reactor, which is the push/pull
+/// of the outgoing direction, as Delivery is that of the incoming one. Every writing reactor takes it as a
+/// template parameter, with no default, for the same reason as Delivery. It has no pacing counterpart:
+/// gRPC accepts one write in flight at a time, so nothing is left to choose about when the next one may
+/// start, only about who has the message once the previous one completed. See "The model behind the
+/// reactors' choices" in docs/architecture.md.
+enum class Submission {
+  /// The application starts each transfer, by calling SendRequest(), SendLastRequest() or
+  /// CloseRequestStream() from any thread, whenever it has a message ready. The reactor rejects a write
+  /// while another is in flight, so the application keeps its surplus and calls again after write_done.
+  /// Since those calls come from outside a reaction, the reactor holds the RPC while one may still come.
+  kApplicationPushes,
+  /// The reactor starts each transfer, by asking the next_request callback for the next message, once
+  /// when the RPC starts and again each time a write completes, and closes the request stream when the
+  /// callback has none. Every write is then issued by the reactor itself, so it takes no hold, and the
+  /// application has no write call to make.
+  kReactorPulls,
+};
+
 namespace detail {
 /// What a read_ok callback receives: the message lent in place (Delivery::kPull), or given as an owned
 /// object (Delivery::kPush).
@@ -521,7 +540,8 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
 /// @tparam RequestT type of protobuf message the RPC sends
 /// @tparam ResponseT type of protobuf message the RPC receives as final response
 /// @tparam kDelivery how the reactor hands the final response over, which sets the done slot's signature
-template <class RequestT, class ResponseT, Delivery kDelivery>
+/// @tparam kSubmission who starts the transfer of each request
+template <class RequestT, class ResponseT, Delivery kDelivery, Submission kSubmission>
 requires std::derived_from<RequestT, google::protobuf::Message> &&
          std::derived_from<ResponseT, google::protobuf::Message>
 struct ActiveWriteCallbacks {
@@ -554,16 +574,19 @@ struct ActiveWriteCallbacks {
 /// @tparam RequestT type of protobuf message the RPC sends
 /// @tparam ResponseT type of protobuf message the RPC receives as final response
 /// @tparam kDelivery how the reactor hands the final response over, see Delivery
-template <class RequestT, class ResponseT, Delivery kDelivery>
+/// @tparam kSubmission who starts the transfer of each request, see Submission
+template <class RequestT, class ResponseT, Delivery kDelivery, Submission kSubmission>
 requires std::derived_from<RequestT, google::protobuf::Message> &&
          std::derived_from<ResponseT, google::protobuf::Message>
 class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
+  static_assert(kSubmission == Submission::kApplicationPushes, "Submission::kReactorPulls is not implemented yet");
+
  public:
   /// Constructor of the reactor class. It moves the received objects as members.
   /// @param context given to this reactor about the ongoing RPC method
   /// @param cbs given to this reactor to use as callable functions
   ActiveWriteReactor(std::unique_ptr<grpc::ClientContext> context,
-                     ActiveWriteCallbacks<RequestT, ResponseT, kDelivery>&& cbs)
+                     ActiveWriteCallbacks<RequestT, ResponseT, kDelivery, kSubmission>&& cbs)
       : context_(std::move(context)),
         cbs_(std::move(cbs)) {}
 
@@ -763,7 +786,7 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
 
  private:
   grpc::Status status_;
-  ActiveWriteCallbacks<RequestT, ResponseT, kDelivery> cbs_;
+  ActiveWriteCallbacks<RequestT, ResponseT, kDelivery, kSubmission> cbs_;
 
   // Storage for the request currently being written. SendRequest() moves the caller's argument
   // here so StartWrite() has a stable pointer that survives past the caller's own statement -
@@ -828,8 +851,10 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
 /// @tparam RequestT type of protobuf message the RPC sends
 /// @tparam ResponseT type of protobuf message the RPC receives
 /// @tparam kDelivery how the reactor hands each message over, which sets the read_ok slot's parameter
+/// @tparam kSubmission who starts the transfer of each request
 /// @tparam kPacing who arms the next read, which sets the read_ok slot's return type
-template <class RequestT, class ResponseT, Delivery kDelivery, ReadPacing kPacing = ReadPacing::kPerMessage>
+template <class RequestT, class ResponseT, Delivery kDelivery, Submission kSubmission,
+          ReadPacing kPacing = ReadPacing::kPerMessage>
 requires std::derived_from<RequestT, google::protobuf::Message> &&
          std::derived_from<ResponseT, google::protobuf::Message>
 struct ActiveBidiCallbacks {
@@ -870,11 +895,15 @@ struct ActiveBidiCallbacks {
 /// @tparam RequestT type of protobuf message the RPC sends
 /// @tparam ResponseT type of protobuf message the RPC receives
 /// @tparam kDelivery how the reactor hands each message over, see Delivery
+/// @tparam kSubmission who starts the transfer of each request, see Submission
 /// @tparam kPacing who arms the read that follows a delivered message, see ReadPacing
-template <class RequestT, class ResponseT, Delivery kDelivery, ReadPacing kPacing = ReadPacing::kPerMessage>
+template <class RequestT, class ResponseT, Delivery kDelivery, Submission kSubmission,
+          ReadPacing kPacing = ReadPacing::kPerMessage>
 requires std::derived_from<RequestT, google::protobuf::Message> &&
          std::derived_from<ResponseT, google::protobuf::Message>
 class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
+  static_assert(kSubmission == Submission::kApplicationPushes, "Submission::kReactorPulls is not implemented yet");
+
  public:
   /// Constructor of the reactor class. It moves the received objects as members.
   /// The derived, specialized reactor must call StartRead() after binding this reactor
@@ -883,7 +912,7 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// @param context given to this reactor about the ongoing RPC method
   /// @param cbs given to this reactor to use as callable functions
   ActiveBidiReactor(std::unique_ptr<grpc::ClientContext> context,
-                    ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kPacing>&& cbs)
+                    ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kSubmission, kPacing>&& cbs)
       : context_(std::move(context)),
         cbs_(std::move(cbs)) {}
 
@@ -1229,7 +1258,7 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   }
 
   grpc::Status status_;
-  ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kPacing> cbs_;
+  ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kSubmission, kPacing> cbs_;
 
   // Under ReadPacing::kPerMessage or kTurnByTurn: the number of messages held so far, as in
   // ActiveReadReactor. Only touched by OnReadDone().
