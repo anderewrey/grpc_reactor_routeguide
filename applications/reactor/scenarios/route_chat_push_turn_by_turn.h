@@ -16,20 +16,27 @@
 #include "applications/reactor/reactor_eventloop.h"
 #include "applications/reactor/scenarios/support.h"
 
-namespace rg_demo::turn_by_turn {
+namespace rg_demo::push::turn_by_turn {
 
-/// Exhibits ActiveBidiReactor under ReadPacing::kTurnByTurn, via the RouteChat RPC. The reactor holds
-/// the read side and arms nothing until the application calls ResumeRead(). The write side keeps
-/// running meanwhile, since a read hold stalls only the reads.
+/// Exhibits ActiveBidiReactor under Delivery::kPush and ReadPacing::kTurnByTurn, via the RouteChat RPC.
+/// Each message is handed out as an owned object, and the reactor holds the read side and arms nothing
+/// until the application calls ResumeRead(). The write side keeps running meanwhile, since a read hold
+/// stalls only the reads.
 ///
-/// Clone of its continuous counterpart in route_chat_continuous.h, for the reason recorded there and
-/// on the ListFeatures pair: one class instantiated twice would register the same event names twice.
-/// Its pull counterpart in route_chat_pull.h reaches the same one-message pacing by pulling instead.
+/// The notes are sent one at a time, under the same one-write-in-flight constraint as RecordRoute,
+/// while responses arrive on the independent read side at any time. The write pump is identical in
+/// every RouteChat scenario, so it is the constant against which each read-side cell is shown.
+///
+/// Clone of its siblings, for the reason recorded on the ListFeatures scenarios: one class instantiated
+/// twice would register the same event names twice. Each sibling differs from this file along one axis:
+/// - route_chat_push_continuous.h, the pacing: the reactor re-arms the read side by itself
+/// - route_chat_pull_turn_by_turn.h, the delivery: the message is pulled with GetResponse()
 class RouteChat {
-  // The reactor flavour this scenario exhibits starts with its Delivery approach.
+  // The reactor flavour this scenario exhibits: its Delivery approach, then its ReadPacing mode.
   using Delivery = routeguide::RouteChat::Delivery;
-  using Callbacks = routeguide::RouteChat::Callbacks<Delivery::kPush>;
-  using ClientReactor = routeguide::RouteChat::ClientReactor<Delivery::kPush>;
+  using ReadPacing = routeguide::RouteChat::ReadPacing;
+  using Callbacks = routeguide::RouteChat::Callbacks<Delivery::kPush, ReadPacing::kTurnByTurn>;
+  using ClientReactor = routeguide::RouteChat::ClientReactor<Delivery::kPush, ReadPacing::kTurnByTurn>;
 
  public:
   /// Registers the event handlers this scenario needs, for its own lifetime.
@@ -60,11 +67,15 @@ class RouteChat {
   /// Application-thread handler for OnDone, which destroys the reactor.
   void OnDone(const EventLoop::Event* event);
 
-  /// Sends the next queued note, from this scenario's own queue.
+  /// Sends the next queued note. The last note goes through SendLastRequest(), which closes the
+  /// client's write side; the server may keep sending responses afterward.
   void SendNextNote();
 
   routeguide::RouteGuide::Stub& stub_;
   std::unique_ptr<ClientReactor> reactor_;
+
+  // The queue belongs to this object. Its siblings run concurrently and consume their own notes, so
+  // one shared queue would let any of them drain another's.
   std::vector<routeguide::RouteNote> pending_;
 
   // The read counter is incremented only on the gRPC thread, in read_ok, and the handled counter
@@ -72,7 +83,7 @@ class RouteChat {
   unsigned read_seq_{0};
   unsigned handled_seq_{0};
 
-  spdlog::logger& logger_{VariantLogger("RouteChat.turn")};
+  spdlog::logger& logger_{VariantLogger("RouteChat.push.turn")};
 
   // Declared last, so destruction deregisters the handlers before anything they reach is gone.
   RpcReactor::EventConnection on_read_ok_;
@@ -81,4 +92,4 @@ class RouteChat {
   RpcReactor::EventConnection on_done_;
 };
 
-}  // namespace rg_demo::turn_by_turn
+}  // namespace rg_demo::push::turn_by_turn

@@ -130,29 +130,37 @@ reasoning applies to `RecordRoute`, whose reactor also delivers one terminal res
 
 ## Step 5: what changes with a stream
 
-A streaming RPC delivers many messages, so a second question appears: who arms the next read?
+A streaming RPC delivers many messages, so a second question appears: who arms the next read? A second template
+parameter, `ReadPacing`, answers it. It works with either `Delivery`, so a reading reactor names both, as in
+`ClientReactor<Delivery::kPull, ReadPacing::kTurnByTurn>`.
 
-| | Who decides | Holds the stream for the application | Reads on at once |
+| `ReadPacing` | Who arms the next read | Under `kPull`, your handler calls | Under `kPush`, your handler calls |
 | --- | --- | --- | --- |
-| `Delivery::kPull` | `read_ok`, per message | Returns `true`, until `GetResponse()` | Returns `false` |
-| `Delivery::kPush` | `ReadPacing`, per RPC | `kTurnByTurn`, until `ResumeRead()` | `kContinuous` |
+| `kContinuous` | The reactor, once `read_ok` returns | Nothing: `read_ok` used it in place | Nothing: it owns it |
+| `kTurnByTurn` | Your handler, once it is done | `GetResponse()` | `ResumeRead()` |
+| `kPerMessage` | `read_ok`, for each message | `GetResponse()`, if `read_ok` kept it | `ResumeRead()`, if kept |
 
-A read armed from the application thread needs a hold, so the hold rule now matters. Run the demo again and filter on
-`ListFeatures.pull`. The `read_ok` lines carry a different thread id from the `pulled` and `RESPONSE` lines, because
-`read_ok` is logged on the gRPC thread.
+That makes six combinations, and the demo runs all six for `ListFeatures`. Whenever your handler arms the next
+read, it does so from the application thread, which needs a hold, so the hold rule now matters. Run the demo again
+and filter on `ListFeatures.pull.turn`. The `read_ok` lines carry a different thread id from the `pulled` and
+`RESPONSE` lines, because `read_ok` is logged on the gRPC thread.
 
 Two comparisons show the two axes, one at a time:
 
 ```bash
 cd applications/reactor/scenarios
-diff list_features_continuous.cpp list_features_turn_by_turn.cpp  # the pacing mode
-diff list_features_pull.cpp list_features_turn_by_turn.cpp        # the delivery approach, at the same pacing
+diff list_features_push_continuous.cpp list_features_push_turn_by_turn.cpp  # the pacing, at the same delivery
+diff list_features_pull_turn_by_turn.cpp list_features_push_turn_by_turn.cpp  # the delivery, at the same pacing
 ```
+
+Every combination's facts are under [Read pacing modes](/applications/reactor/reactor_client.md#read-pacing-modes),
+and which one suits which stream is argued under
+[Choosing for a stream of messages](/docs/architecture.md#choosing-for-a-stream-of-messages).
 
 ## Where to go next
 
 | To learn | Read |
 | ---------- | ------ |
 | Every class, callback, and sequence diagram | [reactor_client.md](/applications/reactor/reactor_client.md) |
-| Why the library offers two approaches, and the hold rules | [architecture.md](/docs/architecture.md) |
+| Why the library offers its delivery approaches and pacing modes, and the hold rules | [architecture.md](/docs/architecture.md) |
 | How the tests cover each approach | [testing.md](/docs/testing.md) |

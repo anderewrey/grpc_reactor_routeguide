@@ -7,13 +7,19 @@ For why the library is built this way, which alternatives were rejected, and the
 see [architecture.md](/docs/architecture.md). For build and test commands, see
 [developing.md](/docs/developing.md) and [testing.md](/docs/testing.md).
 
-Two choices orient everything below, and the application makes both per RPC, from that RPC's constraints: neither
-has a default. The `Delivery` template parameter decides how a reactor hands a received message over. Under `kPull`
-the reactor keeps the message for the application to pull with `GetResponse()`; under `kPush` it gives the message
-to a callback as an owned object, and keeps nothing. On the two reading reactors, the second choice is who arms the
-next read: under `kPush` the `ReadPacing` constructor argument decides it for the whole RPC, and under `kPull` the
-`read_ok` callback decides it for each message through its return value. See
-[Delivery approaches](#delivery-approaches) and [Read pacing modes](#read-pacing-modes).
+Two template parameters orient everything below. The application chooses both per RPC, from that RPC's constraints,
+and neither has a default.
+
+| Parameter    | Taken by                 | Decides                                                      |
+|--------------|--------------------------|--------------------------------------------------------------|
+| `Delivery`   | All four reactors        | How a received message reaches the `read_ok` or `done` slot  |
+| `ReadPacing` | The two reading reactors | Who arms the read that follows a delivered message, and when |
+
+Under `Delivery::kPull` the callback is lent the message, which stays in the reactor. When the reactor keeps it, the
+application pulls it with `GetResponse()`. Under `Delivery::kPush` the callback is given the message as an owned
+object, and the reactor keeps nothing. The two axes are independent, so each reading reactor has six combinations, one
+per `Delivery` and `ReadPacing` pair. See [Delivery approaches](#delivery-approaches) and
+[Read pacing modes](#read-pacing-modes).
 
 ## API naming conventions
 
@@ -39,10 +45,13 @@ These gRPC functions are called internally by the reactor classes and are not ex
 | `StartWrite()`          | Begins async write operation     | Inside `SendRequest()`                            |
 | `StartWriteLast()`      | Write + implied close, one op    | Inside `SendLastRequest()`                        |
 | `StartWritesDone()`     | Signals end of client writes     | Inside `CloseRequestStream()`                     |
-| `AddHold()`             | Prevents OnDone until RemoveHold | Inside `OnReadDone()`, before the ok callback:    |
-|                         |                                  | always under `kPull`, `kTurnByTurn` under `kPush` |
+| `AddHold()`             | Prevents OnDone until RemoveHold | Inside `OnReadDone()`, before the ok callback,    |
+|                         |                                  | under `kTurnByTurn` and `kPerMessage`. Bidi only: |
+|                         |                                  | `StartCall()` and `OnWriteDone()` (write side)    |
 | `RemoveHold()`          | Releases hold, allows OnDone     | `GetResponse()` (`kPull`), `ResumeRead()`         |
-|                         |                                  | (`kPush`), or `OnReadDone()` if `kPull` declines  |
+|                         |                                  | (`kPush`), or `OnReadDone()` when a `kPerMessage` |
+|                         |                                  | callback declines. Bidi only: the write methods   |
+|                         |                                  | and `OnReadDone(false)` (write side)              |
 
 ### gRPC callbacks (protected overrides)
 
@@ -71,11 +80,12 @@ the `ok` flag that answers the same question:
   be sending. Setting the flag there would stop a held read from ever being re-armed, and the RPC would never end.
 - Checked before issuing a new `StartRead()`, `StartWrite()`, `StartWriteLast()`, or `StartWritesDone()`. On
   `ActiveBidiReactor`'s write path the check happens after the hold claim is won rather than before, see below.
-- On the read side, only `GetResponse()` (`Delivery::kPull`) and `ResumeRead()` (`Delivery::kPush`, under
-  `ReadPacing::kTurnByTurn`) consult it, since they are the only calls that arm a read from outside a reaction. A
-  read-only reactor cannot in practice reach it with a hold outstanding, because the events that set the flag all
-  require an operation the hold has already prevented from being armed. `ActiveBidiReactor` can, because a write
-  failing while a read hold stands sets the same flag.
+- On the read side, only `GetResponse()` (`Delivery::kPull`) and `ResumeRead()` (`Delivery::kPush`) consult it,
+  under `ReadPacing::kTurnByTurn` or `kPerMessage`, since they are the only calls that arm a read from outside a
+  reaction. Every other `StartRead()`, including the one after a declined `kPerMessage` message, runs inside a
+  reaction and does not consult it. A read-only reactor cannot in practice reach the flag with a hold outstanding,
+  because the events that set it all require an operation the hold has already prevented from being armed.
+  `ActiveBidiReactor` can, because a write failing while a read hold stands sets the same flag.
 - `ActiveBidiReactor` uses a single flag for both directions instead of one per direction. Per gRPC's own
   contract (`grpcpp/support/client_callback.h`), a failure on either read or write means no new read/write
   operation will succeed, so tracking the two directions separately would not add information.
@@ -100,7 +110,7 @@ These methods are exposed to application code with naming that reflects applicat
 | `SendLastRequest()`    | Send the final request and close, atomically | For a known-last message                     |
 | `CloseRequestStream()` | Signal end of client requests                | Returns false if rejected (see below)        |
 | `GetResponse()`        | Pull the received message out, by swap       | `Delivery::kPull` only, see below            |
-| `ResumeRead()`         | Arm the read following a delivered message   | `Delivery::kPush`, `kTurnByTurn` only        |
+| `ResumeRead()`         | Arm the read following a held message        | `Delivery::kPush` only, see below            |
 | `TryCancel()`          | Cancel the entire RPC                        | Thread-safe, any thread                      |
 | `Status()`             | Get final RPC status                         | Valid after `OnDone`                         |
 
@@ -108,14 +118,25 @@ These methods are exposed to application code with naming that reflects applicat
 RPC has already failed/finished. Callers should wait for `OnWriteDone()` and retry, or use `SendLastRequest()`
 instead when the last message is known in advance.
 
-`GetResponse()` exists on all four reactors under `Delivery::kPull`, and does not compile under `kPush`. It swaps
-the held message out into the caller's object and returns `false` (does nothing) when no message is ready. On the
-two reading reactors it also arms the next read and releases the hold `OnReadDone()` took. See
-[Delivery approaches](#delivery-approaches).
+Which reactor offers `GetResponse()` and `ResumeRead()` depends on both template parameters. A call that the table
+marks as not offered does not compile.
 
-`ResumeRead()` exists on the two reading reactors under `Delivery::kPush`, and does not compile under `kPull`. It
-returns `false` (does nothing) unless a `ReadPacing::kTurnByTurn` hold is outstanding, which makes it a rejected
-no-op under `ReadPacing::kContinuous` and on a duplicate call. See [Read pacing modes](#read-pacing-modes).
+| Reactor                                    | `ReadPacing`                 | `GetResponse()` | `ResumeRead()` |
+|--------------------------------------------|------------------------------|-----------------|----------------|
+| `ActiveUnaryReactor`, `ActiveWriteReactor` | None                         | Under `kPull`   | Not offered    |
+| `ActiveReadReactor`, `ActiveBidiReactor`   | `kContinuous`                | Not offered     | Not offered    |
+| `ActiveReadReactor`, `ActiveBidiReactor`   | `kTurnByTurn`, `kPerMessage` | Under `kPull`   | Under `kPush`  |
+
+`GetResponse()` swaps the held message out into the caller's object, and returns `false` (does nothing) when no message
+is ready. On the two reading reactors it first claims the held message's token in `response_ready_`, by atomically
+exchanging it for zero, so a duplicate call returns `false`. It then arms the next read, unless the stream is over, and
+releases the hold `OnReadDone()` took. It returns `true` whenever it swapped a message out, including when the stream is
+over. See [Delivery approaches](#delivery-approaches).
+
+`ResumeRead()` claims the held message's token in `read_held_` the same way, and returns `false` (does nothing) when no
+hold is outstanding, which covers a duplicate call. Once the claim is won, it arms the next read unless the stream is
+over, then releases the hold. It returns `true` only when it armed a read, so it also returns `false` when the stream is
+over, after releasing the hold. See [Read pacing modes](#read-pacing-modes).
 
 ### Future server-side API
 
@@ -137,13 +158,16 @@ For server-side reactors, the naming will mirror client-side with role reversal:
 | **Unary**         | (constructor)   | N/A                    | done callback,    | done callback,    | `TryCancel()` |
 |                   |                 |                        | `GetResponse()`   | owned response    |               |
 | **Server-Stream** | (constructor)   | N/A                    | read_ok callback, | read_ok callback, | `TryCancel()` |
-|                   |                 |                        | `GetResponse()`   | owned message     |               |
+|                   |                 |                        | lent message,     | owned message,    |               |
+|                   |                 |                        | `GetResponse()`   | `ResumeRead()`    |               |
 | **Client-Stream** | `SendRequest()` | `CloseRequestStream()` | done callback,    | done callback,    | `TryCancel()` |
 |                   |                 |                        | `GetResponse()`   | owned response    |               |
 | **Bidi**          | `SendRequest()` | `CloseRequestStream()` | read_ok callback, | read_ok callback, | `TryCancel()` |
-|                   |                 |                        | `GetResponse()`   | owned message     |               |
+|                   |                 |                        | lent message,     | owned message,    |               |
+|                   |                 |                        | `GetResponse()`   | `ResumeRead()`    |               |
 
-Every reactor exposes `Status()` under both approaches.
+Every reactor exposes `Status()` under both approaches. On the two reading reactors, `GetResponse()` and
+`ResumeRead()` exist only under `ReadPacing::kTurnByTurn` and `kPerMessage`.
 
 #### Server-side reactors (future)
 
@@ -156,7 +180,8 @@ Every reactor exposes `Status()` under both approaches.
 
 ### Bidirectional stream message flow
 
-`GetResponse()` applies under `Delivery::kPull`; under `kPush` the `read_ok` callback is given the message instead.
+`GetResponse()` applies under `Delivery::kPull` with a pacing that holds the read side, `kTurnByTurn` or
+`kPerMessage`. Under `kPush` the `read_ok` callback is given the message instead.
 
 ```text
 Client                              Server
@@ -198,7 +223,8 @@ The implementation is organized across three architectural layers, mapping Activ
 The Scheduler and the Activation Queue come from the [EventLoop library][eventloop-lib]. Under `Delivery::kPull`
 the queue carries a notification that a message is ready, as the reactor pointer. Under `Delivery::kPush` it
 carries the message itself, which is what makes the obligations under [Message ownership](#message-ownership) the
-application's.
+application's. A `kPull` reader under `ReadPacing::kContinuous` has no message left in the reactor to notify about,
+so what its queue carries is whatever the `read_ok` callback extracted.
 
 ## Delivery approaches
 
@@ -207,17 +233,22 @@ It has no default, because neither approach is better in general: each one fits 
 The application states its choice per RPC, so both can live side by side in one application, even on the same RPC
 method.
 
-| Property                  | `Delivery::kPull`                            | `Delivery::kPush`                         |
-|---------------------------|----------------------------------------------|-------------------------------------------|
-| Where the message waits   | In the reactor, until `GetResponse()`        | In the callback, as an owned `unique_ptr` |
-| What an event carries     | The reactor pointer                          | The message itself                        |
-| Who paces a reading RPC   | The `read_ok` return value, per message      | The `ReadPacing` argument, per RPC        |
-| Response accessor         | `GetResponse()`                              | None                                      |
-| Read holds                | One per kept message, until `GetResponse()`  | One per message under `kTurnByTurn` only  |
-| What the application owes | One `GetResponse()` per message it kept      | The obligations under                     |
-|                           |                                              | [Message ownership](#message-ownership)   |
+| Property                  | `Delivery::kPull`                           | `Delivery::kPush`                        |
+|---------------------------|---------------------------------------------|------------------------------------------|
+| What the callback gets    | `const ResponseT&`, lent                    | `std::unique_ptr<ResponseT>`, given      |
+| Where the message waits   | In the reactor, until `GetResponse()`, when | In the callback, then wherever the       |
+|                           | the reading side is held for it             | callback hands it                        |
+| What an event carries     | The reactor pointer                         | The message itself                       |
+| Response accessor         | `GetResponse()`                             | None                                     |
+| Releases a read hold      | `GetResponse()`                             | `ResumeRead()`                           |
+| What the application owes | One `GetResponse()` per held message        | One `ResumeRead()` per held message, and |
+|                           |                                             | the obligations under                    |
+|                           |                                             | [Message ownership](#message-ownership)  |
 
-Only the slot that carries a message changes signature between the two approaches. The slot names, the other
+On the two reading reactors, whether a message is held at all is decided by the separate `ReadPacing` parameter,
+under either approach. See [Read pacing modes](#read-pacing-modes).
+
+Only the slot that carries a message changes its parameter between the two approaches. The slot names, the other
 callbacks, the write side, `Status()` and `TryCancel()` are identical. What each approach costs, and which one suits
 which RPC, is argued in [architecture.md](/docs/architecture.md#why-the-reactors-offer-two-delivery-approaches). For
 a guided first look at both on a unary call, see [walkthrough.md](/docs/walkthrough.md).
@@ -239,58 +270,137 @@ The event data is one pointer, so an application running several concurrent RPCs
 which reactor produced a message. It must use a distinct event name per reactor instance, or pass the reactor
 pointer the callback received alongside the message.
 
-None of these apply under `Delivery::kPull`, where the event carries the reactor pointer and the message stays in
-the reactor until `GetResponse()` swaps it out.
+None of these apply under `Delivery::kPull`, where the reactor never gives a message away. The callback is only
+lent it, and a held message stays in the reactor until `GetResponse()` swaps it out. A held message can be swapped out
+as soon as the callback has handed it on, while the callback is still running, so handing it on is the last thing the
+callback does with the lent message.
+
+Under `Delivery::kPush` with `ReadPacing::kPerMessage`, the callback owns every message, the ones it declines as
+much as the ones it keeps. The obligations apply to any message it hands on, whatever it returns.
 
 Two execution strategies are available to a consumer, under either approach. A gRPC-thread callback
 (`OnDoneCallback`, `OnReadDoneOkCallback`) can decide whether to hand the message on to the application thread or
-drop it: under `kPush` that costs nothing more than dropping the `std::unique_ptr`, and under `kPull` a reading
-reactor's callback declines it by returning `false`. A handler registered through `EventLoop::RegisterEvent()` then
-does the real processing on the application thread. Processing inside the gRPC-thread callback is discouraged,
-because it occupies a thread gRPC needs for other RPCs.
+drop it. Under `kPush` a drop costs nothing more than dropping the `std::unique_ptr`. Under `kPull` a reading
+reactor's callback drops it by not forwarding it: under `kContinuous` it simply returns, and under `kPerMessage` it
+returns `false`. A handler registered through `EventLoop::RegisterEvent()` then does the real processing on the
+application thread. Processing inside the gRPC-thread callback is discouraged, because it occupies a thread gRPC
+needs for other RPCs.
 
 ## Read pacing modes
 
-Under `Delivery::kPush`, `ActiveReadReactor` and `ActiveBidiReactor` take a `ReadPacing` mode at construction,
-fixed for the whole RPC, and with no default for the same reason `Delivery` has none. The mode selects when the
-reactor arms the read that follows a delivered message, and nothing else. Both modes move an owned
-`std::unique_ptr<ResponseT>` into the `read_ok` slot, so the callback signature and the surrounding application
-wiring are identical under either one, and the only difference a consumer writes is whether it calls `ResumeRead()`
-when it is done with the message.
+`ActiveReadReactor` and `ActiveBidiReactor` take a `ReadPacing` template parameter after `Delivery`. It has no
+default, for the same reason `Delivery` has none. It selects who arms the read that follows a delivered message, and
+when that choice is made. It applies under both `Delivery` approaches, so each reading reactor has six combinations.
 
-| Property           | `kContinuous`                                 | `kTurnByTurn`                                |
-|--------------------|-----------------------------------------------|----------------------------------------------|
-| Arms the next read | The reactor, as the reaction's last statement | The application, through `ResumeRead()`      |
-| Holds the RPC      | No                                            | Yes, one hold per delivered message          |
-| Messages in flight | Unbounded                                     | One                                          |
-| A slow consumer    | Never stalls the stream                       | Stalls the stream while it is slow           |
-| The cost           | The event queue grows without bound           | The RPC stalls, and strands if never resumed |
+| `ReadPacing`  | Decided                        | Arms the next read                                         |
+|---------------|--------------------------------|------------------------------------------------------------|
+| `kContinuous` | Once, for the whole RPC        | The reactor, as the last statement of the reaction         |
+| `kTurnByTurn` | Once, for the whole RPC        | The application, through `GetResponse()` or `ResumeRead()` |
+| `kPerMessage` | For each message, by `read_ok` | The application when `read_ok` returns `true`, the reactor |
+|               |                                | when it returns `false`                                    |
 
-The mode is a choice of where the backpressure goes; which mode suits which RPC is argued in
-[architecture.md](/docs/architecture.md#why-the-reading-reactors-offer-two-pacing-modes).
+The `read_ok` slot's parameter follows `Delivery`, and its return type follows `ReadPacing`:
 
-The mode is fixed at construction rather than switchable, which keeps it out of the race between the application
-thread and `OnReadDone()`. The branch costs one read per network message.
+| `read_ok` signature | `kContinuous`, `kTurnByTurn`                | `kPerMessage`                               |
+|---------------------|---------------------------------------------|---------------------------------------------|
+| `Delivery::kPull`   | `void(reactor, const ResponseT&)`           | `bool(reactor, const ResponseT&)`           |
+| `Delivery::kPush`   | `void(reactor, std::unique_ptr<ResponseT>)` | `bool(reactor, std::unique_ptr<ResponseT>)` |
 
-`Delivery::kPull` takes no `ReadPacing`, because its `read_ok` callback makes the same choice for each message
-through its return value. Returning `false` behaves like `kContinuous` for that message: the reactor reads on at
-once, so the callback must copy out what it wants first. Returning `true` behaves like `kTurnByTurn`: the RPC
-holds until the application calls `GetResponse()`, which plays the role `ResumeRead()` plays under `kPush`.
+Both are template parameters, so a reactor's pacing is part of its type and cannot change during the RPC. Why the pacing
+is chosen at compile time, and which combination suits which stream, is argued in
+[architecture.md](/docs/architecture.md#why-the-reading-reactors-offer-three-pacing-modes).
 
-The re-arm sits outside the `read_ok` guard under both modes. An unbound slot has nobody to call `ResumeRead()`,
-so the reactor arms the read itself rather than take a hold that nothing would ever release.
+`OnReadDone(true)` hands a message over in two steps, in this order:
 
-### The obligation kTurnByTurn adds
+| Step     | Selected by  | What it does                                                                       |
+|----------|--------------|------------------------------------------------------------------------------------|
+| Delivery | `Delivery`   | `kPull` lends the read target in place. `kPush` swaps it into a new owned message. |
+| Pacing   | `ReadPacing` | `kContinuous` calls `read_ok`, then arms the next read. The two other modes take a |
+|          |              | hold and publish its token, then call `read_ok`.                                   |
 
-Under `kTurnByTurn`, an application that drops a message without calling `ResumeRead()` strands the RPC. The hold
-suppresses `OnDone()`, and no outstanding read is left to report the stream ending, so nothing can conclude the
-RPC and the reactor can never be legally destroyed. `kContinuous` carries no such obligation. The same obligation
-applies under `Delivery::kPull` to every message the `read_ok` callback kept: until `GetResponse()` pulls it, the
-RPC stays on hold.
+The delivery step completes before any hold is published. Under `kPerMessage`, the pacing step ends by releasing the
+hold itself when `read_ok` returns `false`.
 
-`ResumeRead()` claims an internal flag before releasing anything, so a duplicate or spurious call is rejected
-rather than acted on. Releasing a hold that was never taken would drop gRPC's outstanding-callback count below
-what the RPC actually has in flight, and conclude the RPC early.
+### kContinuous
+
+| Property                  | `Delivery::kPull`                         | `Delivery::kPush`                       |
+|---------------------------|-------------------------------------------|-----------------------------------------|
+| Arms the next read        | The reactor, once `read_ok` returns       | The reactor, once `read_ok` returns     |
+| Holds per message         | None                                      | None                                    |
+| Messages in flight        | Unbounded: whatever `read_ok` forwards    | Unbounded: whatever `read_ok` forwards  |
+| What the application owes | A copy, made before `read_ok` returns, of | The obligations under                   |
+|                           | whatever it keeps                         | [Message ownership](#message-ownership) |
+
+Under `kPull`, the message lent to `read_ok` is the reactor's read target. The next read, armed as soon as `read_ok`
+returns, overwrites it, so keeping a whole message takes a deep copy. Neither `GetResponse()` nor `ResumeRead()` is
+offered under `kContinuous`.
+
+### kTurnByTurn
+
+| Property                  | `Delivery::kPull`                   | `Delivery::kPush`                       |
+|---------------------------|-------------------------------------|-----------------------------------------|
+| Arms the next read        | The application, in `GetResponse()` | The application, in `ResumeRead()`      |
+| Holds per message         | One, taken before `read_ok` runs    | One, taken before `read_ok` runs        |
+| Messages in flight        | One                                 | One                                     |
+| What the application owes | One `GetResponse()` per message     | One `ResumeRead()` per message, and the |
+|                           |                                     | obligations under                       |
+|                           |                                     | [Message ownership](#message-ownership) |
+
+The reactor arms no read between `read_ok` and the call that releases the hold, so the stream waits for the
+application meanwhile.
+
+### kPerMessage
+
+| Property                  | `Delivery::kPull`                          | `Delivery::kPush`                           |
+|---------------------------|--------------------------------------------|---------------------------------------------|
+| Arms the next read        | Kept: the application, in `GetResponse()`. | Kept: the application, in `ResumeRead()`.   |
+|                           | Declined: the reactor, in the reaction     | Declined: the reactor, in the reaction      |
+| Holds per message         | One, taken before `read_ok` runs, whether  | One, taken before `read_ok` runs, whether   |
+|                           | the message is kept or declined            | the message is kept or declined             |
+| Messages in flight        | One while a kept message waits, unbounded  | One while a kept message waits, unbounded   |
+|                           | otherwise                                  | otherwise                                   |
+| What the application owes | One `GetResponse()` per kept message, and  | One `ResumeRead()` per kept message, and    |
+|                           | a copy of whatever it keeps from a         | the obligations under                       |
+|                           | declined one                               | [Message ownership](#message-ownership)     |
+
+`read_ok` returns `true` to keep the message, which then holds the stream exactly as under `kTurnByTurn`. It returns
+`false` to decline it. The reactor takes the hold and publishes the message's token (`response_ready_` under `kPull`,
+`read_held_` under `kPush`) before every call to `read_ok`, since the answer is not known yet. Each held message gets
+its own non-zero token, and zero means that nothing is held.
+
+On a declined message, `OnReadDone()` claims the hold back by compare-exchange against that message's own token,
+arms the next read, then releases the hold, all inside the reaction. If the application has already claimed the
+token through `GetResponse()` or `ResumeRead()`, the reactor loses the claim and does nothing more. Either way, the
+hold is released exactly once. The claim matches only its own message: once the application has released message
+N, message N+1 can be read, held, and published on another gRPC thread while the callback for N is still running,
+and the decline of N then leaves the hold of N+1 untouched.
+Under `kPull`, the re-arm overwrites the declined message. Under `kPush`, the callback owns the declined message as
+much as a kept one.
+
+### Unbound read_ok slot
+
+When the `read_ok` slot is unbound, `OnReadDone(true)` arms the next read inside the reaction and takes no hold,
+under every `ReadPacing` and either `Delivery`. The message is neither lent nor given, and the next read overwrites
+it.
+
+### The obligation a held message adds
+
+A held message is one delivered under `kTurnByTurn`, or kept under `kPerMessage`. An application that drops a held
+message without its release call strands the RPC. The release call is `GetResponse()` under `kPull` and
+`ResumeRead()` under `kPush`. The hold suppresses `OnDone()`, and no outstanding read is left to report the stream
+ending, so nothing can conclude the RPC and the reactor can never be legally destroyed. `kContinuous`, and a message
+declined under `kPerMessage`, carry no such obligation.
+
+`GetResponse()` and `ResumeRead()` claim the held message's token, by atomically exchanging it for zero, before
+releasing anything, so a duplicate or spurious call is rejected rather than acted on. Releasing a hold that was never
+taken would drop gRPC's outstanding-callback count below what the RPC actually has in flight, and conclude the RPC
+early.
+
+That claim protects the hold count, not the application's intent. Either call releases whichever message is held at
+that moment, not a particular one, and once a release has armed the next read, that next message can already be held,
+even while its own `read_ok` is still running. So the application calls one of them exactly once per message the
+callback kept: every message under `kTurnByTurn`, and those for which `read_ok` returned `true` under `kPerMessage`. A
+stray call, such as one for a declined message, may release a message the application meant to keep.
 
 ## Write-side idle hold
 
@@ -326,15 +436,20 @@ failure on either direction means neither succeeds any more, so the end of the r
 that no application write action will ever arrive. Both the arming and the releasing side publish their flag
 before testing the other's, because gRPC may run the two reactions concurrently.
 
-Under `ReadPacing::kTurnByTurn` that trigger is not unconditional. Between a delivered message and the matching
-`ResumeRead()` no read is armed, so nothing reports the RPC ending and the idle write hold waits on the same
-`ResumeRead()` the application already owes. The obligation described under
-[The obligation kTurnByTurn adds](#the-obligation-kturnbyturn-adds) therefore covers both holds, not just the read
-one. Under `kContinuous` a read is always armed, so the trigger always arrives.
+While a message is held, that trigger is not unconditional. Between a held message and its release call
+(`GetResponse()` under `kPull`, `ResumeRead()` under `kPush`), no read is armed, so nothing reports the RPC ending.
+The idle write hold then waits on the same release call the application already owes. The obligation described
+under [The obligation a held message adds](#the-obligation-a-held-message-adds) therefore covers both holds, not just
+the read one.
 
-`Delivery::kPull` behaves the same way, message by message. While a message the `read_ok` callback kept waits for
-`GetResponse()`, no read is armed, so the idle write hold waits on that same `GetResponse()`, which the application
-already owes. A declined message has its read re-armed inside the reaction, as under `kContinuous`.
+| `ReadPacing`  | A read is armed after each message | The trigger                                  |
+|---------------|------------------------------------|----------------------------------------------|
+| `kContinuous` | Always, inside the reaction        | Always arrives                               |
+| `kTurnByTurn` | Only after the release call        | Waits on the release call                    |
+| `kPerMessage` | Declined: inside the reaction.     | Declined: always arrives. Kept: waits on the |
+|               | Kept: only after the release call  | release call                                 |
+
+The table holds under either `Delivery`.
 
 ## Hold requirements
 
@@ -345,18 +460,25 @@ being issued. One rule decides where the library needs one:
 
 Applied per direction, the rule accounts for every gRPC call the library makes, including the one defect:
 
-| Operation                            | Issued by                           | Hold                     |
-|--------------------------------------|-------------------------------------|--------------------------|
-| `StartRead()`, `kPush` `kContinuous` | The reactor, in `OnReadDone()`      | Not needed               |
-| `StartRead()`, `kPush` `kTurnByTurn` | The application, in `ResumeRead()`  | Required, and taken      |
-| `StartRead()`, `kPull`, declined     | The reactor, in `OnReadDone()`      | Not needed, taken anyway |
-| `StartRead()`, `kPull`, kept         | The application, in `GetResponse()` | Required, and taken      |
-| `StartWrite()`, bidi                 | The application, in `SendRequest()` | Required, and taken      |
-| `StartWrite()`, write reactor        | The application, in `SendRequest()` | Required, and missing    |
+| Operation                                  | Issued by                           | Hold                     |
+|--------------------------------------------|-------------------------------------|--------------------------|
+| `StartRead()`, `kPull`, `kContinuous`      | The reactor, in `OnReadDone()`      | Not needed, none taken   |
+| `StartRead()`, `kPush`, `kContinuous`      | The reactor, in `OnReadDone()`      | Not needed, none taken   |
+| `StartRead()`, `kPull`, `kTurnByTurn`      | The application, in `GetResponse()` | Required, and taken      |
+| `StartRead()`, `kPush`, `kTurnByTurn`      | The application, in `ResumeRead()`  | Required, and taken      |
+| `StartRead()`, `kPull`, `kPerMessage` kept | The application, in `GetResponse()` | Required, and taken      |
+| `StartRead()`, `kPull`, `kPerMessage`      | The reactor, in `OnReadDone()`      | Not needed, taken anyway |
+| declined                                   |                                     |                          |
+| `StartRead()`, `kPush`, `kPerMessage` kept | The application, in `ResumeRead()`  | Required, and taken      |
+| `StartRead()`, `kPush`, `kPerMessage`      | The reactor, in `OnReadDone()`      | Not needed, taken anyway |
+| declined                                   |                                     |                          |
+| `StartRead()`, unbound `read_ok`           | The reactor, in `OnReadDone()`      | Not needed, none taken   |
+| `StartWrite()`, bidi                       | The application, in `SendRequest()` | Required, and taken      |
+| `StartWrite()`, write reactor              | The application, in `SendRequest()` | Required, and missing    |
 
-Under `kPull` the hold is taken before the `read_ok` callback runs, so before the reactor knows whether the
-message is kept or declined; a declined message has its hold released in the same reaction, right after
-`OnReadDone()` re-arms the read itself.
+Under `kPerMessage` the hold is taken before the `read_ok` callback runs, so before the reactor knows whether the
+message is kept or declined. A declined message has its hold claimed back and released in the same reaction, right
+after `OnReadDone()` re-arms the read itself.
 
 `ActiveBidiReactor` takes its write-side hold for the window where the write stream sits idle, so claiming that
 hold is what grants permission to write, under either `Delivery`. `ActiveWriteReactor` still guards itself with
@@ -370,32 +492,34 @@ callback object: `Status()` reads a member of the reactor, and `TryCancel()` goe
 
 ### Why OnReadDone holds before returning
 
-When a read hold is outstanding, the application thread calls `StartRead()` later, from `GetResponse()` under
-`kPull` or from `ResumeRead()` under `kPush`, not inside the gRPC callback. Between the end of the reaction and that
-later `StartRead()` call, a concurrent `OnDone()` could still arrive and destroy the reactor's underlying gRPC-bound
-callback state. Calling `StartRead()` at that point would forward through that now-destroyed object and segfault.
-Other reactor operations, `Status()` and `TryCancel()`, do not touch gRPC's internal object at all, so they remain
-safe to call regardless of hold state; only the deferred `StartRead()` needs the hold's protection. `AddHold()`
-prevents `OnDone()` from firing during this window, and the `RemoveHold()` in `GetResponse()` or `ResumeRead()`
-releases it once the new `StartRead()` is issued (or skipped, if the stream is done). This is the gap gRPC's own
-callback API leaves open by design, and why it added the [hold mechanism][grpc-hold-pr].
+When a read hold is outstanding, under `kTurnByTurn` or for a message kept under `kPerMessage`, the application thread
+calls `StartRead()` later, from `GetResponse()` under `kPull` or from `ResumeRead()` under `kPush`, not inside the gRPC
+callback. Between the end of the reaction and that later `StartRead()` call, a concurrent `OnDone()` could still arrive
+and destroy the reactor's underlying gRPC-bound callback state. Calling `StartRead()` at that point would forward
+through that now-destroyed object and segfault. Other reactor operations, `Status()` and `TryCancel()`, do not touch
+gRPC's internal object at all, so they remain safe to call regardless of hold state; only the deferred `StartRead()`
+needs the hold's protection. `AddHold()` prevents `OnDone()` from firing during this window, and the `RemoveHold()` in
+`GetResponse()` or `ResumeRead()` releases it once the new `StartRead()` is issued (or skipped, if the stream is done).
+This is the gap gRPC's own callback API leaves open by design, and why it added the [hold mechanism][grpc-hold-pr].
 
 ### Hold before handing off, not after
 
-`OnReadDone()` takes the hold before it calls the `OnReadDoneOkCallback`, never once the callback has returned:
-always under `kPull`, and with `kTurnByTurn` pacing under `kPush`. The callback is what hands the message off to the
-application thread (e.g. `EventLoop::TriggerEvent()`), so from that moment the application thread may already run
-`GetResponse()` or `ResumeRead()`, and its `StartRead()` and `RemoveHold()`, before the gRPC thread is back from the
-callback. gRPC's hold count is a plain counter, not a lock: a `RemoveHold()` that lands before its `AddHold()` does
+`OnReadDone()` takes the hold before it calls the `OnReadDoneOkCallback`, never once the callback has returned. It
+does so under `kTurnByTurn` and `kPerMessage`, with either `Delivery`. The callback is what hands the message off to
+the application thread (e.g. `EventLoop::TriggerEvent()`), so from that moment the application thread may already
+run `GetResponse()` or `ResumeRead()`, and its `StartRead()` and `RemoveHold()`, before the gRPC thread is back from
+the callback. gRPC's hold count is a plain counter, not a lock: a `RemoveHold()` that lands before its `AddHold()` does
 not fail, it releases a hold that is not there yet. On the last message of a stream, that early release can bring
 the RPC's outstanding-operation count to zero, so gRPC finishes the call and calls `OnDone()`, and the late
 `AddHold()` and its own release then finish the same call a second time. TSan reports that as a data race inside
 `ClientCallbackReaderImpl::MaybeFinish`, and UBSan as a call through a freed object.
 
-So the order is: hold, then hand off. Publishing the flag the releasing call checks counts as handing off too:
-`OnReadDone()` sets `response_ready_` (checked by `GetResponse()`) or `read_held_` (claimed by `ResumeRead()`) only
-once the hold is taken. When a `kPull` callback declines the message (returns `false`), `OnReadDone()` restarts
-reading itself and then releases the hold it took, since no `GetResponse()` will.
+So the order is: hold, then hand off. Publishing the token the releasing call claims counts as handing off too:
+`OnReadDone()` sets `response_ready_` (claimed by `GetResponse()`) or `read_held_` (claimed by `ResumeRead()`) only once
+the hold is taken. The delivery step comes before both: under `kPush` the message is swapped out of the read target
+before the hold is published, so a `ResumeRead()` racing ahead cannot arm a read into a read target still being swapped.
+When a `kPerMessage` callback declines the message (returns `false`), `OnReadDone()` claims the token back, restarts
+reading itself, and then releases the hold it took, since no `GetResponse()` or `ResumeRead()` will.
 
 ### Hold semantics per RPC, not per direction
 
@@ -777,84 +901,75 @@ When `ClientReadReactor::OnReadDone` event with a negative OK is handled in the 
 
 - the pointer to the active reactor instance (i.e. `this`)
 
-The `OnReadDoneOkCallback` is the one slot whose signature depends on the `Delivery` the reactor was instantiated
-with.
-
-Under `Delivery::kPull`:
+The `OnReadDoneOkCallback` is the one slot whose signature depends on the template parameters. Its parameter follows
+the `Delivery`, and its return type follows the `ReadPacing`:
 
 ````cpp
-using OnReadDoneOkCallback = std::function<bool(grpc::ClientReadReactor<ResponseT>* reactor, const ResponseT&)>;
+using OnReadDoneOkCallback = std::function<detail::ReadOkResult<kPacing>(
+    grpc::ClientReadReactor<ResponseT>* reactor, detail::DeliveredMessage<ResponseT, kDelivery>)>;
 ````
 
-When `ClientReadReactor::OnReadDone` event with a positive OK is handled in the active reactor, the
-`OnReadDoneOkCallback` callback function is called with the following argument:
+| `Delivery` | The callback's second argument                                      |
+|------------|---------------------------------------------------------------------|
+| `kPull`    | `const ResponseT&`, the reactor's read target, lent to the callback |
+| `kPush`    | `std::unique_ptr<ResponseT>`, whose ownership transfers to it       |
 
-- the pointer to the active reactor instance (i.e. `this`)
-- a reference to the `Response` content
-
-For the sake of the gRPC processing, it is strongly discouraged to process the response during that callback event. It
-is provided to ease some early-reaction logics or to select situations where the response handling is worthy or not.
-One difference is that callback requires a return value: a boolean flag.
-
-When it returns:
-
-- true, the active reactor keeps the RPC on hold (the hold is already taken before the callback is called, see
-"Hold before handing off, not after") and no more concurrent gRPC events are possible. That way, it is
-thread-safe to access the reactor from a different processing thread without concurrent events (e.g. RPC termination).
-Once the proceeding of the response is done, the RPC must be signaled to start a new read and then the hold can be
-removed, which is what `GetResponse()` does.
-- false, the active reactor will immediately start a new response reading without waiting, reusing the same response
-storage for that next read, then release the hold it took before the callback. Any data the callback wants to keep
-must be extracted (copied or moved out) before the callback returns, since the next incoming response overwrites that
-storage as soon as reading resumes. That case can be useful when the response is copied onto a queue for later,
-application-thread processing, or when it is discarded outright. That extraction must stay minimal, since it still
-executes on the gRPC thread; the response's actual processing should happen afterward, on the application thread.
-
-Under `Delivery::kPush`:
-
-````cpp
-using OnReadDoneOkCallback =
-    std::function<void(grpc::ClientReadReactor<ResponseT>* reactor, std::unique_ptr<ResponseT>)>;
-````
+| `ReadPacing`  | Return type | When the reactor arms the next read                                    |
+|---------------|-------------|------------------------------------------------------------------------|
+| `kContinuous` | `void`      | As soon as the callback returns                                        |
+| `kTurnByTurn` | `void`      | Not at all: `GetResponse()` (`kPull`) or `ResumeRead()` (`kPush`) does |
+| `kPerMessage` | `bool`      | `true`: as under `kTurnByTurn`. `false`: as soon as the callback       |
+|               |             | returns                                                                |
 
 When `ClientReadReactor::OnReadDone` event with a positive OK is handled in the active reactor, the
-`OnReadDoneOkCallback` callback function is called with the following argument:
+`OnReadDoneOkCallback` callback function is called with the following arguments:
 
 - the pointer to the active reactor instance (i.e. `this`)
-- the received message, whose ownership transfers to the callback
+- the received message, lent (`kPull`) or with its ownership transferred to the callback (`kPush`)
 
-The ownership transfer distinguishes that callback from the two others. The reactor moves the message out of its
-read target before the call, so it never refers to that message again. Which side arms the read that follows
-depends on the `ReadPacing` mode the reactor was constructed with, described under
+Under `kPull`, the message stays in the reactor's read target. Once the reactor arms the next read, that read
+overwrites it, so any data the callback wants to keep past that point must be copied out before the callback
+returns. That happens under `kContinuous`, and on a message declined under `kPerMessage`. A held message stays
+intact until `GetResponse()` swaps it out.
+
+Under `kPush`, the reactor moves the message out of its read target before the call, so it never refers to that
+message again. That holds under every `ReadPacing`, including a message declined under `kPerMessage`.
+
+Whenever the reactor holds the RPC, the hold is already taken before the callback is called, see
+[Hold before handing off, not after](#hold-before-handing-off-not-after). The per-mode facts are under
 [Read pacing modes](#read-pacing-modes).
 
 Processing the message inside the callback stays discouraged, because the callback runs on a gRPC thread. The
-callback exists to hand the message to the application thread, or to discard it: dropping the `std::unique_ptr` is
-all a discard takes.
+callback exists to hand the message to the application thread, to keep only what the application needs, or to
+discard it. Under `kPush`, dropping the `std::unique_ptr` is all a discard takes.
 
 #### Class functions
 
 Four public functions can be called by the application side:
 
-- `bool GetResponse(ResponseT& response)`, under `Delivery::kPull` only
-- `bool ResumeRead()`, under `Delivery::kPush` only
+- `bool GetResponse(ResponseT& response)`, under `Delivery::kPull` with `kTurnByTurn` or `kPerMessage`
+- `bool ResumeRead()`, under `Delivery::kPush` with `kTurnByTurn` or `kPerMessage`
 - `const grpc::Status& Status()`
 - `void TryCancel()`
+
+Under `ReadPacing::kContinuous` only `Status()` and `TryCancel()` remain, since the reactor arms every read itself.
 
 `GetResponse()` function does two important things: it swaps the underlying data storage of the response variable and
 then (if the stream allows it) it triggers immediately a new read on the stream and resume the RPC. The swap mechanism
 is important to avoid a deep-copy of the content of the response. For the `ActiveReadReactor`, the content of that
 response is not valuable because it overwrites it on each reading, so the swap is a good technique to speed up the
-response proceeding time. The function will return true when the returned response is valid. It is the call that
-releases the hold `OnReadDone()` took for a message the `OnReadDoneOkCallback` kept.
+response proceeding time. It is the call that releases the hold `OnReadDone()` took for a held message. It first
+claims the held message's token in `response_ready_`, and returns `false` without acting when no message is held, which
+covers a duplicate call. Otherwise it returns `true`, even when the stream is over and no read is armed.
 
 Under `Delivery::kPush` the reactor exposes no response accessor. Its internal `response_` read target keeps a stable
 address across every read, and each message is swapped out of it by pointer, without a deep-copy, before the next read
 is armed.
 
-`ResumeRead()` arms the read that `OnReadDone()` left unarmed under `ReadPacing::kTurnByTurn`, and releases the hold
-it took. It returns `false` without acting when there is no such hold outstanding, which covers a reactor built
-in `ReadPacing::kContinuous` mode and a duplicate call in either mode.
+`ResumeRead()` arms the read that `OnReadDone()` left unarmed for a held message, and releases the hold it took. It
+first claims the held message's token in `read_held_`, and returns `false` without acting when no hold is outstanding,
+which covers a duplicate call. Once the claim is won it always releases the hold, and returns `true` only when it armed
+a read: `false` also reports that the stream was already over.
 
 `Status()` function simply returns a reference to the `grpc::Status` of the active reactor. Initialized as `Status::OK`,
 its content is updated once `ClientReadReactor::OnDone` event is received. It means calling `Status()` at any other
@@ -877,12 +992,14 @@ to read the original code from the route_guide_active_reactor_client.cpp file.
 #### Instantiation of the ActiveReadReactor class
 
 The following snippets instance a `ActiveReadReactor` dedicated to the `ListFeatures` RPC of the `routeguide` API, once
-per `Delivery` approach. Each fills a callback structure with the related bound functions. In these examples, the
-callbacks are bound to the eventloop notification function as an `kListFeaturesOnReadDoneOk`,
-`kListFeaturesOnReadDoneNOk`, or `kListFeaturesOnDone` event.
+per `Delivery` approach, each matching one of the two diagrams below. Each fills a callback structure with the
+related bound functions. In these examples, the callbacks are bound to the eventloop notification function as an
+`kListFeaturesOnReadDoneOk`, `kListFeaturesOnReadDoneNOk`, or `kListFeaturesOnDone` event. Both template parameters
+appear in the type aliases, and the constructor takes no pacing argument.
 
-Under `Delivery::kPull`, the implementation of the `OnReadDoneOkCallback` is different, because it requires a return
-value. From the PlantUML sequence diagram, the corresponding points are:
+Under `Delivery::kPull` with `ReadPacing::kPerMessage`, the `OnReadDoneOkCallback` returns whether the reactor holds
+the message. This one keeps the features that have a name, and declines the others. From the PlantUML sequence
+diagram, the corresponding points are:
 
 - 1.x : the `std::make_unique<ClientReactor>(...)` line
 - 2.5 : the `cbs.read_ok = [](auto* reactor, const ResponseT&) -> bool {...}` lines
@@ -893,12 +1010,14 @@ value. From the PlantUML sequence diagram, the corresponding points are:
 #include "applications/reactor/reactor_client_routeguide.h"
 void ListFeatures(routeguide::Rectangle rect) {
   using routeguide::ListFeatures::Delivery;
-  using ClientReactor = routeguide::ListFeatures::ClientReactor<Delivery::kPull>;
-  using Callbacks = routeguide::ListFeatures::Callbacks<Delivery::kPull>;
+  using routeguide::ListFeatures::ReadPacing;
+  using ClientReactor = routeguide::ListFeatures::ClientReactor<Delivery::kPull, ReadPacing::kPerMessage>;
+  using Callbacks = routeguide::ListFeatures::Callbacks<Delivery::kPull, ReadPacing::kPerMessage>;
   Callbacks cbs;
-  cbs.read_ok = [](auto* reactor, const routeguide::Feature&) -> bool {
+  cbs.read_ok = [](auto* reactor, const routeguide::Feature& feature) -> bool {
+    if (feature.name().empty()) return false;  // false: decline, the reactor reads on at once
     EventLoop::TriggerEvent(kListFeaturesOnReadDoneOk, reactor);  // Signal OnReadDoneOkCallback from gRPC thread
-    return true;  // true: hold the RPC until the application proceeded the response
+    return true;  // true: hold the RPC until the application pulled the response
   };
   cbs.read_nok = [](auto* reactor) {
     EventLoop::TriggerEvent(kListFeaturesOnReadDoneNOk, reactor);  // Signal OnReadDoneNOkCallback from gRPC thread
@@ -910,10 +1029,9 @@ void ListFeatures(routeguide::Rectangle rect) {
 }
 ````
 
-Under `Delivery::kPush`, the implementation of the `OnReadDoneOkCallback` is different, because it receives the
-message as an owned object and releases that ownership into the event queue. The two other callbacks pass the reactor
-pointer instead. The constructor also takes the `ReadPacing` mode, here `kContinuous`. From the PlantUML sequence
-diagram, the corresponding points are:
+Under `Delivery::kPush` with `ReadPacing::kContinuous`, the `OnReadDoneOkCallback` receives the message as an owned
+object, releases that ownership into the event queue, and returns nothing. The two other callbacks pass the reactor
+pointer instead. From the PlantUML sequence diagram, the corresponding points are:
 
 - 1.x : the `std::make_unique<ClientReactor>(...)` line
 - 2.5 : the `cbs.read_ok = [](auto*, std::unique_ptr<ResponseT> response) {...}` lines
@@ -925,8 +1043,8 @@ diagram, the corresponding points are:
 void ListFeatures(routeguide::Rectangle rect) {
   using routeguide::ListFeatures::Delivery;
   using routeguide::ListFeatures::ReadPacing;
-  using ClientReactor = routeguide::ListFeatures::ClientReactor<Delivery::kPush>;
-  using Callbacks = routeguide::ListFeatures::Callbacks<Delivery::kPush>;
+  using ClientReactor = routeguide::ListFeatures::ClientReactor<Delivery::kPush, ReadPacing::kContinuous>;
+  using Callbacks = routeguide::ListFeatures::Callbacks<Delivery::kPush, ReadPacing::kContinuous>;
   Callbacks cbs;
   cbs.read_ok = [](auto*, std::unique_ptr<routeguide::Feature> response) {
     // Signal OnReadDoneOkCallback from gRPC thread, handing the message ownership to the queue
@@ -938,10 +1056,20 @@ void ListFeatures(routeguide::Rectangle rect) {
   cbs.done = [](auto* reactor, const grpc::Status&) {
     EventLoop::TriggerEvent(kListFeaturesOnDone, reactor);  // Signal OnDoneCallback event from gRPC thread
   };
-  list_features_ =
-      std::make_unique<ClientReactor>(*stub_, CreateClientContext(), rect, std::move(cbs), ReadPacing::kContinuous);
+  list_features_ = std::make_unique<ClientReactor>(*stub_, CreateClientContext(), rect, std::move(cbs));
 }
 ````
+
+The four other combinations change only the type aliases and the `read_ok` lambda:
+
+| Combination            | `read_ok` lambda                                                                 |
+|------------------------|----------------------------------------------------------------------------------|
+| `kPull`, `kContinuous` | Returns nothing, and copies out what it keeps, since the next read overwrites it |
+| `kPull`, `kTurnByTurn` | Returns nothing, and passes the reactor pointer, as the `kPerMessage` one does   |
+|                        | when it keeps a message                                                          |
+| `kPush`, `kTurnByTurn` | Identical to the `kContinuous` one                                               |
+| `kPush`, `kPerMessage` | Releases the message into the queue, or drops it, then returns `true` to hold    |
+|                        | the stream until `ResumeRead()`, or `false` to read on                           |
 
 #### OnDoneCallback
 
@@ -987,8 +1115,9 @@ The following snippets are example code of the application-side callback. That c
 application thread, scheduled by the eventloop of the application. In these examples, that lambda is used as the
 callback and given to the eventloop when the `kListFeaturesOnReadDoneOk` is notified.
 
-Under `Delivery::kPull`, the main goal of that callback is to read the response from the active reactor and starting a
-new read operation on the stream. From the PlantUML sequence diagram, the corresponding points are from 2.8 to 2.11.
+Under `Delivery::kPull`, with a held message, the main goal of that callback is to read the response from the active
+reactor and starting a new read operation on the stream. From the PlantUML sequence diagram, the corresponding points
+are from 2.8 to 2.11.
 
 ````cpp
 EventLoop::RegisterEvent(kListFeaturesOnReadDoneOk, [this](const Event*) {
@@ -998,10 +1127,11 @@ EventLoop::RegisterEvent(kListFeaturesOnReadDoneOk, [this](const Event*) {
 });
 ````
 
-Under `Delivery::kPush`, the main goal of that callback is to reclaim the ownership of the message the gRPC-thread
-callback released into the queue, and then to process it. The handler needs no access to the reactor, because there is
-no response left to extract from it and no read to restart: the reactor already armed its next read before this
-handler ran.
+Under `Delivery::kPush` with `ReadPacing::kContinuous`, the main goal of that callback is to reclaim the ownership of
+the message the gRPC-thread callback released into the queue, and then to process it. The handler needs no access to
+the reactor, because there is no response left to extract from it and no read to restart: the reactor already armed
+its next read before this handler ran. Under `kTurnByTurn`, and for a message kept under `kPerMessage`, the handler
+also calls `list_features_->ResumeRead()` once it is done with the message.
 
 The reclaim must precede any statement that can throw or return early, so the message is freed on those paths too.
 Exactly one handler may reclaim it: EventLoop invokes every callback registered under one event name, so a second
@@ -1018,14 +1148,28 @@ EventLoop::RegisterEvent(kListFeaturesOnReadDoneOk, [](const Event* event) {
 
 ### PlantUML sequence flow
 
-#### Delivery::kPull
+The two diagrams show three of the six combinations: the `kPull` one shows `ReadPacing::kPerMessage`, with its kept
+and declined branches, and the `kPush` one shows `kContinuous` and `kTurnByTurn`. Every combination maps onto those
+branches:
+
+| Combination            | Where the diagrams show it                                                          |
+|------------------------|-------------------------------------------------------------------------------------|
+| `kPull`, `kContinuous` | The `kPull` declined branch, without its `AddHold()` and `RemoveHold()`             |
+| `kPull`, `kTurnByTurn` | The `kPull` kept branch, for every message                                          |
+| `kPull`, `kPerMessage` | The `kPull` diagram, both branches                                                  |
+| `kPush`, `kContinuous` | The `kPush` `kContinuous` branch                                                    |
+| `kPush`, `kTurnByTurn` | The `kPush` `kTurnByTurn` branch                                                    |
+| `kPush`, `kPerMessage` | Kept: the `kPush` `kTurnByTurn` branch. Declined: the `kPush` `kContinuous` branch, |
+|                        | with `AddHold()` before the callback and `RemoveHold()` after `StartRead()`         |
+
+#### Delivery::kPull, ReadPacing::kPerMessage
 
 ```plantuml
 !pragma teoz true
 skinparam lifelineStrategy solid
 skinparam ParticipantPadding 50
 
-title gRPC Client reactor for server-side stream RPC, Delivery::kPull
+title gRPC Client reactor for server-side stream RPC, Delivery::kPull, ReadPacing::kPerMessage
 
 boundary    app      as "Application\nside"
 box "ActiveReadReactor" #beige
@@ -1061,7 +1205,7 @@ loop
     &grpc -[#darkgreen]> data : <i>writes response
     activate data #yellow
     reactor <[#darkgreen]- grpc : OnReadDone : true
-alt Turn-by-turn | onreaddoneok callback returns true
+alt Kept | onreaddoneok callback returns true
 group #lightgreen (grpc-thread callback) onreaddoneok
     reactor [#darkgreen]-\ grpc : AddHold()
     {start1} app /[#darkgreen]- reactor : TriggerEvent : OnReadDoneOk
@@ -1084,7 +1228,7 @@ end
     deactivate grpc
     &grpc -> grpc : resuming RPC
     activate grpc #green
-else continuously | onreaddoneok callback returns false
+else Declined | onreaddoneok callback returns false
     activate data #yellow
 group #lightgreen (grpc-thread callback) onreaddoneok
     reactor [#darkgreen]-\ grpc : AddHold()
@@ -1143,14 +1287,14 @@ group #lightblue (app-thread callback) ondone
 end
 ```
 
-#### Delivery::kPush
+#### Delivery::kPush, ReadPacing::kContinuous and kTurnByTurn
 
 ```plantuml
 !pragma teoz true
 skinparam lifelineStrategy solid
 skinparam ParticipantPadding 50
 
-title gRPC Client reactor for server-side stream RPC, Delivery::kPush
+title gRPC Client reactor for server-side stream RPC, Delivery::kPush, ReadPacing::kContinuous and kTurnByTurn
 
 box "Application side" #powderblue
 boundary    app      as "Application\nside"
@@ -1461,10 +1605,10 @@ From the PlantUML sequence diagram, the corresponding points are from 4.5 to 4.7
 EventLoop::RegisterEvent(kRecordRouteOnDone, [this](const Event* event) {
   const std::unique_ptr<routeguide::RouteSummary> response{
       static_cast<routeguide::RouteSummary*>(event->getData())};
-  if (reactor_->Status().ok()) {
+  if (record_route_->Status().ok()) {
     /**  proceeding of the content of response **/
   }
-  reactor_.reset();
+  record_route_.reset();
 });
 ````
 
@@ -1585,29 +1729,23 @@ The four callbacks are `OnReadDoneOkCallback`, `OnReadDoneNOkCallback`, `OnWrite
 reactors above:
 
 ````cpp
-// Delivery::kPull
-using OnReadDoneOkCallback =
-    std::function<bool(grpc::ClientBidiReactor<RequestT, ResponseT>* reactor, const ResponseT&)>;
-// Delivery::kPush
-using OnReadDoneOkCallback =
-    std::function<void(grpc::ClientBidiReactor<RequestT, ResponseT>* reactor, std::unique_ptr<ResponseT>)>;
-// Both approaches
+// Parameter follows kDelivery, return type follows kPacing, as on ActiveReadReactor
+using OnReadDoneOkCallback = std::function<detail::ReadOkResult<kPacing>(
+    grpc::ClientBidiReactor<RequestT, ResponseT>* reactor, detail::DeliveredMessage<ResponseT, kDelivery>)>;
+// Every combination
 using OnReadDoneNOkCallback = std::function<void(grpc::ClientBidiReactor<RequestT, ResponseT>* reactor)>;
 using OnWriteDoneCallback = std::function<void(grpc::ClientBidiReactor<RequestT, ResponseT>* reactor, bool ok)>;
 using OnDoneCallback =
     std::function<void(grpc::ClientBidiReactor<RequestT, ResponseT>* reactor, const grpc::Status&)>;
 ````
 
-Under `Delivery::kPull`, each received message stays in the internal read target, and `OnReadDoneOkCallback` is lent
-it: returning `true` keeps it there, holding the read side until `GetResponse()` pulls it, and returning `false`
-declines it so the reactor reads on at once, exactly as on `ActiveReadReactor`.
-
-Under `Delivery::kPush`, each received message is swapped out of the internal read target and handed to
-`OnReadDoneOkCallback` as an owned object. Which side arms the read that follows depends on the `ReadPacing` mode the
-reactor was constructed with, exactly as on `ActiveReadReactor`, and is described under
-[Read pacing modes](#read-pacing-modes).
+The read side behaves exactly as on `ActiveReadReactor`, in all six combinations. Under `Delivery::kPull`, each
+received message stays in the internal read target, and `OnReadDoneOkCallback` is lent it. Under `Delivery::kPush`,
+each received message is swapped out of the internal read target and handed to `OnReadDoneOkCallback` as an owned
+object. Which side arms the read that follows depends on the `ReadPacing` the reactor was instantiated with, as
+described under [Read pacing modes](#read-pacing-modes). Any hold the read side takes covers the read side only.
 Processing the message inside that callback stays discouraged, because it runs on a gRPC thread: the callback
-exists to hand the message to the application thread, or to discard it by dropping the `std::unique_ptr`.
+exists to hand the message to the application thread, or to discard it.
 
 `OnReadDoneNOkCallback` reports the end of the response stream. Unlike the server-streaming case, it also means
 the RPC itself is ending, because a server closes a bidirectional response stream only by finishing the call.
@@ -1619,22 +1757,22 @@ Seven public functions can be called by the application side:
 - `bool SendRequest(RequestT&&)`
 - `bool SendLastRequest(RequestT&&)`
 - `bool CloseRequestStream()`
-- `bool GetResponse(ResponseT& response)`, under `Delivery::kPull` only
-- `bool ResumeRead()`, under `Delivery::kPush` only
+- `bool GetResponse(ResponseT& response)`, under `Delivery::kPull` with `kTurnByTurn` or `kPerMessage`
+- `bool ResumeRead()`, under `Delivery::kPush` with `kTurnByTurn` or `kPerMessage`
 - `const grpc::Status& Status()`
 - `void TryCancel()`
 
-`GetResponse()` and `ResumeRead()` behave exactly as on `ActiveReadReactor`. The three write functions differ from
-`ActiveWriteReactor`'s: each one claims the write-side idle hold before it issues anything, and returns false when
-that claim is lost, as described under [Write-side idle hold](#write-side-idle-hold). What a caller observes is
-unchanged, since a lost claim covers the same three rejection cases the flag checks used to report. The write side is
-identical under both `Delivery` approaches.
+`GetResponse()` and `ResumeRead()` behave exactly as on `ActiveReadReactor`, and neither is offered under
+`ReadPacing::kContinuous`. The three write functions differ from `ActiveWriteReactor`'s: each one claims the
+write-side idle hold before it issues anything, and returns false when that claim is lost, as described under
+[Write-side idle hold](#write-side-idle-hold). What a caller observes is unchanged, since a lost claim covers the same
+three rejection cases the flag checks used to report. The write side is identical in all six combinations.
 
 Under `Delivery::kPush`, like the three other reactors, `ActiveBidiReactor` exposes no response accessor: its
 `response_` read target keeps a stable address across every read, and each message is swapped out of it by pointer,
 without a deep-copy, before the next read is armed.
 
-A read hold, whether kept for `GetResponse()` or taken under `ReadPacing::kTurnByTurn`, stalls only the read
+A read hold, under `ReadPacing::kTurnByTurn` or for a message kept under `kPerMessage`, stalls only the read
 direction. gRPC counts holds and outstanding operations on one per-RPC counter, but that counter gates `OnDone()`
 alone, so the application can keep sending requests while it is behind on responses. The read hold and the
 write-side idle hold can therefore both stand at once, and each is claimed and released independently of the other.
@@ -1645,15 +1783,16 @@ write-side idle hold can therefore both stand at once, and each is claimed and r
 
 The following snippet instances an `ActiveBidiReactor` dedicated to the `RouteChat` RPC of the `routeguide` API,
 under `Delivery::kPush` with `ReadPacing::kContinuous`. Only `read_ok` carries a message; the three other callbacks
-pass the reactor pointer. Under `Delivery::kPull`, the type aliases name `Delivery::kPull`, the constructor takes no
-`ReadPacing`, and `read_ok` passes the reactor pointer too, keeping the message for `GetResponse()`:
+pass the reactor pointer. Under `Delivery::kPull` with `ReadPacing::kTurnByTurn`, the type aliases name both, and
+`read_ok` passes the reactor pointer too, so the message waits in the reactor for `GetResponse()`:
 
 ````cpp
-cbs.read_ok = [](auto* reactor, const ResponseT&) -> bool {
+cbs.read_ok = [](auto* reactor, const ResponseT&) {
   EventLoop::TriggerEvent(kRouteChatOnReadDoneOk, reactor);  // Signal OnReadDoneOkCallback from gRPC thread
-  return true;  // true: hold the read side until the application pulled the response
-};
+};  // kTurnByTurn: returns nothing, and the read side stays held until GetResponse()
 ````
+
+The other combinations change the `read_ok` lambda as listed for `ActiveReadReactor`.
 
 From the PlantUML sequence diagram, the corresponding points are:
 
@@ -1668,8 +1807,8 @@ From the PlantUML sequence diagram, the corresponding points are:
 void RouteChat(std::vector<routeguide::RouteNote> notes) {
   using routeguide::RouteChat::Delivery;
   using routeguide::RouteChat::ReadPacing;
-  using Callbacks = routeguide::RouteChat::Callbacks<Delivery::kPush>;
-  using ClientReactor = routeguide::RouteChat::ClientReactor<Delivery::kPush>;
+  using Callbacks = routeguide::RouteChat::Callbacks<Delivery::kPush, ReadPacing::kContinuous>;
+  using ClientReactor = routeguide::RouteChat::ClientReactor<Delivery::kPush, ReadPacing::kContinuous>;
   using routeguide::RouteChat::ResponseT;
   route_chat_pending_ = std::move(notes);
   Callbacks cbs;
@@ -1686,15 +1825,15 @@ void RouteChat(std::vector<routeguide::RouteNote> notes) {
   cbs.done = [](auto* reactor, const grpc::Status&) {
     EventLoop::TriggerEvent(kRouteChatOnDone, reactor);  // Signal OnDoneCallback from gRPC thread
   };
-  route_chat_ = std::make_unique<ClientReactor>(*stub_, CreateClientContext(), std::move(cbs), ReadPacing::kContinuous);
+  route_chat_ = std::make_unique<ClientReactor>(*stub_, CreateClientContext(), std::move(cbs));
   SendNextRouteChatNote();  // Kick the write flow with the first request
 }
 ````
 
 #### OnReadDoneOkCallback
 
-Under `Delivery::kPull`, the handler pulls the message out of the reactor, which also re-arms the read and releases
-the read hold:
+Under `Delivery::kPull`, with a held message, the handler pulls the message out of the reactor, which also re-arms
+the read and releases the read hold:
 
 ````cpp
 EventLoop::RegisterEvent(kRouteChatOnReadDoneOk, [this](const Event*) {
@@ -1704,9 +1843,11 @@ EventLoop::RegisterEvent(kRouteChatOnReadDoneOk, [this](const Event*) {
 });
 ````
 
-Under `Delivery::kPush`, the handler reclaims the message the gRPC-thread callback released into the queue. It needs
-no access to the reactor: there is no response left to extract and no read to restart, because the reactor already
-armed its next read before this handler ran.
+Under `Delivery::kPush` with `ReadPacing::kContinuous`, the handler reclaims the message the gRPC-thread callback
+released into the queue. It needs no access to the reactor: there is no response left to extract and no read to
+restart, because the reactor already armed its next read before this handler ran. Under `kTurnByTurn`, and for a
+message kept under `kPerMessage`, the handler also calls `route_chat_->ResumeRead()` once it is done with the
+message.
 
 The reclaim must precede any statement that can throw or return early, and exactly one handler may reclaim it.
 Both obligations are the ones listed under [Message ownership](#message-ownership).
@@ -1753,17 +1894,18 @@ EventLoop::RegisterEvent(kRouteChatOnDone, [this](const Event*) {
 
 ### PlantUML sequence flow
 
-The diagram shows `Delivery::kPush`. Under `Delivery::kPull`, only section 3 differs, and it follows the
-`ActiveReadReactor` `kPull` diagram: the hold is taken before the `read_ok` callback, the event carries the reactor
-pointer, and the app-thread handler's `GetResponse()` re-arms the read and releases the hold. The write side keeps
-running while that hold is outstanding.
+The diagram shows `Delivery::kPush` with `ReadPacing::kContinuous` and `kTurnByTurn`, one branch each in section 3.
+Every other combination changes section 3 only, exactly as the mapping table under the `ActiveReadReactor` diagrams
+describes. Under `Delivery::kPull`, the event carries the reactor pointer, and the app-thread handler's
+`GetResponse()` re-arms the read and releases the hold. The write side keeps running while a read hold is
+outstanding.
 
 ```plantuml
 !pragma teoz true
 skinparam lifelineStrategy solid
 skinparam ParticipantPadding 50
 
-title gRPC Client reactor for bidirectional stream RPC, Delivery::kPush
+title gRPC Client reactor for bidirectional stream RPC, Delivery::kPush, ReadPacing::kContinuous and kTurnByTurn
 
 box "Application side" #powderblue
 boundary    app      as "Application\nside"

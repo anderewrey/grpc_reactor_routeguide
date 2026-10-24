@@ -25,33 +25,52 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
-#include <ostream>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "rg_service/route_guide_service.h"
 #include "rg_service/rg_utils.h"
 #include "applications/reactor/reactor_client_routeguide.h"
+#include "applications/reactor/tests/read_pacing_test_support.h"
 #include "applications/reactor/tests/route_guide_test_fixture.h"
-
-namespace RpcReactor::Client {
-/// Found by argument-dependent lookup, so GoogleTest names the pacing mode in the registered test
-/// names and in failure messages instead of dumping the enum's bytes.
-void PrintTo(const ReadPacing& pacing, std::ostream* os) {
-  *os << (pacing == ReadPacing::kContinuous ? "Continuous" : "TurnByTurn");
-}
-}  // namespace RpcReactor::Client
 
 namespace {
 
 /// Every reactor in this file is instantiated with Delivery::kPush; its pull counterpart is
 /// covered by active_read_reactor_pull_test.cpp.
 constexpr auto kDelivery = RpcReactor::Client::Delivery::kPush;
+
+using routeguide::ListFeatures::ReadPacing;
+
+// =============================================================================
+// Compile-time API checks
+// =============================================================================
+
+/// GetResponse() is a Delivery::kPull method, so no push reactor offers it, whatever its pacing.
+static_assert(!pacing_test::HasGetResponse<routeguide::ListFeatures::ClientReactor<kDelivery, ReadPacing::kTurnByTurn>,
+                                           routeguide::Feature>);
+static_assert(!pacing_test::HasGetResponse<routeguide::ListFeatures::ClientReactor<kDelivery, ReadPacing::kPerMessage>,
+                                           routeguide::Feature>);
+/// ResumeRead() releases a hold, and kContinuous never takes one, so it does not exist there.
+static_assert(!pacing_test::HasResumeRead<routeguide::ListFeatures::ClientReactor<kDelivery, ReadPacing::kContinuous>>);
+static_assert(pacing_test::HasResumeRead<routeguide::ListFeatures::ClientReactor<kDelivery, ReadPacing::kTurnByTurn>>);
+static_assert(pacing_test::HasResumeRead<routeguide::ListFeatures::ClientReactor<kDelivery, ReadPacing::kPerMessage>>);
+/// The read_ok slot takes the message as owned, and returns the hold decision only under kPerMessage.
+static_assert(std::is_same_v<
+              routeguide::ListFeatures::Callbacks<kDelivery, ReadPacing::kPerMessage>::OnReadDoneOkCallback,
+              std::function<bool(grpc::ClientReadReactor<routeguide::Feature>*,
+                                 std::unique_ptr<routeguide::Feature>)>>);
+static_assert(std::is_same_v<
+              routeguide::ListFeatures::Callbacks<kDelivery, ReadPacing::kTurnByTurn>::OnReadDoneOkCallback,
+              std::function<void(grpc::ClientReadReactor<routeguide::Feature>*,
+                                 std::unique_ptr<routeguide::Feature>)>>);
 
 /// Controllable test service for server-side streaming RPC testing
 class TestRouteGuideService final : public routeguide::RouteGuide::CallbackService {
@@ -129,38 +148,66 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
   std::string list_features_error_message_;
 };
 
-/// Test fixture with in-process server
+/// Test fixture with in-process server, for the tests pinned to one pacing
 class ActiveReadReactorTest : public RouteGuideTestFixtureBase<TestRouteGuideService> {};
 
-using routeguide::ListFeatures::ReadPacing;
-
-/// Fixture for the behaviours that must hold identically under either read pacing mode. The mode
-/// changes only who arms the next read, so everything an application observes (which messages
-/// arrive, in what order, and which events fire) is expected to be the same under both.
-class ActiveReadReactorPacingTest : public RouteGuideTestFixtureBase<TestRouteGuideService>,
-                                    public testing::WithParamInterface<ReadPacing> {
+/// Fixture for the behaviours that must hold identically under every read pacing. The pacing changes
+/// only who arms the next read, so everything an application observes (which messages arrive, in what
+/// order, and which events fire) is expected to be the same under all of them.
+/// @tparam PacingTagT a pacing_test::PacingTag, selecting the reactor's ReadPacing
+template <class PacingTagT>
+class ActiveReadReactorPacingTest : public RouteGuideTestFixtureBase<TestRouteGuideService> {
  protected:
-  /// Under kTurnByTurn the application owns the re-arm, so a consumer must resume once it is done with
-  /// the message or the stream stays stalled. Under kContinuous the reactor has already re-armed and the
-  /// call is a rejected no-op, which is what lets one callback body serve both modes.
-  static void ResumeIfTurnByTurn(grpc::ClientReadReactor<routeguide::Feature>* reactor, const ReadPacing pacing) {
-    if (pacing == ReadPacing::kTurnByTurn) {
-      static_cast<routeguide::ListFeatures::ClientReactor<kDelivery>*>(reactor)->ResumeRead();
-    }
+  static constexpr ReadPacing kPacing = PacingTagT::value;
+  using Reactor = routeguide::ListFeatures::ClientReactor<kDelivery, kPacing>;
+  using Callbacks = routeguide::ListFeatures::Callbacks<kDelivery, kPacing>;
+
+  /// Builds a read_ok callback that gives every owned message to `keep`, then consumes it the way the
+  /// pacing requires: nothing more under kContinuous, where the reactor re-arms by itself, and a
+  /// ResumeRead() under kTurnByTurn and kPerMessage, where the callback keeps the message held. The
+  /// message is handed to `keep` before the release, because ResumeRead() arms the next read, and the
+  /// next read_ok could then run before this one returns.
+  template <class KeepFn>
+  static typename Callbacks::OnReadDoneOkCallback ConsumeEach(KeepFn keep) {
+    return [keep]([[maybe_unused]] grpc::ClientReadReactor<routeguide::Feature>* reactor,
+                  std::unique_ptr<routeguide::Feature> message) {
+      keep(std::move(*message));
+      if constexpr (kPacing != ReadPacing::kContinuous) {
+        // A read stream cannot end while the hold stands, so the release always arms the next read.
+        EXPECT_TRUE(static_cast<Reactor*>(reactor)->ResumeRead()) << "ResumeRead() rejected a held message";
+        return pacing_test::KeepHeld<kPacing>();
+      }
+    };
   }
 };
 
-/// Names the parameterized cases after the mode, so a failure report says which one broke.
-std::string PacingName(const testing::TestParamInfo<ReadPacing>& info) {
-  return info.param == ReadPacing::kContinuous ? "Continuous" : "TurnByTurn";
+TYPED_TEST_SUITE(ActiveReadReactorPacingTest, pacing_test::AllPacings);
+
+/// Fixture for the behaviours of a held message, under the two pacings that hold one: kTurnByTurn
+/// always, and kPerMessage when read_ok returns true.
+/// @tparam PacingTagT a pacing_test::PacingTag, selecting kTurnByTurn or kPerMessage
+template <class PacingTagT>
+class ActiveReadReactorHeldPacingTest : public RouteGuideTestFixtureBase<TestRouteGuideService> {
+ protected:
+  static constexpr ReadPacing kPacing = PacingTagT::value;
+  using Reactor = routeguide::ListFeatures::ClientReactor<kDelivery, kPacing>;
+  using Callbacks = routeguide::ListFeatures::Callbacks<kDelivery, kPacing>;
+};
+
+TYPED_TEST_SUITE(ActiveReadReactorHeldPacingTest, pacing_test::HeldPacings);
+
+/// Builds the features the tests stream, named "Feature 0", "Feature 1", and so on.
+std::vector<routeguide::Feature> MakeFeatures(int count) {
+  std::vector<routeguide::Feature> features;
+  features.reserve(count);
+  for (int i = 0; i < count; ++i) {
+    features.push_back(rg_utils::MakeFeature("Feature " + std::to_string(i), 100 + i, -100 - i));
+  }
+  return features;
 }
 
-INSTANTIATE_TEST_SUITE_P(Pacing, ActiveReadReactorPacingTest,
-                         testing::Values(ReadPacing::kContinuous, ReadPacing::kTurnByTurn),
-                         PacingName);
-
 // =============================================================================
-// ListFeatures Server-Side Streaming Tests
+// Every pacing: ListFeatures server-side streaming behaviours
 // =============================================================================
 
 /// @test Validates server streaming RPC receives all responses.
@@ -176,9 +223,8 @@ INSTANTIATE_TEST_SUITE_P(Pacing, ActiveReadReactorPacingTest,
 /// - All 5 features are received in order
 /// - Each feature's name and location match expected values
 /// - Final status is OK
-/// - The above holds under both read pacing modes
-TEST_P(ActiveReadReactorPacingTest, ListFeatures_MultipleResponses_ReceivesAll) {
-  const ReadPacing pacing = GetParam();
+TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_MultipleResponses_ReceivesAll) {
+  using Reactor = typename TestFixture::Reactor;
 
   // Configure server to return multiple features
   std::vector<routeguide::Feature> expected_features;
@@ -187,7 +233,7 @@ TEST_P(ActiveReadReactorPacingTest, ListFeatures_MultipleResponses_ReceivesAll) 
     expected_features.push_back(
         rg_utils::MakeFeature("Feature " + std::to_string(i), 400000000 + (i * 1000000), -740000000 + (i * 1000000)));
   }
-  test_service_.SetListFeaturesResponse(expected_features);
+  this->test_service_.SetListFeaturesResponse(expected_features);
 
   // Collect received features
   std::vector<routeguide::Feature> received_features;
@@ -198,12 +244,10 @@ TEST_P(ActiveReadReactorPacingTest, ListFeatures_MultipleResponses_ReceivesAll) 
   const routeguide::Rectangle request = rg_utils::MakeRectangle(0, -800000000, 500000000, 0);
 
   // Create callbacks - each message arrives owned by the ok callback
-  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
-  cbs.read_ok = [&received_features, pacing](grpc::ClientReadReactor<routeguide::Feature>* reactor,
-                                std::unique_ptr<routeguide::Feature> response) {
-    received_features.push_back(std::move(*response));
-    ResumeIfTurnByTurn(reactor, pacing);
-  };
+  typename TestFixture::Callbacks cbs;
+  cbs.read_ok = TestFixture::ConsumeEach([&received_features](routeguide::Feature&& feature) {
+    received_features.push_back(std::move(feature));
+  });
   cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {
     // Stream ended - no more reads
   };
@@ -213,11 +257,10 @@ TEST_P(ActiveReadReactorPacingTest, ListFeatures_MultipleResponses_ReceivesAll) 
   };
 
   // Create reactor
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
-      *stub_, CreateClientContext(), request, std::move(cbs), pacing);
+  auto reactor = std::make_unique<Reactor>(*this->stub_, this->CreateClientContext(), request, std::move(cbs));
 
   // Wait for completion
-  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); })) << "Timeout waiting for stream completion";
+  ASSERT_TRUE(this->AwaitRpc(done_future, [&] { reactor->TryCancel(); })) << "Timeout waiting for stream completion";
 
   const grpc::Status status = done_future.get();
 
@@ -242,8 +285,10 @@ TEST_P(ActiveReadReactorPacingTest, ListFeatures_MultipleResponses_ReceivesAll) 
 /// Verifies that:
 /// - ok callback is never invoked (no features received)
 /// - Final status is OK (empty stream is valid, not an error)
-TEST_F(ActiveReadReactorTest, ListFeatures_EmptyStream_CompletesSuccessfully) {
-  test_service_.SetListFeaturesResponse({});
+TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_EmptyStream_CompletesSuccessfully) {
+  using Reactor = typename TestFixture::Reactor;
+
+  this->test_service_.SetListFeaturesResponse({});
 
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
@@ -251,11 +296,10 @@ TEST_F(ActiveReadReactorTest, ListFeatures_EmptyStream_CompletesSuccessfully) {
 
   const routeguide::Rectangle request = rg_utils::MakeRectangle(0, 0, 0, 0);
 
-  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
-  cbs.read_ok = [&read_count](grpc::ClientReadReactor<routeguide::Feature>*,
-                         std::unique_ptr<routeguide::Feature>) {
+  typename TestFixture::Callbacks cbs;
+  cbs.read_ok = TestFixture::ConsumeEach([&read_count](routeguide::Feature&&) {
     ++read_count;  // Should never be called for empty stream
-  };
+  });
   cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {
     // Expected: stream ends immediately
   };
@@ -264,10 +308,9 @@ TEST_F(ActiveReadReactorTest, ListFeatures_EmptyStream_CompletesSuccessfully) {
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
-      *stub_, CreateClientContext(), request, std::move(cbs), ReadPacing::kContinuous);
+  auto reactor = std::make_unique<Reactor>(*this->stub_, this->CreateClientContext(), request, std::move(cbs));
 
-  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
+  ASSERT_TRUE(this->AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
   const grpc::Status status = done_future.get();
 
@@ -282,10 +325,12 @@ TEST_F(ActiveReadReactorTest, ListFeatures_EmptyStream_CompletesSuccessfully) {
 /// 2. OnReadDone(true) fires once
 /// 3. OnReadDone(false) signals end
 /// 4. OnDone fires with OK status
-TEST_F(ActiveReadReactorTest, ListFeatures_SingleFeature_ReceivesOne) {
+TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_SingleFeature_ReceivesOne) {
+  using Reactor = typename TestFixture::Reactor;
+
   std::vector<routeguide::Feature> features;
   features.push_back(rg_utils::MakeFeature("Single Feature", 407128000, -740060000));
-  test_service_.SetListFeaturesResponse(features);
+  this->test_service_.SetListFeaturesResponse(features);
 
   std::vector<routeguide::Feature> received_features;
   std::promise<grpc::Status> done_promise;
@@ -293,21 +338,19 @@ TEST_F(ActiveReadReactorTest, ListFeatures_SingleFeature_ReceivesOne) {
 
   const routeguide::Rectangle request;
 
-  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
-  cbs.read_ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
-                                std::unique_ptr<routeguide::Feature> response) {
-    received_features.push_back(std::move(*response));
-  };
+  typename TestFixture::Callbacks cbs;
+  cbs.read_ok = TestFixture::ConsumeEach([&received_features](routeguide::Feature&& feature) {
+    received_features.push_back(std::move(feature));
+  });
   cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
                               const grpc::Status& status) {
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
-      *stub_, CreateClientContext(), request, std::move(cbs), ReadPacing::kContinuous);
+  auto reactor = std::make_unique<Reactor>(*this->stub_, this->CreateClientContext(), request, std::move(cbs));
 
-  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
+  ASSERT_TRUE(this->AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
   const grpc::Status status = done_future.get();
 
@@ -328,15 +371,12 @@ TEST_F(ActiveReadReactorTest, ListFeatures_SingleFeature_ReceivesOne) {
 /// - Exactly 2 features were received before error
 /// - Final status is INTERNAL (as configured)
 /// - Partial data is preserved despite stream failure
-TEST_F(ActiveReadReactorTest, ListFeatures_ServerErrorMidStream_PropagatesStatus) {
+TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_ServerErrorMidStream_PropagatesStatus) {
+  using Reactor = typename TestFixture::Reactor;
+
   // Configure server to return 2 features then error
-  std::vector<routeguide::Feature> features;
-  features.reserve(5);
-  for (int i = 0; i < 5; ++i) {
-    features.push_back(rg_utils::MakeFeature("Feature " + std::to_string(i), i * 100, i * -100));
-  }
-  test_service_.SetListFeaturesResponse(features);
-  test_service_.SetListFeaturesErrorAfter(2, grpc::StatusCode::INTERNAL, "Mid-stream error");
+  this->test_service_.SetListFeaturesResponse(MakeFeatures(5));
+  this->test_service_.SetListFeaturesErrorAfter(2, grpc::StatusCode::INTERNAL, "Mid-stream error");
 
   std::vector<routeguide::Feature> received_features;
   std::promise<grpc::Status> done_promise;
@@ -344,21 +384,19 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ServerErrorMidStream_PropagatesStatus
 
   const routeguide::Rectangle request;
 
-  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
-  cbs.read_ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
-                                std::unique_ptr<routeguide::Feature> response) {
-    received_features.push_back(std::move(*response));
-  };
+  typename TestFixture::Callbacks cbs;
+  cbs.read_ok = TestFixture::ConsumeEach([&received_features](routeguide::Feature&& feature) {
+    received_features.push_back(std::move(feature));
+  });
   cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
                               const grpc::Status& status) {
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
-      *stub_, CreateClientContext(), request, std::move(cbs), ReadPacing::kContinuous);
+  auto reactor = std::make_unique<Reactor>(*this->stub_, this->CreateClientContext(), request, std::move(cbs));
 
-  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
+  ASSERT_TRUE(this->AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
   const grpc::Status status = done_future.get();
 
@@ -375,11 +413,11 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ServerErrorMidStream_PropagatesStatus
 /// 1. Server configured to error immediately (after 0 features)
 /// 2. Client receives no features
 /// 3. OnDone fires with error status
-TEST_F(ActiveReadReactorTest, ListFeatures_ImmediateError_PropagatesStatus) {
-  std::vector<routeguide::Feature> features;
-  features.push_back(rg_utils::MakeFeature("Feature 0", 100, -100));
-  test_service_.SetListFeaturesResponse(features);
-  test_service_.SetListFeaturesErrorAfter(0, grpc::StatusCode::UNAVAILABLE, "Service unavailable");
+TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_ImmediateError_PropagatesStatus) {
+  using Reactor = typename TestFixture::Reactor;
+
+  this->test_service_.SetListFeaturesResponse(MakeFeatures(1));
+  this->test_service_.SetListFeaturesErrorAfter(0, grpc::StatusCode::UNAVAILABLE, "Service unavailable");
 
   std::vector<routeguide::Feature> received_features;
   std::promise<grpc::Status> done_promise;
@@ -387,21 +425,19 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ImmediateError_PropagatesStatus) {
 
   const routeguide::Rectangle request;
 
-  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
-  cbs.read_ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
-                                std::unique_ptr<routeguide::Feature> response) {
-    received_features.push_back(std::move(*response));
-  };
+  typename TestFixture::Callbacks cbs;
+  cbs.read_ok = TestFixture::ConsumeEach([&received_features](routeguide::Feature&& feature) {
+    received_features.push_back(std::move(feature));
+  });
   cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
                               const grpc::Status& status) {
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
-      *stub_, CreateClientContext(), request, std::move(cbs), ReadPacing::kContinuous);
+  auto reactor = std::make_unique<Reactor>(*this->stub_, this->CreateClientContext(), request, std::move(cbs));
 
-  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
+  ASSERT_TRUE(this->AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
   const grpc::Status status = done_future.get();
 
@@ -417,14 +453,11 @@ TEST_F(ActiveReadReactorTest, ListFeatures_ImmediateError_PropagatesStatus) {
 /// 2. Client initiates stream and begins receiving
 /// 3. After brief delay, client calls TryCancel()
 /// 4. OnDone fires with final status
-TEST_F(ActiveReadReactorTest, ListFeatures_TryCancel_TerminatesStream) {
+TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_TryCancel_TerminatesStream) {
+  using Reactor = typename TestFixture::Reactor;
+
   // Configure server to return many features
-  std::vector<routeguide::Feature> features;
-  features.reserve(100);
-  for (int i = 0; i < 100; ++i) {
-    features.push_back(rg_utils::MakeFeature("Feature " + std::to_string(i), i * 100, i * -100));
-  }
-  test_service_.SetListFeaturesResponse(features);
+  this->test_service_.SetListFeaturesResponse(MakeFeatures(100));
 
   std::atomic<int> read_count{0};
   std::promise<grpc::Status> done_promise;
@@ -432,25 +465,21 @@ TEST_F(ActiveReadReactorTest, ListFeatures_TryCancel_TerminatesStream) {
 
   const routeguide::Rectangle request;
 
-  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
-  cbs.read_ok = [&read_count](grpc::ClientReadReactor<routeguide::Feature>*,
-                         std::unique_ptr<routeguide::Feature>) {
-    ++read_count;
-  };
+  typename TestFixture::Callbacks cbs;
+  cbs.read_ok = TestFixture::ConsumeEach([&read_count](routeguide::Feature&&) { ++read_count; });
   cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
                               const grpc::Status& status) {
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
-      *stub_, CreateClientContext(), request, std::move(cbs), ReadPacing::kContinuous);
+  auto reactor = std::make_unique<Reactor>(*this->stub_, this->CreateClientContext(), request, std::move(cbs));
 
   // Cancel after a brief moment
   std::this_thread::sleep_for(std::chrono::milliseconds(1));
   reactor->TryCancel();
 
-  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
+  ASSERT_TRUE(this->AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
   const grpc::Status status = done_future.get();
 
@@ -472,18 +501,18 @@ TEST_F(ActiveReadReactorTest, ListFeatures_TryCancel_TerminatesStream) {
 /// Tests that expired deadline terminates stream:
 /// 1. Client creates context with already-expired deadline
 /// 2. OnDone fires with DEADLINE_EXCEEDED status
-TEST_F(ActiveReadReactorTest, ListFeatures_DeadlineExceeded_PropagatesStatus) {
-  std::vector<routeguide::Feature> features;
-  features.push_back(rg_utils::MakeFeature("Feature", 100, -100));
-  test_service_.SetListFeaturesResponse(features);
+TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_DeadlineExceeded_PropagatesStatus) {
+  using Reactor = typename TestFixture::Reactor;
+
+  this->test_service_.SetListFeaturesResponse(MakeFeatures(1));
 
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
   const routeguide::Rectangle request;
 
-  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
-  cbs.read_ok = [](grpc::ClientReadReactor<routeguide::Feature>*, std::unique_ptr<routeguide::Feature>) {};
+  typename TestFixture::Callbacks cbs;
+  cbs.read_ok = TestFixture::ConsumeEach([](routeguide::Feature&&) {});
   cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
                               const grpc::Status& status) {
@@ -493,10 +522,9 @@ TEST_F(ActiveReadReactorTest, ListFeatures_DeadlineExceeded_PropagatesStatus) {
   auto context = std::make_unique<grpc::ClientContext>();
   context->set_deadline(std::chrono::system_clock::now() - std::chrono::milliseconds(100));
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
-      *stub_, std::move(context), request, std::move(cbs), ReadPacing::kContinuous);
+  auto reactor = std::make_unique<Reactor>(*this->stub_, std::move(context), request, std::move(cbs));
 
-  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
+  ASSERT_TRUE(this->AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
 
   const grpc::Status status = done_future.get();
 
@@ -508,16 +536,13 @@ TEST_F(ActiveReadReactorTest, ListFeatures_DeadlineExceeded_PropagatesStatus) {
 ///
 /// Tests that multiple simultaneous streams work correctly:
 /// 1. Start 5 concurrent ListFeatures streams
-/// 2. Each configured with different feature counts
+/// 2. Each receives the same 10 features
 /// 3. All complete successfully
-TEST_F(ActiveReadReactorTest, ListFeatures_MultipleConcurrent_AllComplete) {
+TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_MultipleConcurrent_AllComplete) {
+  using Reactor = typename TestFixture::Reactor;
+
   // Configure server with features
-  std::vector<routeguide::Feature> features;
-  features.reserve(10);
-  for (int i = 0; i < 10; ++i) {
-    features.push_back(rg_utils::MakeFeature("Feature " + std::to_string(i), i * 100, i * -100));
-  }
-  test_service_.SetListFeaturesResponse(features);
+  this->test_service_.SetListFeaturesResponse(MakeFeatures(10));
 
   constexpr int kNumConcurrentStreams = 5;
 
@@ -525,7 +550,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleConcurrent_AllComplete) {
   std::promise<void> all_done_promise;
   const std::future<void> all_done_future = all_done_promise.get_future();
 
-  std::vector<std::unique_ptr<routeguide::ListFeatures::ClientReactor<kDelivery>>> reactors;
+  std::vector<std::unique_ptr<Reactor>> reactors;
   reactors.reserve(kNumConcurrentStreams);
   std::vector<grpc::Status> statuses(kNumConcurrentStreams);
   std::vector<int> feature_counts(kNumConcurrentStreams, 0);
@@ -533,13 +558,10 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleConcurrent_AllComplete) {
   for (int i = 0; i < kNumConcurrentStreams; ++i) {
     const routeguide::Rectangle request;
 
-    routeguide::ListFeatures::Callbacks<kDelivery> cbs;
-    cbs.read_ok = [&feature_counts, i](grpc::ClientReadReactor<routeguide::Feature>*,
-                                  std::unique_ptr<routeguide::Feature>) {
-      ++feature_counts[i];
-    };
+    typename TestFixture::Callbacks cbs;
+    cbs.read_ok = TestFixture::ConsumeEach([&feature_counts, i](routeguide::Feature&&) { ++feature_counts[i]; });
     cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
-    cbs.done = [&completed_count, &all_done_promise, &statuses, i, kNumConcurrentStreams](
+    cbs.done = [&completed_count, &all_done_promise, &statuses, i](
                    grpc::ClientReadReactor<routeguide::Feature>*, const grpc::Status& status) {
       statuses[i] = status;
       if (++completed_count == kNumConcurrentStreams) {
@@ -547,8 +569,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleConcurrent_AllComplete) {
       }
     };
 
-    reactors.push_back(std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
-        *stub_, CreateClientContext(), request, std::move(cbs), ReadPacing::kContinuous));
+    reactors.push_back(std::make_unique<Reactor>(*this->stub_, this->CreateClientContext(), request, std::move(cbs)));
   }
 
   const auto cancel_all = [&] {
@@ -556,7 +577,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleConcurrent_AllComplete) {
       r->TryCancel();
     }
   };
-  ASSERT_TRUE(AwaitRpc(all_done_future, cancel_all, std::chrono::seconds(10)))
+  ASSERT_TRUE(this->AwaitRpc(all_done_future, cancel_all, std::chrono::seconds(10)))
       << "Timeout waiting for concurrent streams";
 
   EXPECT_EQ(completed_count.load(), kNumConcurrentStreams);
@@ -566,26 +587,109 @@ TEST_F(ActiveReadReactorTest, ListFeatures_MultipleConcurrent_AllComplete) {
   }
 }
 
+/// @test Validates nok callback fires on stream end.
+///
+/// Tests that nok callback is invoked when stream ends:
+/// 1. Server sends features
+/// 2. After last feature, OnReadDone(false) triggers nok callback
+/// 3. Then OnDone fires
+TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_NokCallback_FiresOnStreamEnd) {
+  using Reactor = typename TestFixture::Reactor;
+
+  this->test_service_.SetListFeaturesResponse(MakeFeatures(2));
+
+  bool nok_called = false;
+  int ok_count = 0;
+  std::promise<grpc::Status> done_promise;
+  std::future<grpc::Status> done_future = done_promise.get_future();
+
+  const routeguide::Rectangle request;
+
+  typename TestFixture::Callbacks cbs;
+  cbs.read_ok = TestFixture::ConsumeEach([&ok_count](routeguide::Feature&&) { ++ok_count; });
+  cbs.read_nok = [&nok_called](grpc::ClientReadReactor<routeguide::Feature>*) {
+    nok_called = true;
+  };
+  cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
+                              const grpc::Status& status) {
+    done_promise.set_value(status);
+  };
+
+  auto reactor = std::make_unique<Reactor>(*this->stub_, this->CreateClientContext(), request, std::move(cbs));
+
+  ASSERT_TRUE(this->AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
+
+  const grpc::Status status = done_future.get();
+
+  EXPECT_TRUE(status.ok());
+  EXPECT_EQ(ok_count, 2);
+  EXPECT_TRUE(nok_called) << "nok callback should fire when stream ends";
+}
+
+/// @test Validates an unbound ok slot discards messages without stalling the stream.
+///
+/// The reactor tests the slot before it takes any hold, so a stream with no read_ok callback still drains:
+///
+/// 1. Server sends 5 features, none of which is handed anywhere
+/// 2. OnReadDone(false) ends the stream, then OnDone fires with OK
+///
+/// The held pacings matter most here: with no callback bound there is nobody to call ResumeRead(),
+/// so the reactor must arm the read itself rather than take a hold that nothing would ever release.
+TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_NoReadOkCallbackBound_StreamStillDrains) {
+  using Reactor = typename TestFixture::Reactor;
+
+  this->test_service_.SetListFeaturesResponse(MakeFeatures(5));
+
+  bool nok_called = false;
+  std::promise<grpc::Status> done_promise;
+  std::future<grpc::Status> done_future = done_promise.get_future();
+
+  const routeguide::Rectangle request;
+
+  typename TestFixture::Callbacks cbs;
+  // cbs.read_ok deliberately left unbound.
+  cbs.read_nok = [&nok_called](grpc::ClientReadReactor<routeguide::Feature>*) {
+    nok_called = true;
+  };
+  cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
+                             const grpc::Status& status) {
+    done_promise.set_value(status);
+  };
+
+  auto reactor = std::make_unique<Reactor>(*this->stub_, this->CreateClientContext(), request, std::move(cbs));
+
+  ASSERT_TRUE(this->AwaitRpc(done_future, [&] { reactor->TryCancel(); })) << "Stream stalled with no ok callback bound";
+
+  const grpc::Status status = done_future.get();
+
+  EXPECT_TRUE(status.ok()) << "Status: " << status.error_message();
+  EXPECT_TRUE(nok_called) << "nok callback should fire when stream ends";
+}
+
+// =============================================================================
+// Held pacings: kTurnByTurn, and kPerMessage with read_ok returning true
+// =============================================================================
+
 /// @test Validates the hold is taken before the read_ok callback hands the message off.
 ///
 /// Forces the order that breaks if OnReadDone() calls AddHold() only after the read_ok callback
-/// returns: under kTurnByTurn, the callback hands each message to another thread, which runs
-/// ResumeRead() (its StartRead() and RemoveHold()) to completion before the callback returns. The
-/// callback then lingers, giving gRPC time to finish the RPC if that early RemoveHold() released the
-/// reactor's last outstanding operation. On the last message it would: OnDone() would fire while the
-/// reaction was still running, and the late AddHold() would then reach an already destroyed call.
+/// returns: the callback hands each message to another thread, which runs ResumeRead() (its
+/// StartRead() and RemoveHold()) to completion before the callback returns. The callback then
+/// lingers, giving gRPC time to finish the RPC if that early RemoveHold() released the reactor's last
+/// outstanding operation. On the last message it would: OnDone() would fire while the reaction was
+/// still running, and the late AddHold() would then reach an already destroyed call. Under kPerMessage
+/// the callback then returns true, which leaves the release it already made as the only one.
 ///
 /// Verifies that:
 /// - OnDone never fires while a read_ok callback is still running
 /// - Every ResumeRead() from the consumer thread is accepted
 /// - All features are received, and the final status is OK
-TEST_F(ActiveReadReactorTest, ListFeatures_TurnByTurn_ResumedBeforeCallbackReturns_HoldsUntilReturn) {
-  std::vector<routeguide::Feature> features;
-  features.reserve(3);
-  for (int i = 0; i < 3; ++i) {
-    features.push_back(rg_utils::MakeFeature("Feature " + std::to_string(i), i * 100, i * -100));
-  }
-  test_service_.SetListFeaturesResponse(features);
+TYPED_TEST(ActiveReadReactorHeldPacingTest, ListFeatures_ResumedBeforeCallbackReturns_HoldsUntilReturn) {
+  using Reactor = typename TestFixture::Reactor;
+  constexpr ReadPacing kPacing = TestFixture::kPacing;
+
+  const std::vector<routeguide::Feature> features = MakeFeatures(3);
+  this->test_service_.SetListFeaturesResponse(features);
 
   // ResumeRead() arms the next read before it returns, so the consumer of the next message can run
   // while the previous one is still storing its feature: guard the vector, and compare it without
@@ -600,11 +704,11 @@ TEST_F(ActiveReadReactorTest, ListFeatures_TurnByTurn_ResumedBeforeCallbackRetur
 
   const routeguide::Rectangle request;
 
-  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
+  typename TestFixture::Callbacks cbs;
   cbs.read_ok = [&received_features, &received_mutex, &done_fired, &done_inside_callback, &resume_rejected](
                     grpc::ClientReadReactor<routeguide::Feature>* reactor,
                     std::unique_ptr<routeguide::Feature> response) {
-    auto* client_reactor = static_cast<routeguide::ListFeatures::ClientReactor<kDelivery>*>(reactor);
+    auto* client_reactor = static_cast<Reactor*>(reactor);
     std::thread consumer([client_reactor, &response, &received_features, &received_mutex, &resume_rejected] {
       {
         const std::lock_guard<std::mutex> lock(received_mutex);
@@ -617,6 +721,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_TurnByTurn_ResumedBeforeCallbackRetur
     consumer.join();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     if (done_fired) done_inside_callback = true;
+    return pacing_test::KeepHeld<kPacing>();
   };
   cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise, &done_fired](grpc::ClientReadReactor<routeguide::Feature>*,
@@ -625,10 +730,9 @@ TEST_F(ActiveReadReactorTest, ListFeatures_TurnByTurn_ResumedBeforeCallbackRetur
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
-      *stub_, CreateClientContext(), request, std::move(cbs), ReadPacing::kTurnByTurn);
+  auto reactor = std::make_unique<Reactor>(*this->stub_, this->CreateClientContext(), request, std::move(cbs));
 
-  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); })) << "Timeout waiting for stream completion";
+  ASSERT_TRUE(this->AwaitRpc(done_future, [&] { reactor->TryCancel(); })) << "Timeout waiting for stream completion";
 
   const grpc::Status status = done_future.get();
 
@@ -646,95 +750,140 @@ TEST_F(ActiveReadReactorTest, ListFeatures_TurnByTurn_ResumedBeforeCallbackRetur
   }
 }
 
-/// @test Validates nok callback fires on stream end.
+/// @test Validates that a held message bounds the stream to one message in flight.
 ///
-/// Tests that nok callback is invoked when stream ends:
-/// 1. Server sends features
-/// 2. After last feature, OnReadDone(false) triggers nok callback
-/// 3. Then OnDone fires
-TEST_F(ActiveReadReactorTest, ListFeatures_NokCallback_FiresOnStreamEnd) {
-  std::vector<routeguide::Feature> features;
-  features.push_back(rg_utils::MakeFeature("Feature 1", 100, -100));
-  features.push_back(rg_utils::MakeFeature("Feature 2", 200, -200));
-  test_service_.SetListFeaturesResponse(features);
+/// This is the backpressure kContinuous deliberately gives up. The consumer never resumes from the
+/// callback, so the test thread drives the stream one message at a time:
+///
+/// 1. Server is configured to send 5 features
+/// 2. Each OnReadDone(true) takes a hold and arms nothing, and read_ok keeps it
+/// 3. While that hold stands, no further message can arrive and the RPC cannot terminate
+/// 4. Each ResumeRead() releases the hold and arms exactly one more read
+///
+/// Verifies that:
+/// - The delivered count never runs ahead of the number of resumes
+/// - OnDone stays pending for as long as a hold is outstanding
+/// - The RPC completes with OK once the last read is armed
+TYPED_TEST(ActiveReadReactorHeldPacingTest, ListFeatures_StreamStallsUntilResumed) {
+  using Reactor = typename TestFixture::Reactor;
+  constexpr ReadPacing kPacing = TestFixture::kPacing;
 
-  bool nok_called = false;
-  int ok_count = 0;
+  constexpr int kFeatureCount = 5;
+  this->test_service_.SetListFeaturesResponse(MakeFeatures(kFeatureCount));
+
+  std::mutex mutex;
+  std::condition_variable cv;
+  int received = 0;
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  const routeguide::Rectangle request;
+  const routeguide::Rectangle request = rg_utils::MakeRectangle(0, -800000000, 500000000, 0);
 
-  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
-  cbs.read_ok = [&ok_count](grpc::ClientReadReactor<routeguide::Feature>*,
-                       std::unique_ptr<routeguide::Feature>) {
-    ++ok_count;
+  typename TestFixture::Callbacks cbs;
+  cbs.read_ok = [&mutex, &cv, &received](grpc::ClientReadReactor<routeguide::Feature>*,
+                                         std::unique_ptr<routeguide::Feature>) {
+    // No ResumeRead() here on purpose: the test thread owns the re-arm, which is what makes the
+    // stall observable.
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      ++received;
+    }
+    cv.notify_one();
+    return pacing_test::KeepHeld<kPacing>();
   };
-  cbs.read_nok = [&nok_called](grpc::ClientReadReactor<routeguide::Feature>*) {
-    nok_called = true;
-  };
-  cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
-                              const grpc::Status& status) {
+  cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
+  cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*, const grpc::Status& status) {
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
-      *stub_, CreateClientContext(), request, std::move(cbs), ReadPacing::kContinuous);
+  auto reactor = std::make_unique<Reactor>(*this->stub_, this->CreateClientContext(), request, std::move(cbs));
 
-  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
-
-  const grpc::Status status = done_future.get();
-
-  EXPECT_TRUE(status.ok());
-  EXPECT_EQ(ok_count, 2);
-  EXPECT_TRUE(nok_called) << "nok callback should fire when stream ends";
-}
-
-/// @test Validates an unbound ok slot discards messages without stalling the stream.
-///
-/// The re-arm sits outside the `if (cbs_.read_ok)` guard, so a stream with no read_ok callback still drains:
-///
-/// 1. Server sends 5 features, none of which is handed anywhere
-/// 2. OnReadDone(false) ends the stream, then OnDone fires with OK
-///
-/// The kTurnByTurn case matters most here: with no callback bound there is nobody to call ResumeRead(),
-/// so the reactor must arm the read itself rather than take a hold that nothing would ever release.
-TEST_P(ActiveReadReactorPacingTest, ListFeatures_NoReadOkCallbackBound_StreamStillDrains) {
-  const ReadPacing pacing = GetParam();
-
-  std::vector<routeguide::Feature> features;
-  for (int i = 0; i < 5; ++i) {
-    features.push_back(rg_utils::MakeFeature("Feature " + std::to_string(i), 100 + i, -100 - i));
+  for (int expected = 1; expected <= kFeatureCount; ++expected) {
+    {
+      std::unique_lock<std::mutex> lock(mutex);
+      ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5), [&received, expected] { return received == expected; }))
+          << "Held stream did not deliver message " << expected;
+    }
+    // The hold is outstanding: gRPC has no read armed and OnDone is suppressed.
+    EXPECT_EQ(done_future.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout)
+        << "RPC terminated while a read hold was outstanding";
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      EXPECT_EQ(received, expected) << "Held stream delivered ahead of ResumeRead()";
+    }
+    EXPECT_TRUE(reactor->ResumeRead()) << "ResumeRead() rejected while a hold was outstanding";
   }
-  test_service_.SetListFeaturesResponse(features);
 
-  bool nok_called = false;
+  ASSERT_TRUE(this->AwaitRpc(done_future, [&] { reactor->TryCancel(); }))
+      << "Held stream never completed after the last resume";
+  EXPECT_TRUE(done_future.get().ok());
+  EXPECT_EQ(received, kFeatureCount);
+}
+
+/// @test Validates a second ResumeRead() is rejected instead of underflowing the hold count.
+///
+/// gRPC counts holds and outstanding operations together, and fires OnDone when that count reaches
+/// zero. A RemoveHold() with no matching AddHold() would drop the count early, so ResumeRead()
+/// claims its flag before releasing anything:
+///
+/// 1. Server sends a single feature, so no further hold can ever be taken after the first resume
+/// 2. The first ResumeRead() releases the hold and arms the read that ends the stream
+/// 3. The second ResumeRead() finds no hold to release
+///
+/// Verifies that:
+/// - The duplicate call reports rejection rather than acting
+/// - The RPC still terminates once, with OK
+TYPED_TEST(ActiveReadReactorHeldPacingTest, ListFeatures_DuplicateResumeIsRejected) {
+  using Reactor = typename TestFixture::Reactor;
+  constexpr ReadPacing kPacing = TestFixture::kPacing;
+
+  this->test_service_.SetListFeaturesResponse(MakeFeatures(1));
+
+  std::mutex mutex;
+  std::condition_variable cv;
+  int received = 0;
+  std::atomic_int done_count{0};
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::Rectangle request;
+  const routeguide::Rectangle request = rg_utils::MakeRectangle(0, -800000000, 500000000, 0);
 
-  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
-  // cbs.read_ok deliberately left unbound.
-  cbs.read_nok = [&nok_called](grpc::ClientReadReactor<routeguide::Feature>*) {
-    nok_called = true;
+  typename TestFixture::Callbacks cbs;
+  cbs.read_ok = [&mutex, &cv, &received](grpc::ClientReadReactor<routeguide::Feature>*,
+                                         std::unique_ptr<routeguide::Feature>) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      ++received;
+    }
+    cv.notify_one();
+    return pacing_test::KeepHeld<kPacing>();
   };
-  cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*,
-                             const grpc::Status& status) {
-    done_promise.set_value(status);
+  cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
+  cbs.done = [&done_promise, &done_count](grpc::ClientReadReactor<routeguide::Feature>*,
+                                          const grpc::Status& status) {
+    if (++done_count == 1) done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
-      *stub_, CreateClientContext(), request, std::move(cbs), pacing);
+  auto reactor = std::make_unique<Reactor>(*this->stub_, this->CreateClientContext(), request, std::move(cbs));
 
-  auto wait_result = done_future.wait_for(std::chrono::seconds(5));
-  ASSERT_EQ(wait_result, std::future_status::ready) << "Stream stalled with no ok callback bound";
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5), [&received] { return received == 1; }));
+  }
 
-  grpc::Status status = done_future.get();
+  EXPECT_TRUE(reactor->ResumeRead()) << "First resume must release the hold";
+  // Only one feature exists, so no new hold can appear between the two calls.
+  EXPECT_FALSE(reactor->ResumeRead()) << "Second resume must find no hold to release";
 
-  EXPECT_TRUE(status.ok()) << "Status: " << status.error_message();
-  EXPECT_TRUE(nok_called) << "nok callback should fire when stream ends";
+  ASSERT_TRUE(this->AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
+  EXPECT_TRUE(done_future.get().ok());
+  EXPECT_EQ(received, 1);
+  EXPECT_EQ(done_count.load(), 1) << "Hold count underflowed into a repeated OnDone";
 }
+
+// =============================================================================
+// ReadPacing::kContinuous specific tests
+// =============================================================================
 
 /// @test Validates the stream completes while the consumer defers all processing.
 ///
@@ -760,9 +909,9 @@ TEST_F(ActiveReadReactorTest, ListFeatures_DeferredConsumer_StreamCompletesWitho
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::Rectangle request = rg_utils::MakeRectangle(0, -800000000, 500000000, 0);
+  const routeguide::Rectangle request = rg_utils::MakeRectangle(0, -800000000, 500000000, 0);
 
-  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
+  routeguide::ListFeatures::Callbacks<kDelivery, ReadPacing::kContinuous> cbs;
   cbs.read_ok = [&parked](grpc::ClientReadReactor<routeguide::Feature>*,
                      std::unique_ptr<routeguide::Feature> response) {
     parked.push_back(std::move(response));  // Defer everything: no processing, no reactor call
@@ -775,14 +924,13 @@ TEST_F(ActiveReadReactorTest, ListFeatures_DeferredConsumer_StreamCompletesWitho
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
-      *stub_, CreateClientContext(), request, std::move(cbs), ReadPacing::kContinuous);
+  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery, ReadPacing::kContinuous>>(
+      *stub_, CreateClientContext(), request, std::move(cbs));
 
-  auto wait_result = done_future.wait_for(std::chrono::seconds(5));
-  ASSERT_EQ(wait_result, std::future_status::ready)
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }))
       << "Stream stalled while the consumer deferred processing";
 
-  grpc::Status status = done_future.get();
+  const grpc::Status status = done_future.get();
 
   EXPECT_TRUE(status.ok()) << "Status: " << status.error_message();
   EXPECT_TRUE(nok_called) << "nok callback should fire when stream ends";
@@ -793,30 +941,75 @@ TEST_F(ActiveReadReactorTest, ListFeatures_DeferredConsumer_StreamCompletesWitho
 }
 
 // =============================================================================
-// ReadPacing::kTurnByTurn Specific Tests
+// ReadPacing::kPerMessage specific tests: the callback's runtime hold decision
 // =============================================================================
 
-/// @test Validates that kTurnByTurn bounds the stream to one message in flight.
+/// @test Validates a declined message lets the stream read on with no ResumeRead().
 ///
-/// This is the backpressure kContinuous deliberately gives up. The consumer never resumes from the
-/// callback, so the test thread drives the stream one message at a time:
+/// Under kPerMessage the reactor takes a hold for every message, since it cannot know the answer
+/// before calling the callback. A callback returning false declines it, and the reactor then claims
+/// that hold back itself, re-arms, and releases it:
 ///
-/// 1. Server is configured to send 5 features
-/// 2. Each OnReadDone(true) takes a hold and arms nothing
-/// 3. While that hold stands, no further message can arrive and the RPC cannot terminate
-/// 4. Each ResumeRead() releases the hold and arms exactly one more read
+/// 1. Server sends 5 features
+/// 2. read_ok keeps each owned message and returns false, never calling ResumeRead()
 ///
 /// Verifies that:
-/// - The delivered count never runs ahead of the number of resumes
-/// - OnDone stays pending for as long as a hold is outstanding
-/// - The RPC completes with OK once the last read is armed
-TEST_F(ActiveReadReactorTest, ListFeatures_TurnByTurn_StreamStallsUntilResumed) {
-  constexpr int kFeatureCount = 5;
-  std::vector<routeguide::Feature> expected_features;
-  for (int i = 0; i < kFeatureCount; ++i) {
-    expected_features.push_back(rg_utils::MakeFeature("Feature " + std::to_string(i), 100 + i, -100 - i));
+/// - All 5 features arrive, in order, with no application call into the reactor
+/// - The nok event fires and the RPC completes with OK, so no hold was left outstanding
+TEST_F(ActiveReadReactorTest, ListFeatures_PerMessage_DeclinedMessagesReadOnWithoutResume) {
+  const std::vector<routeguide::Feature> features = MakeFeatures(5);
+  test_service_.SetListFeaturesResponse(features);
+
+  std::vector<routeguide::Feature> received_features;
+  bool nok_called = false;
+  std::promise<grpc::Status> done_promise;
+  std::future<grpc::Status> done_future = done_promise.get_future();
+
+  const routeguide::Rectangle request;
+
+  routeguide::ListFeatures::Callbacks<kDelivery, ReadPacing::kPerMessage> cbs;
+  cbs.read_ok = [&received_features](grpc::ClientReadReactor<routeguide::Feature>*,
+                                     std::unique_ptr<routeguide::Feature> response) {
+    received_features.push_back(std::move(*response));
+    return false;  // Decline: the reactor reads on by itself
+  };
+  cbs.read_nok = [&nok_called](grpc::ClientReadReactor<routeguide::Feature>*) { nok_called = true; };
+  cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*, const grpc::Status& status) {
+    done_promise.set_value(status);
+  };
+
+  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery, ReadPacing::kPerMessage>>(
+      *stub_, CreateClientContext(), request, std::move(cbs));
+
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); })) << "Declined messages stalled the stream";
+
+  const grpc::Status status = done_future.get();
+
+  EXPECT_TRUE(status.ok()) << "Status: " << status.error_message();
+  EXPECT_TRUE(nok_called) << "nok callback should fire when stream ends";
+  ASSERT_EQ(received_features.size(), features.size());
+  for (size_t i = 0; i < features.size(); ++i) {
+    EXPECT_EQ(received_features[i].name(), features[i].name());
   }
-  test_service_.SetListFeaturesResponse(expected_features);
+}
+
+/// @test Validates a mix of kept and declined messages, decided per message, completes.
+///
+/// The decision is the callback's own, message by message. Here every third message is kept and the
+/// others are declined, so the stream alternates between running on its own and waiting for the
+/// application:
+///
+/// 1. Server sends 7 features, so messages 0, 3 and 6 are kept and the other four declined
+/// 2. On each kept message the test thread checks the stream stalls, then calls ResumeRead()
+/// 3. Declined messages flow through without any call from the test thread
+///
+/// Verifies that:
+/// - A kept message stalls the stream and suppresses OnDone until ResumeRead()
+/// - The stream runs on through declined messages until the next kept one
+/// - All 7 features arrive and the RPC completes with OK
+TEST_F(ActiveReadReactorTest, ListFeatures_PerMessage_MixedDecisions_HoldOnlyKeptMessages) {
+  constexpr int kFeatureCount = 7;
+  test_service_.SetListFeaturesResponse(MakeFeatures(kFeatureCount));
 
   std::mutex mutex;
   std::condition_variable cv;
@@ -824,151 +1017,209 @@ TEST_F(ActiveReadReactorTest, ListFeatures_TurnByTurn_StreamStallsUntilResumed) 
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::Rectangle request = rg_utils::MakeRectangle(0, -800000000, 500000000, 0);
+  const routeguide::Rectangle request;
 
-  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
+  routeguide::ListFeatures::Callbacks<kDelivery, ReadPacing::kPerMessage> cbs;
   cbs.read_ok = [&mutex, &cv, &received](grpc::ClientReadReactor<routeguide::Feature>*,
                                          std::unique_ptr<routeguide::Feature>) {
-    // No ResumeRead() here on purpose: the test thread owns the re-arm, which is what makes the
-    // stall observable.
+    bool keep = false;
     {
       std::lock_guard<std::mutex> lock(mutex);
+      keep = (received % 3) == 0;
       ++received;
     }
     cv.notify_one();
+    return keep;
   };
   cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*, const grpc::Status& status) {
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
-      *stub_, CreateClientContext(), request, std::move(cbs), ReadPacing::kTurnByTurn);
+  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery, ReadPacing::kPerMessage>>(
+      *stub_, CreateClientContext(), request, std::move(cbs));
 
-  for (int expected = 1; expected <= kFeatureCount; ++expected) {
+  for (const int kept_index : {0, 3, 6}) {
+    const int expected = kept_index + 1;
     {
       std::unique_lock<std::mutex> lock(mutex);
       ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5), [&received, expected] { return received == expected; }))
-          << "Held stream did not deliver message " << expected;
+          << "Stream did not reach kept message " << kept_index;
     }
-    // The hold is outstanding: gRPC has no read armed and OnDone is suppressed.
     EXPECT_EQ(done_future.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout)
-        << "RPC terminated while a read hold was outstanding";
+        << "RPC terminated while kept message " << kept_index << " was held";
     {
       std::lock_guard<std::mutex> lock(mutex);
-      EXPECT_EQ(received, expected) << "Held stream delivered ahead of ResumeRead()";
+      EXPECT_EQ(received, expected) << "Stream delivered past kept message " << kept_index;
     }
-    EXPECT_TRUE(reactor->ResumeRead()) << "ResumeRead() rejected while a hold was outstanding";
+    EXPECT_TRUE(reactor->ResumeRead()) << "ResumeRead() rejected kept message " << kept_index;
   }
 
-  ASSERT_EQ(done_future.wait_for(std::chrono::seconds(5)), std::future_status::ready)
-      << "Held stream never completed after the last resume";
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); })) << "Stream never completed";
   EXPECT_TRUE(done_future.get().ok());
   EXPECT_EQ(received, kFeatureCount);
 }
 
-/// @test Validates a second ResumeRead() is rejected instead of underflowing the hold count.
+/// @test Validates a declined message already resumed by the application is released only once.
 ///
-/// gRPC counts holds and outstanding operations together, and fires OnDone when that count reaches
-/// zero. A RemoveHold() with no matching AddHold() would drop the count early, so ResumeRead()
-/// claims its flag before releasing anything:
-///
-/// 1. Server sends a single feature, so no further hold can ever be taken after the first resume
-/// 2. The first ResumeRead() releases the hold and arms the read that ends the stream
-/// 3. The second ResumeRead() finds no hold to release
+/// The application may release the hold itself before its callback returns false, against its own
+/// answer: here a consumer thread calls ResumeRead() and finishes before the callback declines. The
+/// reactor's own claim then finds the hold already taken and must do nothing, since a second
+/// StartRead() would break gRPC's one-read-in-flight rule and a second RemoveHold() would underflow
+/// the hold count into an early OnDone.
 ///
 /// Verifies that:
-/// - The duplicate call reports rejection rather than acting
-/// - The RPC still terminates once, with OK
-TEST_F(ActiveReadReactorTest, ListFeatures_TurnByTurn_DuplicateResumeIsRejected) {
-  std::vector<routeguide::Feature> features;
-  features.push_back(rg_utils::MakeFeature("Only feature", 100, -100));
+/// - Every ResumeRead() from the consumer thread is accepted
+/// - OnDone fires exactly once, never while a read_ok callback is still running
+/// - All features are received and the final status is OK, with nothing aborting
+TEST_F(ActiveReadReactorTest, ListFeatures_PerMessage_DeclinedAfterResumeRead_ReleasesOnce) {
+  const std::vector<routeguide::Feature> features = MakeFeatures(3);
   test_service_.SetListFeaturesResponse(features);
 
-  std::mutex mutex;
-  std::condition_variable cv;
-  int received = 0;
+  // As in the hold-before-hand-off test, the resume lets the next message in while this callback still
+  // runs: guard the vector, and compare it without relying on arrival order.
+  std::vector<routeguide::Feature> received_features;
+  std::mutex received_mutex;
+  std::atomic<bool> done_fired{false};
+  std::atomic<bool> done_inside_callback{false};
+  std::atomic<bool> resume_rejected{false};
   std::atomic_int done_count{0};
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::Rectangle request = rg_utils::MakeRectangle(0, -800000000, 500000000, 0);
+  const routeguide::Rectangle request;
 
-  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
-  cbs.read_ok = [&mutex, &cv, &received](grpc::ClientReadReactor<routeguide::Feature>*,
-                                         std::unique_ptr<routeguide::Feature>) {
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      ++received;
-    }
-    cv.notify_one();
+  using Reactor = routeguide::ListFeatures::ClientReactor<kDelivery, ReadPacing::kPerMessage>;
+  routeguide::ListFeatures::Callbacks<kDelivery, ReadPacing::kPerMessage> cbs;
+  cbs.read_ok = [&received_features, &received_mutex, &done_fired, &done_inside_callback, &resume_rejected](
+                    grpc::ClientReadReactor<routeguide::Feature>* reactor,
+                    std::unique_ptr<routeguide::Feature> response) {
+    auto* client_reactor = static_cast<Reactor*>(reactor);
+    std::thread consumer([client_reactor, &response, &received_features, &received_mutex, &resume_rejected] {
+      {
+        const std::lock_guard<std::mutex> lock(received_mutex);
+        received_features.push_back(std::move(*response));
+      }
+      if (!client_reactor->ResumeRead()) resume_rejected = true;
+    });
+    // Joined before declining, so the application's release always comes first.
+    consumer.join();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    if (done_fired) done_inside_callback = true;
+    return false;  // Declined, although the hold is already released: the reactor must not release it again
   };
   cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
-  cbs.done = [&done_promise, &done_count](grpc::ClientReadReactor<routeguide::Feature>*,
-                                          const grpc::Status& status) {
+  cbs.done = [&done_promise, &done_fired, &done_count](grpc::ClientReadReactor<routeguide::Feature>*,
+                                                       const grpc::Status& status) {
+    done_fired = true;
     if (++done_count == 1) done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
-      *stub_, CreateClientContext(), request, std::move(cbs), ReadPacing::kTurnByTurn);
+  auto reactor = std::make_unique<Reactor>(*stub_, CreateClientContext(), request, std::move(cbs));
 
-  {
-    std::unique_lock<std::mutex> lock(mutex);
-    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5), [&received] { return received == 1; }));
-  }
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); })) << "Timeout waiting for stream completion";
 
-  EXPECT_TRUE(reactor->ResumeRead()) << "First resume must release the hold";
-  // Only one feature exists, so no new hold can appear between the two calls.
-  EXPECT_FALSE(reactor->ResumeRead()) << "Second resume must find no hold to release";
+  const grpc::Status status = done_future.get();
 
-  ASSERT_EQ(done_future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
-  EXPECT_TRUE(done_future.get().ok());
-  EXPECT_EQ(received, 1);
+  EXPECT_FALSE(done_inside_callback) << "OnDone fired while the read_ok callback was still running";
+  EXPECT_FALSE(resume_rejected) << "ResumeRead() rejected while a hold was outstanding";
   EXPECT_EQ(done_count.load(), 1) << "Hold count underflowed into a repeated OnDone";
+  EXPECT_TRUE(status.ok()) << "Status: " << status.error_message();
+  const std::lock_guard<std::mutex> lock(received_mutex);
+  std::vector<std::string> received_names;
+  received_names.reserve(received_features.size());
+  for (const auto& feature : received_features) received_names.push_back(feature.name());
+  std::ranges::sort(received_names);
+  ASSERT_EQ(received_names.size(), features.size());
+  for (size_t i = 0; i < features.size(); ++i) {
+    EXPECT_EQ(received_names[i], features[i].name());
+  }
 }
 
-/// @test Validates ResumeRead() is a rejected no-op under kContinuous.
+/// @test Validates a late decline cannot release the hold of the message that follows it.
 ///
-/// The mode is fixed at construction and kContinuous takes no hold, so the flag ResumeRead() claims is
-/// never set and the call cannot disturb a stream the reactor is already driving itself.
+/// Regression test for a claim that once identified a hold by a shared bool. Once the application
+/// releases message 0 itself, message 1 can arrive and publish its own hold while message 0's callback
+/// still runs. When that callback then returns false, the reactor's claim must find its own hold already
+/// gone, and leave message 1's alone. The shared flag let it take message 1's hold instead, re-arming the
+/// read before message 1's callback had decided anything. This test orders the two callbacks explicitly,
+/// so the old defect reproduced on every run:
+///
+/// 1. Message 0's consumer thread calls ResumeRead(), which arms the read of message 1
+/// 2. Message 0's callback waits until message 1's callback has started, then returns false
+/// 3. Message 1's callback waits until message 0's has returned, then keeps its message by returning true
+/// 4. The test thread checks the stream is held, then releases message 1 with ResumeRead()
 ///
 /// Verifies that:
-/// - Every ResumeRead() call reports rejection
-/// - All messages still arrive exactly once and the RPC completes with OK
-TEST_F(ActiveReadReactorTest, ListFeatures_Continuous_ResumeReadIsRejected) {
-  constexpr int kFeatureCount = 5;
-  std::vector<routeguide::Feature> expected_features;
-  for (int i = 0; i < kFeatureCount; ++i) {
-    expected_features.push_back(rg_utils::MakeFeature("Feature " + std::to_string(i), 100 + i, -100 - i));
-  }
-  test_service_.SetListFeaturesResponse(expected_features);
+/// - Message 1 stays held after message 0's decline: OnDone stays pending and no further message arrives
+/// - The application's ResumeRead() for message 1 finds the hold and is accepted
+/// - All 3 features arrive and the RPC completes with OK
+TEST_F(ActiveReadReactorTest, ListFeatures_PerMessage_DeclinedAfterResumeRead_LeavesNextHoldAlone) {
+  test_service_.SetListFeaturesResponse(MakeFeatures(3));
 
+  std::mutex mutex;
+  std::condition_variable cv;
   int received = 0;
-  int resume_accepted = 0;
+  bool first_returning = false;
+  bool second_kept = false;
+  std::atomic<bool> first_resumed{false};
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::Rectangle request = rg_utils::MakeRectangle(0, -800000000, 500000000, 0);
-
-  routeguide::ListFeatures::Callbacks<kDelivery> cbs;
-  cbs.read_ok = [&received, &resume_accepted](grpc::ClientReadReactor<routeguide::Feature>* reactor,
-                                              std::unique_ptr<routeguide::Feature>) {
-    ++received;
-    if (static_cast<routeguide::ListFeatures::ClientReactor<kDelivery>*>(reactor)->ResumeRead()) ++resume_accepted;
+  using Reactor = routeguide::ListFeatures::ClientReactor<kDelivery, ReadPacing::kPerMessage>;
+  routeguide::ListFeatures::Callbacks<kDelivery, ReadPacing::kPerMessage> cbs;
+  cbs.read_ok = [&mutex, &cv, &received, &first_returning, &second_kept, &first_resumed](
+                    grpc::ClientReadReactor<routeguide::Feature>* reactor, std::unique_ptr<routeguide::Feature>) {
+    auto* client_reactor = static_cast<Reactor*>(reactor);
+    std::unique_lock<std::mutex> lock(mutex);
+    const int index = received++;
+    cv.notify_all();
+    if (index == 0) {
+      lock.unlock();
+      std::thread consumer([client_reactor, &first_resumed] { first_resumed = client_reactor->ResumeRead(); });
+      consumer.join();
+      lock.lock();
+      // Bounded, so a gRPC that ran the two reactions one after the other only weakens the test.
+      cv.wait_for(lock, std::chrono::seconds(2), [&received] { return received > 1; });
+      first_returning = true;
+      cv.notify_all();
+      return false;
+    }
+    if (index == 1) {
+      cv.wait_for(lock, std::chrono::seconds(2), [&first_returning] { return first_returning; });
+      lock.unlock();
+      // Leaves message 0's reaction time to run its claim after returning.
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      lock.lock();
+      second_kept = true;
+      cv.notify_all();
+      return true;
+    }
+    return false;
   };
   cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&done_promise](grpc::ClientReadReactor<routeguide::Feature>*, const grpc::Status& status) {
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::ListFeatures::ClientReactor<kDelivery>>(
-      *stub_, CreateClientContext(), request, std::move(cbs), ReadPacing::kContinuous);
+  auto reactor = std::make_unique<Reactor>(*stub_, CreateClientContext(), routeguide::Rectangle(), std::move(cbs));
 
-  ASSERT_EQ(done_future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5), [&second_kept] { return second_kept; }))
+        << "Message 1 never reached its callback";
+  }
+  EXPECT_EQ(done_future.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout)
+      << "RPC terminated while message 1 was kept";
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    EXPECT_EQ(received, 2) << "Message 0's decline released message 1's hold, and the stream read on";
+  }
+  EXPECT_TRUE(first_resumed) << "Message 0's own ResumeRead() was rejected";
+  EXPECT_TRUE(reactor->ResumeRead()) << "Message 0's decline released message 1's hold";
 
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));
   EXPECT_TRUE(done_future.get().ok());
-  EXPECT_EQ(received, kFeatureCount);
-  EXPECT_EQ(resume_accepted, 0) << "ResumeRead() acted on a reactor that holds nothing";
+  EXPECT_EQ(received, 3);
 }
-
 }  // namespace

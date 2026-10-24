@@ -3,7 +3,7 @@
 /// Copyright 2026 anderewrey
 ///
 
-#include "applications/reactor/scenarios/list_features_pull.h"
+#include "applications/reactor/scenarios/list_features_push_turn_by_turn.h"
 
 #include <spdlog/spdlog.h>
 
@@ -13,15 +13,16 @@
 
 #include "protobuf_utils/protobuf_utils.h"
 
-namespace rg_demo::pull {
+namespace rg_demo::push::turn_by_turn {
 namespace {
 // Event names are literal per-scenario constants on purpose. Deriving them from an identifier would
 // make the string seen in a log line unfindable in this source tree. EventLoop appends handlers per
-// name rather than replacing them, so this scenario must not share a name with its push counterparts,
-// whose read handlers would otherwise read this reactor pointer as an owned message.
-constexpr auto kOnReadDoneOk{"ListFeaturesPullOnReadDoneOk"};
-constexpr auto kOnReadDoneNOk{"ListFeaturesPullOnReadDoneNOk"};
-constexpr auto kOnDone{"ListFeaturesPullOnDone"};
+// name rather than replacing them, so this scenario must not share a name with any sibling: a push
+// read event carries an owned message, and two handlers reclaiming the same pointer would free it
+// twice, while a pull handler would read it as a reactor.
+constexpr auto kOnReadDoneOk{"ListFeaturesPushTurnOnReadDoneOk"};
+constexpr auto kOnReadDoneNOk{"ListFeaturesPushTurnOnReadDoneNOk"};
+constexpr auto kOnDone{"ListFeaturesPushTurnOnDone"};
 }  // anonymous namespace
 
 ListFeatures::ListFeatures(routeguide::RouteGuide::Stub& stub)
@@ -40,14 +41,12 @@ void ListFeatures::Start(routeguide::Rectangle rect) {
   }
 
   Callbacks cbs;
-  // (Point 2.5) TriggerEvent: OnReadDoneOk. The message stays in the reactor, so the event carries the
-  // reactor itself. Returning true keeps the message, which holds the RPC from here until
-  // GetResponse(), so no further read is armed meanwhile.
-  cbs.read_ok = [this](auto* reactor, const ResponseT& response) -> bool {
+  // (Point 2.13) TriggerEvent: OnReadDoneOk, handing the message ownership to the queue. The reactor
+  // holds the RPC from here until ResumeRead(), so no further read is armed meanwhile.
+  cbs.read_ok = [this](auto*, std::unique_ptr<ResponseT> response) {
     assert(!OnApplicationThread());  // gRPC thread
-    logger_.info("read_ok  | #{} {}", ++read_seq_, response.GetTypeName());
-    EventLoop::TriggerEvent(kOnReadDoneOk, reactor);
-    return true;
+    logger_.info("read_ok  | #{} {}", ++read_seq_, response->GetTypeName());
+    EventLoop::TriggerEvent(kOnReadDoneOk, response.release());
   };
   // (Point 4.3) TriggerEvent: OnReadDoneNOk
   cbs.read_nok = [](auto* reactor) {
@@ -60,8 +59,7 @@ void ListFeatures::Start(routeguide::Rectangle rect) {
     EventLoop::TriggerEvent(kOnDone, reactor);
   };
 
-  // (Point 1.1) Create reactor. Delta against the turn-by-turn counterpart: no pacing argument, since
-  // the read_ok return value paces the stream instead.
+  // (Point 1.1) Create reactor
   reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), rect, std::move(cbs));
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
 }
@@ -69,23 +67,24 @@ void ListFeatures::Start(routeguide::Rectangle rect) {
 void ListFeatures::OnReadOk(const EventLoop::Event* event) {
   // (Point 2.8) ProceedEvent: OnReadDoneOk
   assert(OnApplicationThread());
-  // The event data is the reactor, which still holds the message
-  const auto* reactor = static_cast<ClientReactor*>(event->getData());
-  assert(reactor == reactor_.get());
+  // The event data is the message, not the reactor: reclaim the released ownership
+  const std::unique_ptr<routeguide::ListFeatures::ResponseT> response{
+      static_cast<routeguide::ListFeatures::ResponseT*>(event->getData())};
   const auto seq = ++handled_seq_;
-  // Logged before the call, for the reason given in list_features_turn_by_turn.cpp: GetResponse()
-  // issues StartRead() internally, so read_ok #k+1 can be logged before this thread runs another
-  // statement.
-  logger_.info("pulled   | #{} arming next read", seq);
-  // (Point 2.9, 2.10, 2.11) Delta against the turn-by-turn counterpart: extract the message, arm the
-  // next read and release the hold OnReadDone() took, all in one call.
-  routeguide::ListFeatures::ResponseT response;
-  if (!reactor_->GetResponse(response)) {
-    logger_.info("pulled   | #{} no message ready", seq);
-    return;
+  // (Point 2.9) update application with response
+  logger_.info("RESPONSE | #{} {}: {}", seq, response->GetTypeName(), protobuf_utils::ToString(*response));
+  // (Point 2.17, 2.18, 2.19) Delta against the continuous counterpart: arm the next read and release
+  // the hold OnReadDone() took. Called from the application thread on purpose: resuming inline from
+  // the gRPC callback is legal and erases the point of the mode.
+  assert(reactor_);
+  // Logged before the call, not after. ResumeRead() issues StartRead() internally, so a server with
+  // the next message ready can deliver it and log read_ok #k+1 before this thread reaches its next
+  // statement. Reporting the resume first is what keeps the transcript's order the same as the
+  // causal order, which is the whole point of the mode being observable.
+  logger_.info("resumed  | #{} arming next read", seq);
+  if (!reactor_->ResumeRead()) {
+    logger_.info("resumed  | #{} no read armed, stream is over", seq);
   }
-  // update application with response
-  logger_.info("RESPONSE | #{} {}: {}", seq, response.GetTypeName(), protobuf_utils::ToString(response));
 }
 
 void ListFeatures::OnReadNOk(const EventLoop::Event* event) {
@@ -109,4 +108,4 @@ void ListFeatures::OnDone(const EventLoop::Event* event) {
   logger_.info("         | reactor[{}] ended", fmt::ptr(reactor));
 }
 
-}  // namespace rg_demo::pull
+}  // namespace rg_demo::push::turn_by_turn

@@ -16,22 +16,30 @@ add_executable(route_guide_active_reactor_client
     scenarios/get_feature_pull.cpp
     scenarios/get_feature_push.h
     scenarios/get_feature_push.cpp
-    scenarios/list_features_pull.h
-    scenarios/list_features_pull.cpp
-    scenarios/list_features_continuous.h
-    scenarios/list_features_continuous.cpp
-    scenarios/list_features_turn_by_turn.h
-    scenarios/list_features_turn_by_turn.cpp
+    scenarios/list_features_pull_continuous.h
+    scenarios/list_features_pull_continuous.cpp
+    scenarios/list_features_pull_turn_by_turn.h
+    scenarios/list_features_pull_turn_by_turn.cpp
+    scenarios/list_features_pull_per_message.h
+    scenarios/list_features_pull_per_message.cpp
+    scenarios/list_features_push_continuous.h
+    scenarios/list_features_push_continuous.cpp
+    scenarios/list_features_push_turn_by_turn.h
+    scenarios/list_features_push_turn_by_turn.cpp
+    scenarios/list_features_push_per_message.h
+    scenarios/list_features_push_per_message.cpp
     scenarios/record_route_pull.h
     scenarios/record_route_pull.cpp
     scenarios/record_route_push.h
     scenarios/record_route_push.cpp
-    scenarios/route_chat_pull.h
-    scenarios/route_chat_pull.cpp
-    scenarios/route_chat_continuous.h
-    scenarios/route_chat_continuous.cpp
-    scenarios/route_chat_turn_by_turn.h
-    scenarios/route_chat_turn_by_turn.cpp
+    scenarios/route_chat_pull_continuous.h
+    scenarios/route_chat_pull_continuous.cpp
+    scenarios/route_chat_pull_turn_by_turn.h
+    scenarios/route_chat_pull_turn_by_turn.cpp
+    scenarios/route_chat_push_continuous.h
+    scenarios/route_chat_push_continuous.cpp
+    scenarios/route_chat_push_turn_by_turn.h
+    scenarios/route_chat_push_turn_by_turn.cpp
 )
 
 target_include_directories(route_guide_active_reactor_client

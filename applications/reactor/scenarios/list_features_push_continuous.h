@@ -15,22 +15,25 @@
 #include "applications/reactor/reactor_eventloop.h"
 #include "applications/reactor/scenarios/support.h"
 
-namespace rg_demo::continuous {
+namespace rg_demo::push::continuous {
 
-/// Exhibits ActiveReadReactor under ReadPacing::kContinuous, via the ListFeatures RPC. The reactor
-/// arms each following read itself, as the last statement of its own reaction, so the stream never
-/// waits for the application.
+/// Exhibits ActiveReadReactor under Delivery::kPush and ReadPacing::kContinuous, via the ListFeatures
+/// RPC. Each message is handed out as an owned object, and the reactor arms each following read itself,
+/// as the last statement of its own reaction, so the stream never waits for the application.
 ///
-/// The flavour is named by this file and by the enclosing namespace, never by the class, so the
-/// class name stays the RPC method it drives. Its turn-by-turn counterpart is the same class name in
-/// namespace rg_demo::turn_by_turn, in list_features_turn_by_turn.h, and
-/// `diff list_features_continuous.cpp list_features_turn_by_turn.cpp` is the shortest description of
-/// what the pacing mode changes.
+/// Clone of its siblings, deliberately, so each cell reads whole. The clone is not free: a bug found in
+/// one must be fixed in the others. It is kept because one class instantiated twice would register the
+/// same event names twice, and EventLoop appends handlers per name while a read event carries an owned
+/// message. Each sibling differs from this file along one axis only:
+/// - list_features_push_turn_by_turn.h, the pacing: the application re-arms with ResumeRead()
+/// - list_features_pull_continuous.h, the delivery: the message is only lent, so it is consumed in the
+///   callback rather than queued
 class ListFeatures {
-  // The reactor flavour this scenario exhibits starts with its Delivery approach.
+  // The reactor flavour this scenario exhibits: its Delivery approach, then its ReadPacing mode.
   using Delivery = routeguide::ListFeatures::Delivery;
-  using Callbacks = routeguide::ListFeatures::Callbacks<Delivery::kPush>;
-  using ClientReactor = routeguide::ListFeatures::ClientReactor<Delivery::kPush>;
+  using ReadPacing = routeguide::ListFeatures::ReadPacing;
+  using Callbacks = routeguide::ListFeatures::Callbacks<Delivery::kPush, ReadPacing::kContinuous>;
+  using ClientReactor = routeguide::ListFeatures::ClientReactor<Delivery::kPush, ReadPacing::kContinuous>;
 
  public:
   /// Registers the event handlers this scenario needs, for its own lifetime.
@@ -68,7 +71,7 @@ class ListFeatures {
   unsigned read_seq_{0};
   unsigned handled_seq_{0};
 
-  spdlog::logger& logger_{VariantLogger("ListFeatures.cont")};
+  spdlog::logger& logger_{VariantLogger("ListFeatures.push.cont")};
 
   // Declared last, so destruction deregisters the handlers before anything they reach is gone.
   RpcReactor::EventConnection on_read_ok_;
@@ -76,4 +79,4 @@ class ListFeatures {
   RpcReactor::EventConnection on_done_;
 };
 
-}  // namespace rg_demo::continuous
+}  // namespace rg_demo::push::continuous

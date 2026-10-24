@@ -3,7 +3,7 @@
 /// Copyright 2026 anderewrey
 ///
 
-#include "applications/reactor/scenarios/route_chat_turn_by_turn.h"
+#include "applications/reactor/scenarios/route_chat_pull_turn_by_turn.h"
 
 #include <spdlog/spdlog.h>
 
@@ -14,17 +14,17 @@
 
 #include "protobuf_utils/protobuf_utils.h"
 
-namespace rg_demo::turn_by_turn {
+namespace rg_demo::pull::turn_by_turn {
 namespace {
 // Event names are literal per-scenario constants on purpose. Deriving them from an identifier would
 // make the string seen in a log line unfindable in this source tree. EventLoop appends handlers per
-// name rather than replacing them, so this scenario must not share a name with its continuous
-// counterpart: a read event carries an owned message, and two handlers reclaiming the same pointer
-// would free it twice.
-constexpr auto kOnReadDoneOk{"RouteChatTurnOnReadDoneOk"};
-constexpr auto kOnReadDoneNOk{"RouteChatTurnOnReadDoneNOk"};
-constexpr auto kOnWriteDone{"RouteChatTurnOnWriteDone"};
-constexpr auto kOnDone{"RouteChatTurnOnDone"};
+// name rather than replacing them, so this scenario must not share a name with any sibling: a push
+// read event carries an owned message, and two handlers reclaiming the same pointer would free it
+// twice, while a pull handler would read it as a reactor.
+constexpr auto kOnReadDoneOk{"RouteChatPullTurnOnReadDoneOk"};
+constexpr auto kOnReadDoneNOk{"RouteChatPullTurnOnReadDoneNOk"};
+constexpr auto kOnWriteDone{"RouteChatPullTurnOnWriteDone"};
+constexpr auto kOnDone{"RouteChatPullTurnOnDone"};
 }  // anonymous namespace
 
 RouteChat::RouteChat(routeguide::RouteGuide::Stub& stub)
@@ -36,7 +36,6 @@ RouteChat::RouteChat(routeguide::RouteGuide::Stub& stub)
 }
 
 void RouteChat::Start(std::vector<routeguide::RouteNote> notes) {
-  using ReadPacing = routeguide::RouteChat::ReadPacing;
   using ResponseT = routeguide::RouteChat::ResponseT;
   if (reactor_) {
     logger_.info("         | reactor[{}] already in execution, ignoring {} notes", fmt::ptr(reactor_.get()),
@@ -50,12 +49,13 @@ void RouteChat::Start(std::vector<routeguide::RouteNote> notes) {
   pending_ = std::move(notes);
 
   Callbacks cbs;
-  // TriggerEvent: OnReadDoneOk, handing the message ownership to the queue. The reactor holds the
-  // read side from here until ResumeRead(), so no further read is armed meanwhile.
-  cbs.read_ok = [this](auto*, std::unique_ptr<ResponseT> response) {
+  // TriggerEvent: OnReadDoneOk. The message stays in the reactor, so the event carries the reactor
+  // itself. The reactor holds the read side from here until GetResponse(), so no further read is armed
+  // meanwhile, and the lent message stays valid until it is pulled.
+  cbs.read_ok = [this](auto* reactor, const ResponseT& response) {
     assert(!OnApplicationThread());  // gRPC thread
-    logger_.info("read_ok  | #{} {}", ++read_seq_, response->GetTypeName());
-    EventLoop::TriggerEvent(kOnReadDoneOk, response.release());
+    logger_.info("read_ok  | #{} {}", ++read_seq_, response.GetTypeName());
+    EventLoop::TriggerEvent(kOnReadDoneOk, reactor);
   };
   // TriggerEvent: OnReadDoneNOk
   cbs.read_nok = [](auto* reactor) {
@@ -73,8 +73,8 @@ void RouteChat::Start(std::vector<routeguide::RouteNote> notes) {
     EventLoop::TriggerEvent(kOnDone, reactor);
   };
 
-  // (Point 1.1) Create reactor. Delta against the continuous counterpart: the pacing argument.
-  reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), std::move(cbs), ReadPacing::kTurnByTurn);
+  // (Point 1.1) Create reactor
+  reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), std::move(cbs));
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
   SendNextNote();
 }
@@ -82,21 +82,22 @@ void RouteChat::Start(std::vector<routeguide::RouteNote> notes) {
 void RouteChat::OnReadOk(const EventLoop::Event* event) {
   // ProceedEvent: OnReadDoneOk
   assert(OnApplicationThread());
-  // The event data is the message, not the reactor: reclaim the released ownership
-  const std::unique_ptr<routeguide::RouteChat::ResponseT> response{
-      static_cast<routeguide::RouteChat::ResponseT*>(event->getData())};
+  // The event data is the reactor, which still holds the message
+  const auto* reactor = static_cast<ClientReactor*>(event->getData());
+  assert(reactor == reactor_.get());
   const auto seq = ++handled_seq_;
-  logger_.info("RESPONSE | #{} {}: {}", seq, response->GetTypeName(), protobuf_utils::ToString(*response));
-  // Delta against the continuous counterpart: arm the next read and release the hold OnReadDone()
-  // took. Called from the application thread on purpose: resuming inline from the gRPC callback is
-  // legal and erases the point of the mode.
-  assert(reactor_);
-  // Logged before the call, and the reason is in list_features_turn_by_turn.cpp: ResumeRead() issues
-  // StartRead() internally, so read_ok #k+1 can be logged before this thread runs another statement.
-  logger_.info("resumed  | #{} arming next read", seq);
-  if (!reactor_->ResumeRead()) {
-    logger_.info("resumed  | #{} no read armed, stream is over", seq);
+  // Logged before the call, and the reason is in list_features_push_turn_by_turn.cpp: GetResponse()
+  // issues StartRead() internally, so read_ok #k+1 can be logged before this thread runs another
+  // statement.
+  logger_.info("pulled   | #{} arming next read", seq);
+  // Delta against the push counterpart: extract the message, re-arm the read side and release the
+  // hold OnReadDone() took, all in one call.
+  routeguide::RouteChat::ResponseT response;
+  if (!reactor_->GetResponse(response)) {
+    logger_.info("pulled   | #{} no message ready", seq);
+    return;
   }
+  logger_.info("RESPONSE | #{} {}: {}", seq, response.GetTypeName(), protobuf_utils::ToString(response));
 }
 
 void RouteChat::OnReadNOk(const EventLoop::Event* event) {
@@ -139,4 +140,4 @@ void RouteChat::SendNextNote() {
   }
 }
 
-}  // namespace rg_demo::turn_by_turn
+}  // namespace rg_demo::pull::turn_by_turn

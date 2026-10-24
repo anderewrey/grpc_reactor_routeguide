@@ -68,24 +68,25 @@ namespace routeguide::ListFeatures {
 /// How the reactor hands each message over, see RpcReactor::Client::Delivery
 using Delivery = RpcReactor::Client::Delivery;
 
-/// Read pacing mode selector for RouteGuide::ListFeatures under Delivery::kPush, see
-/// RpcReactor::Client::ReadPacing
+/// Who arms the read that follows a delivered message, see RpcReactor::Client::ReadPacing
 using ReadPacing = RpcReactor::Client::ReadPacing;
 
 /// Specialized callback slots for RouteGuide::ListFeatures stream-reader RPC client
-template <Delivery kDelivery>
-using Callbacks = RpcReactor::Client::ActiveReadCallbacks<ResponseT, kDelivery>;
+template <Delivery kDelivery, ReadPacing kPacing>
+using Callbacks = RpcReactor::Client::ActiveReadCallbacks<ResponseT, kDelivery, kPacing>;
 
 /// Specialized reactor class for RouteGuide::ListFeatures stream-reader RPC client.
-/// Specializes the generic ActiveReadReactor (Method Request component).
+/// Specializes the generic ActiveReadReactor (Method Request component). Both axes are forwarded
+/// untouched: which combination suits a ListFeatures call is the application's decision.
 /// @tparam kDelivery how the reactor hands each message over, chosen by the application per RPC
-template <Delivery kDelivery>
-class ClientReactor final : public RpcReactor::Client::ActiveReadReactor<ResponseT, kDelivery> {
-  using Base = RpcReactor::Client::ActiveReadReactor<ResponseT, kDelivery>;
+/// @tparam kPacing who arms the next read, chosen by the application per RPC
+template <Delivery kDelivery, ReadPacing kPacing>
+class ClientReactor final : public RpcReactor::Client::ActiveReadReactor<ResponseT, kDelivery, kPacing> {
+  using Base = RpcReactor::Client::ActiveReadReactor<ResponseT, kDelivery, kPacing>;
 
  public:
-  /// Delivery::kPull constructor of the specialized class. It calls the RPC method and start the
-  /// stream reading with the address pointer where the response is wanted to be written.
+  /// Constructor of the specialized class. It calls the RPC method and start the stream reading
+  /// with the address pointer where the response is wanted to be written.
   /// @param stub of the RouteGuide API
   /// @param context given to the reactor and is associated with the called RPC method
   /// @param request to send to the server
@@ -93,32 +94,8 @@ class ClientReactor final : public RpcReactor::Client::ActiveReadReactor<Respons
   ClientReactor(RouteGuide::Stub& stub,
                 std::unique_ptr<grpc::ClientContext> context,
                 const RequestT& request,
-                Callbacks<kDelivery>&& cbs)
-  requires(kDelivery == Delivery::kPull)
+                Callbacks<kDelivery, kPacing>&& cbs)
       : Base(std::move(context), std::move(cbs)) {
-    Start(stub, request);
-  }
-
-  /// Delivery::kPush constructor of the specialized class. It calls the RPC method and start the
-  /// stream reading with the address pointer where the response is wanted to be written.
-  /// @param stub of the RouteGuide API
-  /// @param context given to the reactor and is associated with the called RPC method
-  /// @param request to send to the server
-  /// @param cbs given to the reactor to be used as callable functions
-  /// @param pacing when the reactor arms the read following a delivered message
-  ClientReactor(RouteGuide::Stub& stub,
-                std::unique_ptr<grpc::ClientContext> context,
-                const RequestT& request,
-                Callbacks<kDelivery>&& cbs,
-                const ReadPacing pacing)
-  requires(kDelivery == Delivery::kPush)
-      : Base(std::move(context), std::move(cbs), pacing) {
-    Start(stub, request);
-  }
-
- private:
-  /// Binds this reactor to the RPC and starts it, identically under either Delivery.
-  void Start(RouteGuide::Stub& stub, const RequestT& request) {
     // (Point 1.2, 1.3) async RPC call
     stub.async()->ListFeatures(this->context_.get(), &request, this);
     // (Point 1.4) Starting reading
@@ -175,13 +152,12 @@ namespace routeguide::RouteChat {
 /// How the reactor hands each message over, see RpcReactor::Client::Delivery
 using Delivery = RpcReactor::Client::Delivery;
 
-/// Read pacing mode selector for RouteGuide::RouteChat under Delivery::kPush, see
-/// RpcReactor::Client::ReadPacing
+/// Who arms the read that follows a delivered message, see RpcReactor::Client::ReadPacing
 using ReadPacing = RpcReactor::Client::ReadPacing;
 
 /// Specialized callback slots for RouteGuide::RouteChat bidirectional streaming RPC client
-template <Delivery kDelivery>
-using Callbacks = RpcReactor::Client::ActiveBidiCallbacks<RequestT, ResponseT, kDelivery>;
+template <Delivery kDelivery, ReadPacing kPacing>
+using Callbacks = RpcReactor::Client::ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kPacing>;
 
 /// Specialized reactor class for RouteGuide::RouteChat bidirectional streaming RPC client.
 /// Specializes the generic ActiveBidiReactor (Method Request component).
@@ -196,48 +172,29 @@ using Callbacks = RpcReactor::Client::ActiveBidiCallbacks<RequestT, ResponseT, k
 /// - SendRequest(RouteNote&&): Send a message to the server, giving up its ownership
 /// - SendLastRequest(RouteNote&&): Send the final message and close the request stream, in one operation
 /// - CloseRequestStream(): Signal end of client requests (server may continue sending)
-/// - GetResponse(RouteNote&): Delivery::kPull only, extract the held response via swap and resume reading
-/// - ResumeRead(): Delivery::kPush only, arm the next read under ReadPacing::kTurnByTurn once done with the
-///   delivered message
+/// - GetResponse(RouteNote&): Delivery::kPull only, extract a held response via swap and resume reading
+/// - ResumeRead(): Delivery::kPush only, arm the next read once done with a held message
 /// - TryCancel(): Cancel the RPC from any thread
 /// - Status(): Get completion status after OnDone()
+///
+/// GetResponse() and ResumeRead() are not offered under ReadPacing::kContinuous, which holds nothing.
 /// @tparam kDelivery how the reactor hands each message over, chosen by the application per RPC
-template <Delivery kDelivery>
-class ClientReactor final : public RpcReactor::Client::ActiveBidiReactor<RequestT, ResponseT, kDelivery> {
-  using Base = RpcReactor::Client::ActiveBidiReactor<RequestT, ResponseT, kDelivery>;
+/// @tparam kPacing who arms the next read, chosen by the application per RPC
+template <Delivery kDelivery, ReadPacing kPacing>
+class ClientReactor final
+    : public RpcReactor::Client::ActiveBidiReactor<RequestT, ResponseT, kDelivery, kPacing> {
+  using Base = RpcReactor::Client::ActiveBidiReactor<RequestT, ResponseT, kDelivery, kPacing>;
 
  public:
-  /// Delivery::kPull constructor of the specialized class. It calls the RPC method and starts the
-  /// stream reading with the address pointer where the response is wanted to be written.
+  /// Constructor of the specialized class. It calls the RPC method and starts the stream reading
+  /// with the address pointer where the response is wanted to be written.
   /// @param stub of the RouteGuide API
   /// @param context given to the reactor and is associated with the called RPC method
   /// @param cbs given to the reactor to be used as callable functions
   ClientReactor(RouteGuide::Stub& stub,
                 std::unique_ptr<grpc::ClientContext> context,
-                Callbacks<kDelivery>&& cbs)
-  requires(kDelivery == Delivery::kPull)
+                Callbacks<kDelivery, kPacing>&& cbs)
       : Base(std::move(context), std::move(cbs)) {
-    Start(stub);
-  }
-
-  /// Delivery::kPush constructor of the specialized class. It calls the RPC method and starts the
-  /// stream reading with the address pointer where the response is wanted to be written.
-  /// @param stub of the RouteGuide API
-  /// @param context given to the reactor and is associated with the called RPC method
-  /// @param cbs given to the reactor to be used as callable functions
-  /// @param pacing when the reactor arms the read following a delivered message
-  ClientReactor(RouteGuide::Stub& stub,
-                std::unique_ptr<grpc::ClientContext> context,
-                Callbacks<kDelivery>&& cbs,
-                const ReadPacing pacing)
-  requires(kDelivery == Delivery::kPush)
-      : Base(std::move(context), std::move(cbs), pacing) {
-    Start(stub);
-  }
-
- private:
-  /// Binds this reactor to the RPC and starts it, identically under either Delivery.
-  void Start(RouteGuide::Stub& stub) {
     // (Point 1.2, 1.3) async RPC call - establishes bidirectional stream
     stub.async()->RouteChat(this->context_.get(), this);
     // (Point 1.4) Starting reading

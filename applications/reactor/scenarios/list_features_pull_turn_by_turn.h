@@ -15,22 +15,26 @@
 #include "applications/reactor/reactor_eventloop.h"
 #include "applications/reactor/scenarios/support.h"
 
-namespace rg_demo::turn_by_turn {
+namespace rg_demo::pull::turn_by_turn {
 
-/// Exhibits ActiveReadReactor under ReadPacing::kTurnByTurn, via the ListFeatures RPC. The reactor
-/// holds the RPC and arms nothing until the application calls ResumeRead(), which bounds the stream
-/// to one message in flight.
+/// Exhibits ActiveReadReactor under Delivery::kPull and ReadPacing::kTurnByTurn, via the ListFeatures
+/// RPC. Each message stays in the reactor, and the reactor holds the RPC and arms nothing until the
+/// application pulls the message with GetResponse(). That call also arms the next read, so the stream
+/// is bounded to one message in flight.
 ///
-/// Clone of its continuous counterpart in list_features_continuous.h, deliberately, so each flavour
-/// reads whole. The clone is not free: a bug found in one must be fixed in the other. It is kept
-/// because one class instantiated twice would register the same event names twice, and EventLoop
-/// appends handlers per name while a read event carries an owned message. Its pull counterpart in
-/// list_features_pull.h reaches the same one-message pacing by pulling instead.
+/// Clone of its siblings, deliberately, so each cell reads whole. The clone is not free: a bug found in
+/// one must be fixed in the others. It is kept because one class instantiated twice would register the
+/// same event names twice, and EventLoop appends handlers per name while a read event carries an owned
+/// message. Each sibling differs from this file along one axis only:
+/// - list_features_pull_continuous.h, the pacing: the reactor re-arms by itself, nothing to pull
+/// - list_features_pull_per_message.h, the pacing: read_ok decides per message whether to hold
+/// - list_features_push_turn_by_turn.h, the delivery: the message is pushed, then ResumeRead() re-arms
 class ListFeatures {
-  // The reactor flavour this scenario exhibits starts with its Delivery approach.
+  // The reactor flavour this scenario exhibits: its Delivery approach, then its ReadPacing mode.
   using Delivery = routeguide::ListFeatures::Delivery;
-  using Callbacks = routeguide::ListFeatures::Callbacks<Delivery::kPush>;
-  using ClientReactor = routeguide::ListFeatures::ClientReactor<Delivery::kPush>;
+  using ReadPacing = routeguide::ListFeatures::ReadPacing;
+  using Callbacks = routeguide::ListFeatures::Callbacks<Delivery::kPull, ReadPacing::kTurnByTurn>;
+  using ClientReactor = routeguide::ListFeatures::ClientReactor<Delivery::kPull, ReadPacing::kTurnByTurn>;
 
  public:
   /// Registers the event handlers this scenario needs, for its own lifetime.
@@ -51,9 +55,9 @@ class ListFeatures {
 
  private:
   /// Application-thread handler for OnReadDoneOk.
-  /// Delta against the continuous counterpart: this handler owns the re-arm, so it ends with
-  /// ResumeRead() and reports it. No read is armed between the gRPC-thread callback and this call,
-  /// so read_ok #k+1 cannot appear before the resumed #k line.
+  /// Delta against the push counterpart: the message is still in the reactor, and this handler pulls
+  /// it with GetResponse(), which also arms the next read. No read is armed between the gRPC-thread
+  /// callback and that call, so read_ok #k+1 cannot appear before the pulled #k line.
   void OnReadOk(const EventLoop::Event* event);
   /// Application-thread handler for OnReadDoneNOk.
   void OnReadNOk(const EventLoop::Event* event);
@@ -69,7 +73,7 @@ class ListFeatures {
   unsigned read_seq_{0};
   unsigned handled_seq_{0};
 
-  spdlog::logger& logger_{VariantLogger("ListFeatures.turn")};
+  spdlog::logger& logger_{VariantLogger("ListFeatures.pull.turn")};
 
   // Declared last, so destruction deregisters the handlers before anything they reach is gone.
   RpcReactor::EventConnection on_read_ok_;
@@ -77,4 +81,4 @@ class ListFeatures {
   RpcReactor::EventConnection on_done_;
 };
 
-}  // namespace rg_demo::turn_by_turn
+}  // namespace rg_demo::pull::turn_by_turn

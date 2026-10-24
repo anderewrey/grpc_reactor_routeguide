@@ -3,7 +3,7 @@
 /// Copyright 2026 anderewrey
 ///
 
-#include "applications/reactor/scenarios/list_features_continuous.h"
+#include "applications/reactor/scenarios/list_features_push_continuous.h"
 
 #include <spdlog/spdlog.h>
 
@@ -13,16 +13,16 @@
 
 #include "protobuf_utils/protobuf_utils.h"
 
-namespace rg_demo::continuous {
+namespace rg_demo::push::continuous {
 namespace {
 // Event names are literal per-scenario constants on purpose. Deriving them from an identifier would
 // make the string seen in a log line unfindable in this source tree. EventLoop appends handlers per
-// name rather than replacing them, so this scenario must not share a name with its turn-by-turn
-// counterpart: a read event carries an owned message, and two handlers reclaiming the same pointer
-// would free it twice.
-constexpr auto kOnReadDoneOk{"ListFeaturesContOnReadDoneOk"};
-constexpr auto kOnReadDoneNOk{"ListFeaturesContOnReadDoneNOk"};
-constexpr auto kOnDone{"ListFeaturesContOnDone"};
+// name rather than replacing them, so this scenario must not share a name with any sibling: a push
+// read event carries an owned message, and two handlers reclaiming the same pointer would free it
+// twice, while a pull handler would read it as a reactor.
+constexpr auto kOnReadDoneOk{"ListFeaturesPushContOnReadDoneOk"};
+constexpr auto kOnReadDoneNOk{"ListFeaturesPushContOnReadDoneNOk"};
+constexpr auto kOnDone{"ListFeaturesPushContOnDone"};
 }  // anonymous namespace
 
 ListFeatures::ListFeatures(routeguide::RouteGuide::Stub& stub)
@@ -33,7 +33,6 @@ ListFeatures::ListFeatures(routeguide::RouteGuide::Stub& stub)
 }
 
 void ListFeatures::Start(routeguide::Rectangle rect) {
-  using ReadPacing = routeguide::ListFeatures::ReadPacing;
   using ResponseT = routeguide::ListFeatures::ResponseT;
   if (reactor_) {
     logger_.info("         | reactor[{}] already in execution, ignoring: {}", fmt::ptr(reactor_.get()),
@@ -42,7 +41,8 @@ void ListFeatures::Start(routeguide::Rectangle rect) {
   }
 
   Callbacks cbs;
-  // (Point 2.5) TriggerEvent: OnReadDoneOk, handing the message ownership to the queue
+  // (Point 2.5) TriggerEvent: OnReadDoneOk, handing the message ownership to the queue. The reactor
+  // arms the next read as soon as this returns, so the queue grows as fast as the server sends.
   cbs.read_ok = [this](auto*, std::unique_ptr<ResponseT> response) {
     assert(!OnApplicationThread());  // gRPC thread
     logger_.info("read_ok  | #{} {}", ++read_seq_, response->GetTypeName());
@@ -60,8 +60,7 @@ void ListFeatures::Start(routeguide::Rectangle rect) {
   };
 
   // (Point 1.1) Create reactor
-  reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), rect, std::move(cbs),
-                                             ReadPacing::kContinuous);
+  reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), rect, std::move(cbs));
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
 }
 
@@ -71,9 +70,10 @@ void ListFeatures::OnReadOk(const EventLoop::Event* event) {
   // The event data is the message, not the reactor: reclaim the released ownership
   const std::unique_ptr<routeguide::ListFeatures::ResponseT> response{
       static_cast<routeguide::ListFeatures::ResponseT*>(event->getData())};
-  // (Point 2.9) update application with response
-  logger_.info("RESPONSE | #{} {}: {}", ++handled_seq_, response->GetTypeName(),
-               protobuf_utils::ToString(*response));
+  const auto seq = ++handled_seq_;
+  // (Point 2.9) update application with response. Nothing to resume: the reactor already re-armed the
+  // read when read_ok returned, and offers no ResumeRead() under this pacing.
+  logger_.info("RESPONSE | #{} {}: {}", seq, response->GetTypeName(), protobuf_utils::ToString(*response));
 }
 
 void ListFeatures::OnReadNOk(const EventLoop::Event* event) {
@@ -97,4 +97,4 @@ void ListFeatures::OnDone(const EventLoop::Event* event) {
   logger_.info("         | reactor[{}] ended", fmt::ptr(reactor));
 }
 
-}  // namespace rg_demo::continuous
+}  // namespace rg_demo::push::continuous
