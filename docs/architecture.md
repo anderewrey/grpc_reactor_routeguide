@@ -221,6 +221,36 @@ The two coexist in one header, selected by a template parameter, so the shared p
 `TryCancel()`, the hold rules) are written and fixed once. Each approach keeps its own hand-off code path, which is
 what lets either be read on its own.
 
+#### Choosing for a single terminal response
+
+A unary or client-streaming RPC delivers one terminal response, together with `OnDone()`. Pushing's main benefit,
+a stream that never waits for its consumer, does not exist there, because the RPC is already over when the response
+arrives. What remains is a single question: who owns the response while it waits in the event queue.
+
+| Constraint                                          | Points to | Because                                      |
+|-----------------------------------------------------|-----------|----------------------------------------------|
+| The event queue cannot take owned payloads          | `kPull`   | The event carries the reactor, so nothing    |
+| (shared event names, `Halt()` on exit, a handler    |           | can leak or be freed twice                   |
+| that can throw before it reclaims)                  |           |                                              |
+| The response must outlive the reactor, or be handed | `kPush`   | The handler already owns it, so it moves on  |
+| on to another component                             |           | without a copy                               |
+| A failed RPC must not look like a response          | `kPull`   | `GetResponse()` returns false unless the     |
+|                                                     |           | status is OK                                 |
+| The handler must always receive a message object    | `kPush`   | The pointer is never null, and a failed RPC  |
+|                                                     |           | yields an empty message                      |
+| Handlers may run on another thread than the one     | `kPull`   | The event carries the reactor, so a handler  |
+| that creates the reactor                            |           | never depends on the slot being assigned yet |
+
+Under `kPush` the handler still has to check `Status()` before trusting the content, since an empty message is also
+what a failed RPC produces.
+
+Reaching the reactor differs too. Under `kPull` it arrives as the event payload. Under `kPush` the handler must reach
+it through the slot the application stored it in. That is safe only when the EventLoop runs on the thread that
+assigned the slot, as it does in the demo. The specialized constructor calls `StartCall()`, so with the EventLoop on
+another thread the handler can run before the constructing statement has assigned the slot. The integration tests in
+[client_reactor_integration_test.cpp](/applications/reactor/tests/client_reactor_integration_test.cpp) run that
+configuration, which is why they read `Status()` on the main thread only after the handler has signalled.
+
 ### Why the reading reactors offer two pacing modes
 
 Under `Delivery::kPush`, every reactor hands its response to a callback and keeps nothing for the application to

@@ -215,21 +215,10 @@ method.
 | What the application owes | One `GetResponse()` per message it kept      | The obligations under                     |
 |                           |                                              | [Message ownership](#message-ownership)   |
 
-Pulling keeps the message where gRPC wrote it until the application asks for it. On a reading reactor, a message
-the `read_ok` callback keeps (by returning `true`) holds the RPC until the application has gone through its event
-loop and called `GetResponse()`, so at most one message is in flight and a consumer that defers its processing
-stalls the stream. In exchange the event payload is a plain reactor pointer: nothing can leak, nothing can be freed
-twice, and the application decides per message whether to keep it, or to copy out what it needs and decline it
-(by returning `false`) so the stream reads on at once.
-
-Pushing moves the message out of the reactor before the callback returns, so the stream and the consumer are
-decoupled and no reactor keeps any cross-thread response state. In exchange the event payload is owned, which
-brings the obligations under [Message ownership](#message-ownership), and flow control becomes a separate choice,
-fixed at construction, described under [Read pacing modes](#read-pacing-modes).
-
 Only the slot that carries a message changes signature between the two approaches. The slot names, the other
-callbacks, the write side, `Status()` and `TryCancel()` are identical. Which approach suits which RPC is argued in
-[architecture.md](/docs/architecture.md#why-the-reactors-offer-two-delivery-approaches).
+callbacks, the write side, `Status()` and `TryCancel()` are identical. What each approach costs, and which one suits
+which RPC, is argued in [architecture.md](/docs/architecture.md#why-the-reactors-offer-two-delivery-approaches). For
+a guided first look at both on a unary call, see [walkthrough.md](/docs/walkthrough.md).
 
 ## Message ownership
 
@@ -491,7 +480,9 @@ Three public functions can be called by the application side:
 `GetResponse()` function swaps the underlying data storage of the response object. The swap mechanism is important to
 avoid a deep-copy of the content of the response. For the `ActiveUnaryReactor`, having the response swapped is acceptable
 because the unary RPC is meant to one response only, so the swap is a good technique to speed up the response proceeding
-time. The function will return true when the returned response is valid. Under `Delivery::kPush` there is no such
+time. The function will return true when the returned response is valid, which requires the RPC to have completed
+with an OK status: after a failed RPC it returns false and leaves `response` untouched. Under `Delivery::kPush` there
+is no such
 accessor: the response has already left the reactor through the `OnDoneCallback`.
 
 `Status()` function simply returns a reference to the `grpc::Status` of the active reactor. Initialized as `Status::OK`,
