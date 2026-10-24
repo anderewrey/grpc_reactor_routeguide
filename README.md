@@ -52,8 +52,9 @@ recipe.
 
 ## Walkthrough
 
-New to the library? See [walkthrough.md](/docs/walkthrough.md), which follows one unary RPC, one stream reader and one
-stream writer through the demo, from creating each reactor to destroying it, and shows the choices each asks of you.
+New to the library? See [walkthrough.md](/docs/walkthrough.md), which follows one unary RPC, one stream reader, one
+stream writer and one bidirectional stream through the demo, from creating each reactor to destroying it, and shows the
+choices each asks of you.
 
 ## Design rationale
 

@@ -9,6 +9,8 @@ This walkthrough follows two RPCs through the demo application, so every step po
 - [Part 3](#part-3-a-stream-writer) follows a client-streaming RPC, `RecordRoute`, whose application drives the
   stream one write at a time, and shows the obligation that comes with it: the RPC ends only once your application
   ends its write side.
+- [Part 4](#part-4-a-bidirectional-stream) follows a bidirectional RPC, `RouteChat`, which runs Part 2's reader and
+  Part 3's writer on one stream, and shows where the two directions meet.
 
 The unary RPC is the right place to start because it is the simplest reactor. It has a single choice to make, the
 `Delivery` approach, and it needs no hold. Everything else in the library builds on what this one call shows.
@@ -431,10 +433,138 @@ As for `GetFeature`, they differ only in the `done` slot and the `OnDone` handle
 the `Delivery` changes nothing on the write side. The constraints that decide the choice are under
 [Choosing for a single terminal response](/docs/architecture.md#choosing-for-a-single-terminal-response).
 
-`RouteChat` puts Part 2 and Part 3 together on one bidirectional stream: a read side paced as in Part 2, and a write
-side pumped as here, but covered by the idle hold, so it completes even when the application leaves its write side
-open. Its diagrams are under
-[Bidirectional streaming RPC client](/applications/reactor/reactor_client.md#bidirectional-streaming-rpc-client).
+`RouteChat` puts Part 2 and Part 3 together on one bidirectional stream, which [Part 4](#part-4-a-bidirectional-stream)
+follows.
+
+## Part 4: a bidirectional stream
+
+A bidirectional RPC streams both ways at once. `RouteChat` sends route notes, and for each note the server echoes back
+every note already recorded at that location. Its reactor, `ActiveBidiReactor`, is Part 2's reader and Part 3's writer
+on one stream: it takes a `Delivery` and a `ReadPacing`, exactly as `ListFeatures` does, and its write side is pumped
+exactly as `RecordRoute`'s. The two directions run independently, and neither waits for the other. What is new is the
+few places where they meet.
+
+### Step 16: run the bidirectional scenarios
+
+Run the server and the demo as in [Step 1](#step-1-run-the-demo), and filter on the default pacing again, used as a
+filter as in Part 2:
+
+```bash
+./$DIR/applications/reactor/route_guide_active_reactor_client | grep RouteChat.pull.msg
+```
+
+The output looks like this, slightly shortened:
+
+```text
+[14:19:08.738480][Main][24262][I] -------------- RouteChat kPull kPerMessage --------------
+[14:19:08.738505][RouteChat.pull.msg][24262][I]          | reactor[0x5633af06d4e0] created
+[14:19:08.740291][RouteChat.pull.msg][24262][I]          | RouteChatPullMsgOnWriteDone reactor: 0x5633af06d4e0
+[14:19:08.744286][RouteChat.pull.msg][24262][I]          | RouteChatPullMsgOnWriteDone reactor: 0x5633af06d4e0
+[14:19:08.744521][RouteChat.pull.msg][24271][I] read_ok  | #1 routeguide.RouteNote
+[14:19:08.744733][RouteChat.pull.msg][24262][I] pulled   | #1 arming next read
+[14:19:08.744744][RouteChat.pull.msg][24262][I] RESPONSE | #1 routeguide.RouteNote: location { } message: "First message"
+[14:19:08.744827][RouteChat.pull.msg][24262][I]          | RouteChatPullMsgOnWriteDone reactor: 0x5633af06d4e0
+[14:19:08.744924][RouteChat.pull.msg][24272][I] skipped  | #1 repeated note: location { } message: "First message"
+...
+[14:19:08.746422][RouteChat.pull.msg][24271][I] skipped  | #6 repeated note: location { } message: "First message"
+[14:19:08.746592][RouteChat.pull.msg][24271][I] read_ok  | #2 routeguide.RouteNote
+[14:19:08.746629][RouteChat.pull.msg][24262][I] pulled   | #2 arming next read
+[14:19:08.746635][RouteChat.pull.msg][24262][I] RESPONSE | #2 routeguide.RouteNote: location { } message: "Second message"
+...
+[14:19:08.750373][RouteChat.pull.msg][24262][I]          | RouteChatPullMsgOnReadDoneNOk reactor: 0x5633af06d4e0
+[14:19:08.750376][RouteChat.pull.msg][24262][I]          | RouteChatPullMsgOnDone reactor: 0x5633af06d4e0 Status: OK: true
+[14:19:08.750378][RouteChat.pull.msg][24262][I] totals   | 3 kept, 7 skipped
+[14:19:08.750387][RouteChat.pull.msg][24262][I]          | reactor[0x5633af06d4e0] ended
+```
+
+Three things in it are worth noticing:
+
+- The `OnWriteDone` lines of the write side and the `read_ok` lines of the read side interleave. The third
+  `OnWriteDone`, for the last note, arrives after the first response has already been handled.
+- The read side behaves as in Part 2: `read_ok` keeps a note the first time it is seen, and declines the repeats that
+  the server echoes again and again. A `skipped` line is never followed by an application-thread line.
+- The counts change from run to run, unlike `ListFeatures`. The reference server keeps one note history for the whole
+  service, so each `RouteChat` scenario also receives the notes its siblings sent.
+
+### Step 17: follow both directions
+
+Open [route_chat_pull_per_message.cpp](/applications/reactor/scenarios/route_chat_pull_per_message.cpp). The
+RPC goes through these steps.
+
+1. `RouteChat::Start()` keeps the notes in its own queue, creates the reactor, and sends the first note itself, as
+   `RecordRoute::Start()` did in Part 3.
+2. The reactor's constructor, in
+   [reactor_client_routeguide.h](/applications/reactor/reactor_client_routeguide.h), binds itself to the RPC, arms the
+   first read, then calls `StartCall()`. Before the call starts, `ActiveBidiReactor::StartCall()` also takes a hold for
+   the write side, which [Step 18](#step-18-see-the-write-sides-idle-hold) explains.
+3. The write side is Part 3's pump: each `OnWriteDone` handler sends the next note, and the last one goes through
+   `SendLastRequest()`, which closes the write side.
+4. The read side is Part 2's reader: `read_ok` keeps or declines each note on a gRPC thread, and the `OnReadOk`
+   handler pulls a kept one with `GetResponse()`, which arms the next read.
+5. Once the client has closed its write side and the server has sent everything, the read stream ends:
+   `OnReadDone(false)` fires the `read_nok` slot, then `OnDone()` fires the `done` slot, and the `OnDone` handler logs the
+   totals and destroys the reactor.
+
+The sequence diagrams under
+[Bidirectional streaming RPC client](/applications/reactor/reactor_client.md#bidirectional-streaming-rpc-client) draw
+both directions: section 2 is the write side, section 3 the read side, and section 5 the end of the stream.
+
+### Step 18: see the write side's idle hold
+
+The write side issues `StartWrite()` from the application thread, exactly as in Part 3, so it needs a hold. But it
+does not hold its whole write flow, as `ActiveWriteReactor` does. Open
+[reactor_client.h](/applications/reactor/reactor_client.h) at `ActiveBidiReactor::StartCall()` and
+`ActiveBidiReactor::SendRequest()`:
+
+- The reactor keeps one hold only while the write side is idle, from `StartCall()` and again after each
+  `OnWriteDone`.
+- A write starts by claiming that hold. Winning the claim is the permission to write, so it also enforces gRPC's rule
+  of one write in flight.
+- When the RPC ends, `OnReadDone(false)` releases the hold if nothing has claimed it.
+
+That last point is what Part 3's writer could not have. A bidirectional RPC has a read side, and its end always
+arrives as `OnReadDone(false)`, even when the RPC ends on its own. So the reactor can let the idle hold go by itself,
+and **a bidirectional RPC completes even when the application never ends its write side**. The test
+`RouteChat_ServerClosesFirst_ClientContinues`, in
+[active_bidi_reactor_push_test.cpp](/applications/reactor/tests/active_bidi_reactor_push_test.cpp), shows it: the
+server ends the RPC after two notes, the client never closes, and `OnDone` still arrives. The facts are under
+[Write-side idle hold](/applications/reactor/reactor_client.md#write-side-idle-hold), and the reasoning under
+[Why the bidi write side holds while idle](/docs/architecture.md#why-the-bidi-write-side-holds-while-idle).
+
+### Step 19: find where the two directions meet
+
+The two directions are independent, except in three places, and each one is worth knowing before you build on this
+reactor.
+
+- **A read hold stalls only the reads.** While a kept note waits for your handler, no read is armed, but the write
+  side keeps sending. The test `RouteChat_ReadHoldDoesNotBlockWrites` checks exactly that.
+- **A held note also delays the end of the RPC.** While it waits, no read is armed, so `OnReadDone(false)` cannot
+  arrive, and the write side's idle hold waits too. The release call you already owe for the note, as in Part 2's
+  [Step 8](#step-8-release-once-per-kept-message), is therefore what lets both holds go. Under `kContinuous`, a read is
+  always armed, so this never happens.
+- **Closing the write side does not end the read side.** After `CloseRequestStream()` or `SendLastRequest()`, the
+  server may keep sending, and a note held across the close must still be released, which arms the next read as usual.
+  The test `RouteChat_ReleasedAfterCloseRequestStream_ReadsOn` checks it, in both delivery approaches.
+
+The release rule of Part 2 is the one obligation the bidirectional reactor adds to Part 3's pump: release each kept
+note exactly once, and the RPC ends on its own, whatever your write side does.
+
+### Step 20: choose for your bidirectional stream
+
+Both choices apply, independently, and the reasoning is the one you already met. `ReadPacing` is Part 2's choice,
+since the read side is a stream, and `Delivery` is the choice of who owns each message while it waits in your event
+queue. Compare the scenarios one axis at a time:
+
+```bash
+cd applications/reactor/scenarios
+diff route_chat_pull_per_message.cpp route_chat_pull_turn_by_turn.cpp  # every note kept
+diff route_chat_pull_turn_by_turn.cpp route_chat_pull_continuous.cpp   # no note kept
+diff route_chat_pull_turn_by_turn.cpp route_chat_push_turn_by_turn.cpp # the delivery, at the same pacing
+```
+
+In every one of these diffs, the write pump is the part that does not change: neither choice touches the write side.
+Which combination suits which stream is argued under
+[Choosing for a stream of messages](/docs/architecture.md#choosing-for-a-stream-of-messages), as for `ListFeatures`.
 
 ## Where to go next
 

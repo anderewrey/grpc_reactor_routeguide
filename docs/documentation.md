@@ -60,7 +60,7 @@ This project's existing docs map onto all four:
 
 | Document | Kind | Content |
 | ---------- | ------ | --------- |
-| [walkthrough.md](/docs/walkthrough.md) | Tutorial | A unary RPC, a stream reader and a stream writer, followed through the demo |
+| [walkthrough.md](/docs/walkthrough.md) | Tutorial | A unary RPC, a stream reader, a stream writer and a bidi stream, followed through the demo |
 | [developing.md](/docs/developing.md), [testing.md](/docs/testing.md) | How-to guide | Build, run, and test steps |
 | [reactor_client.md](/applications/reactor/reactor_client.md) | Reference | Class-by-class API, mirroring the actual reactor hierarchy |
 | [architecture.md](/docs/architecture.md) | Explanation | Design rationale: why this pattern, why these choices |
