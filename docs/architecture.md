@@ -100,9 +100,8 @@ Queue); the corresponding Response Handler then runs on the application thread.
 
 See "Why Active Object pattern?" below for why this split exists and what problem it solves. Which operations need
 a hold is tabulated in
-[reactor_client.md](/applications/reactor/reactor_client.md#hold-requirements), and the reasoning behind each row,
-including where the write side remains unprotected, is under
-[Why one rule decides every hold](#why-one-rule-decides-every-hold).
+[reactor_client.md](/applications/reactor/reactor_client.md#hold-requirements), and the reasoning behind each row is
+under [Why one rule decides every hold](#why-one-rule-decides-every-hold).
 
 ## Technology stack
 
@@ -518,33 +517,50 @@ concurrently. Both sides therefore publish their own flag before testing the oth
 of them observes the other and exactly one of them releases. That symmetry is the reason neither atomic may be
 weakened to a relaxed ordering.
 
-### Why the write side of ActiveWriteReactor has no hold
+### Why ActiveWriteReactor holds its whole write flow
 
 `ActiveWriteReactor` cannot use the design above, because the release trigger it depends on does not exist there.
 A client-streaming RPC has no read stream, so an RPC ending without an application write action, a deadline
-expiring or the server cancelling, produces no reaction that could free an idle hold. It keeps the
-`stream_no_more_` flag test, and with it the residual race.
+expiring or the server cancelling, produces no reaction that could free an idle hold.
 
-The `UseMultipleHolds()` sketch it still carries proposes one hold covering the whole write flow, acquired before
-`StartCall()` and released when that flow conclusively ends. That was prototyped and rejected, and the reason is
-worth recording because it is not obvious from the gRPC documentation. Such a hold suppresses `OnDone()` for the
-entire life of the RPC, so only the application can conclude it, and passive terminations give the application
-nothing to release on. `RouteChat_DeadlineExceeded_PropagatesStatus` and `RouteChat_ServerClosesFirst_ClientContinues`
-both hung for their full timeouts, while every test that closed its request stream passed.
+For a long time the writer therefore kept only the `stream_no_more_` flag test, documented as a residual race that the
+test narrowed. It narrowed less than it seemed. gRPC destroys a call as soon as nothing is pending on it, and calls
+`OnDone()` only afterwards, so the flag, which `OnDone()` sets, is still clear while the call is already gone:
 
-The idle-window hold differs from that one in scope and in trigger, not in mechanism. It stands only while no write
-is in flight, and it is released by a reaction rather than by an application action. What the bidi case supplies,
-and the write-only case cannot, is a reaction guaranteed to arrive when the RPC ends.
+```cpp
+// grpcpp/support/client_callback.h, ClientCallbackWriterImpl::MaybeFinish()
+this->~ClientCallbackWriterImpl();
+grpc_call_unref(call);
+reactor->OnDone(s);
+```
 
-Releasing a whole-flow hold from a gRPC-thread reaction does not rescue the write-only case either, since it
-reopens the race it was meant to close: an application thread can enter `SendRequest()`, pass every guard, and
-still be short of its `StartWrite()` when that reaction removes the hold. The claim-based design has no such gap,
-because the thread that will write is the one holding the claim.
+That window opens in practice. With the server ending the RPC while the writer is idle, `OnDone()` arrived within
+milliseconds, while the application could still issue a write into the destroyed call. This is not a defect in gRPC
+but its documented contract. Its `AddHold()` documentation states that holds are needed if, and only if, operations
+take place after `StartCall()` from outside the reactions, and prescribes the pattern for a write flow: a hold taken
+before `StartCall()`, and released after `StartWriteLast()` or `StartWritesDone()`, once no more writes will be issued.
 
-The remaining candidate for `ActiveWriteReactor` is to stop issuing writes from the application thread at all, by
-draining an application-side queue from inside `OnWriteDone()`. Its unsolved edge is the first write of an idle
-stream, where no reaction exists yet to issue from. Reads do not have that edge, because a read can be armed
-speculatively before any data exists and the constructor does exactly that.
+The writer now follows that pattern. Its hold covers the whole write flow, and is released when the write side ends:
+by `SendLastRequest()` or `CloseRequestStream()`, as gRPC prescribes, and also by a write that fails, since no write
+can succeed after it, and by `TryCancel()`, whose purpose is to provoke `OnDone()`. A write call claims the flow before
+it writes, exactly as a bidi write claims the idle hold, so a release from a reaction or from another thread can never
+land between its guards and its `StartWrite()`. That claim is what makes reaction-side releases safe here, where an
+earlier, unclaimed design had reopened the race.
+
+The cost is the one gRPC's pattern carries. A whole-flow hold suppresses `OnDone()` until the write side ends, so an
+RPC that ends on its own while the writer is idle is reported only when the application next writes, closes, or
+cancels. That is why the same hold was first prototyped and rejected: applied to `ActiveBidiReactor`, it made
+`RouteChat_DeadlineExceeded_PropagatesStatus` and `RouteChat_ServerClosesFirst_ClientContinues` hang for their full
+timeouts. For a bidirectional RPC the cost buys nothing, since its read side reports the end and lets the idle hold go.
+For a client-streaming RPC nothing else can report it, so the cost is what correctness takes. It becomes an obligation
+of the same kind as releasing a held message: the RPC completes only once the application ends its write side.
+
+Issuing every write from inside a reaction would need no hold at all, which is why gRPC calls out-of-reaction
+operations the uncommon case. It works when the requests are known upfront: the first one can be written before
+`StartCall()`, and each next one from the `write_done` callback, on the gRPC thread. It cannot serve an application
+that produces requests later, on its own thread, while the stream is idle, since no reaction exists then to write
+from. The write-flow hold covers both cases, and a `write_done` callback that writes the next request still works
+under it, because the claim makes a write call safe from any thread.
 
 ## Component structure
 
@@ -696,6 +712,7 @@ thread boundaries.
 std::atomic<std::uint64_t> response_ready_{0};  // kPull: set by gRPC thread, claimed by GetResponse() or a decline
 std::atomic<std::uint64_t> read_held_{0};       // kPush: set by gRPC thread, claimed by ResumeRead() or a decline
 std::atomic_bool write_idle_{false};       // Bidi only: an unclaimed idle-window hold
+std::atomic<int> write_flow_{kFlowEnded};  // Writer only: the write flow, open, claimed or ended
 std::atomic_bool stream_no_more_{false};   // Set by gRPC thread, read by app thread
 ```
 
@@ -709,10 +726,11 @@ message is held at the time, so the application still makes one call per message
 declined one. A `kPerMessage` decline claims it by compare-exchange against its own message's token,
 for the reason given under [Why kPerMessage takes one for every message](#why-kpermessage-takes-one-for-every-message).
 `write_idle_` exists in `ActiveBidiReactor` only, under both approaches, where winning it by compare-exchange is the
-permission to write, which is why that class needs no write-pending flag. `stream_no_more_` reports that no further read
-or write can succeed: on `ActiveWriteReactor` it is the only guard the write path has, on `ActiveBidiReactor` it is
-re-read after the hold claim is won rather than before, so a stale read cannot let a doomed operation through, and on
-the reading side it decides whether `GetResponse()` or `ResumeRead()` re-arms. `ActiveUnaryReactor` has only
+permission to write, which is why that class needs no write-pending flag. `write_flow_` is its counterpart in
+`ActiveWriteReactor`: open, claimed by one write call, or ended, and only the transition to ended releases the hold.
+`stream_no_more_` reports that no further read or write can succeed: on both write paths it is re-read after the claim
+is won rather than before, so a stale read cannot let a doomed operation through, and on the reading side it decides
+whether `GetResponse()` or `ResumeRead()` re-arms. `ActiveUnaryReactor` has only
 `response_ready_`, because it issues nothing from the application thread and owns no stream.
 
 **Hold mechanism, read side (`ReadPacing::kPerMessage` and `kTurnByTurn`, under either `Delivery`):**
@@ -736,7 +754,25 @@ if (token.compare_exchange_strong(held, 0)) {  // lost: this message's hold was 
 }
 ```
 
-`ReadPacing::kContinuous` needs no equivalent, and neither do `ActiveUnaryReactor` and `ActiveWriteReactor`. See
+**Hold mechanism, write flow (`ActiveWriteReactor`, under either `Delivery`):**
+
+```cpp
+// In StartCall(), before the RPC is activated
+this->AddHold();
+write_flow_ = kFlowOpen;
+
+// In SendRequest(), and alike in SendLastRequest() and CloseRequestStream()
+if (!write_flow_.compare_exchange_strong(open, kFlowBusy)) return false;  // ended, or another call holds it
+this->StartWrite(&pending_request_);       // safe: the hold cannot be released while the claim is held
+write_flow_ = kFlowOpen;                   // SendLastRequest() and CloseRequestStream() end it instead,
+if (stream_no_more_) EndOpenWriteFlow();   // and release the hold
+
+// In OnWriteDone(false) and TryCancel(), when the write side can no longer succeed
+stream_no_more_ = true;                    // published before trying to end the flow
+EndOpenWriteFlow();                        // ends it only if open; a claimer ends it when it returns it
+```
+
+`ReadPacing::kContinuous` needs no equivalent, and neither does `ActiveUnaryReactor`. See
 [Why one rule decides every hold](#why-one-rule-decides-every-hold) above for why each of them is safe without.
 
 ### Feature to component mapping

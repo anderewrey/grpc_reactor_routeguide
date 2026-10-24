@@ -139,7 +139,7 @@ class ClientReactor final : public RpcReactor::Client::ActiveWriteReactor<Reques
     // directly when the RPC completes; there is no separate read event for a client-streaming RPC's
     // response.
     stub.async()->RecordRoute(this->context_.get(), this->response_.get(), this);
-    // (Point 1.4) Starting RPC call
+    // (Point 1.4, 1.5) Starting RPC call, after taking the write-flow hold
     this->StartCall();
   }
 };

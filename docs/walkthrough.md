@@ -7,7 +7,8 @@ This walkthrough follows two RPCs through the demo application, so every step po
 - [Part 2](#part-2-a-stream-reader) follows a server-streaming RPC, `ListFeatures`, message by message, and shows
   the second choice a stream adds, and the hold that comes with it.
 - [Part 3](#part-3-a-stream-writer) follows a client-streaming RPC, `RecordRoute`, whose application drives the
-  stream one write at a time, and shows the one place where the library has no hold to offer.
+  stream one write at a time, and shows the obligation that comes with it: the RPC ends only once your application
+  ends its write side.
 
 The unary RPC is the right place to start because it is the simplest reactor. It has a single choice to make, the
 `Delivery` approach, and it needs no hold. Everything else in the library builds on what this one call shows.
@@ -371,9 +372,9 @@ these steps: section 2 is the pump, section 3 the closing, and section 5 the res
 ### Step 13: keep one write in flight
 
 gRPC allows one write in flight per stream. `SendRequest()` returns `false`, and sends nothing, if a write is still
-in flight, if the stream is already closed, or if the RPC is already over. The pump never meets that refusal, because
-it sends only from `Start()` and from the `OnWriteDone` handler, each time the previous write has completed. Sending
-from anywhere else, such as a timer, has to be ready for `false`.
+in flight, if the write side has already ended, or if the RPC is already over. The pump never meets that refusal,
+because it sends only from `Start()` and from the `OnWriteDone` handler, each time the previous write has completed.
+Sending from anywhere else, such as a timer, has to be ready for `false`.
 
 A refusal is a dead end for the pump: the point has already left the queue, and no `OnWriteDone` will come to drive
 the next one. That is why `SendNextPoint()` checks the result, and logs `write rejected` instead of stalling in
@@ -387,24 +388,35 @@ The stream can be closed in two ways, which the diagrams draw as section 3:
 | `CloseRequestStream()` | After the last request's `OnWriteDone` | `OnWritesDoneDone`, which reaches no slot |
 
 The pump uses `SendLastRequest()`: it saves an operation, and leaves no moment between the last write and the close.
+Either call also ends the write side, which matters for the next step.
 
-### Step 14: find the write that has no hold
+### Step 14: see the hold that covers the whole write flow
 
 Part 2's rule says that an operation issued from the application thread, outside any reaction, needs a hold.
-`SendRequest()` is exactly that: it calls `StartWrite()` on the application thread. Yet `ActiveWriteReactor` takes no
-hold.
+`SendRequest()` is exactly that: it calls `StartWrite()` on the application thread.
 
-Open [reactor_client.h](/applications/reactor/reactor_client.h) at `ActiveWriteReactor::SendRequest()`. Before it
-writes, it checks that the RPC is not over yet. That check narrows the window but cannot close it: a deadline or a
-server cancellation can end the RPC on a gRPC thread right after the check passes, and the write then reaches into a
-finished RPC. The writer diagrams mark that spot with a note. It is the library's one known residual race.
+Open [reactor_client.h](/applications/reactor/reactor_client.h) at `ActiveWriteReactor::StartCall()`. Before the RPC
+starts, the reactor takes a hold that covers its whole write flow, and every write call first claims that flow, so
+nothing can release the hold under it. `SendLastRequest()` and `CloseRequestStream()` end the flow and release the
+hold. Sections 1 to 3 of the writer diagrams draw all three moments. This is the pattern gRPC documents for
+operations issued outside the reactions, and gRPC needs it: it destroys a call as soon as nothing is pending on it,
+even before it calls `OnDone()`, so without the hold a write could reach a call that is already gone.
 
-Now compare `ActiveBidiReactor::SendRequest()` in the same file. A bidirectional reactor keeps a hold while its write
-side is idle, and a write starts by claiming it. That works because the bidi reactor has a read side: when the RPC
-ends on its own, `OnReadDone(false)` arrives, and releases the idle hold. A client-streaming RPC has no read side, so
-no reaction would ever arrive to release such a hold, and an RPC ending on its own could then never reach `OnDone()`.
-The full reasoning, including the approach tried and rejected, is under
-[Why the write side of ActiveWriteReactor has no hold](/docs/architecture.md#why-the-write-side-of-activewritereactor-has-no-hold).
+Compare `ActiveBidiReactor`, in the same file. It holds only while its write side is idle, and it can let that hold go
+when the RPC ends on its own, because its read side then reports the end through `OnReadDone(false)`. A
+client-streaming RPC has no read side, so nothing reports a deadline or a server error while the writer is idle, and
+the hold stays. That gives the writer one obligation:
+
+> The RPC completes only once your application ends its write side: with `SendLastRequest()`,
+> `CloseRequestStream()`, or `TryCancel()`, or by a write that fails.
+
+The pump meets it without trying, since its last point goes through `SendLastRequest()`. An application that may go
+quiet before its last request must still close or cancel at some point, or its `OnDone` handler never runs. The test
+`RecordRoute_ServerEndsWhileIdle_OnDoneWaitsForWriteSide`, in
+[active_write_reactor_push_test.cpp](/applications/reactor/tests/active_write_reactor_push_test.cpp), shows it: the
+server ends the RPC at once, and `OnDone` waits until the client closes. The reasoning is under
+[Why ActiveWriteReactor holds its whole write flow](/docs/architecture.md#why-activewritereactor-holds-its-whole-write-flow),
+and the facts under [Write-flow hold](/applications/reactor/reactor_client.md#write-flow-hold).
 
 ### Step 15: choose for your writer
 
@@ -420,7 +432,8 @@ the `Delivery` changes nothing on the write side. The constraints that decide th
 [Choosing for a single terminal response](/docs/architecture.md#choosing-for-a-single-terminal-response).
 
 `RouteChat` puts Part 2 and Part 3 together on one bidirectional stream: a read side paced as in Part 2, and a write
-side pumped as here, but covered by the idle hold. Its diagrams are under
+side pumped as here, but covered by the idle hold, so it completes even when the application leaves its write side
+open. Its diagrams are under
 [Bidirectional streaming RPC client](/applications/reactor/reactor_client.md#bidirectional-streaming-rpc-client).
 
 ## Where to go next

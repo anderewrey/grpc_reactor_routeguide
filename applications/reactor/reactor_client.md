@@ -77,8 +77,9 @@ the `ok` flag that answers the same question:
   reactor's direction). On `ActiveBidiReactor`, `OnWritesDoneDone()` sets it only when the close failed: a
   successful close ends the write side alone, which `writes_done_` already keeps shut, while the server may still
   be sending. Setting the flag there would stop a held read from ever being re-armed, and the RPC would never end.
-- Checked before issuing a new `StartRead()`, `StartWrite()`, `StartWriteLast()`, or `StartWritesDone()`. On
-  `ActiveBidiReactor`'s write path the check happens after the hold claim is won rather than before, see below.
+- Checked before issuing a new `StartRead()`, `StartWrite()`, `StartWriteLast()`, or `StartWritesDone()`. On the
+  write paths of `ActiveWriteReactor` and `ActiveBidiReactor`, the check happens after the claim is won rather than
+  before, see below. On `ActiveWriteReactor`, `TryCancel()` sets it too, since no write can succeed after it.
 - On the read side, only `GetResponse()` (`Delivery::kPull`) and `ResumeRead()` (`Delivery::kPush`) consult it,
   under `ReadPacing::kPerMessage` or `kTurnByTurn`, since they are the only calls that arm a read from outside a
   reaction. Every other `StartRead()`, including the one after a declined `kPerMessage` message, runs inside a
@@ -90,14 +91,12 @@ the `ok` flag that answers the same question:
   operation will succeed, so tracking the two directions separately would not add information.
 - `OnWritesDoneDone()` fires only for an explicit `StartWritesDone()` (i.e. `CloseRequestStream()`), not for a
   close implied via `StartWriteLast()` (i.e. `SendLastRequest()`). This is per gRPC's own documented distinction.
-- Checking the flag narrows, but does not close, a race with a concurrent `OnDone()`, because the flag can flip to
-  true right after a call already read it. `ActiveBidiReactor`'s write path stops relying on the check for safety:
-  it claims the idle-window hold first, then re-reads the flag with that hold outstanding, so the read can no
-  longer go stale in a way that matters. See [Write-side idle hold](#write-side-idle-hold).
-  `ActiveWriteReactor` still relies on the check alone, and the residual race is the last row of
-  [Hold requirements](#hold-requirements). Its remaining `UseMultipleHolds()` sketch describes an
-  approach that has since been prototyped and rejected, recorded in
-  [architecture.md](/docs/architecture.md#why-the-write-side-of-activewritereactor-has-no-hold).
+- Checking the flag alone would narrow, but not close, a race with a concurrent `OnDone()`, because the flag can
+  flip to true right after a call already read it, and gRPC destroys the call before `OnDone()` even runs. Both write
+  paths therefore stop relying on the check for safety. Each first claims a hold, then re-reads the flag with that
+  hold outstanding, so the read can no longer go stale in a way that matters. `ActiveBidiReactor` claims the hold it
+  keeps while its write stream is idle, see [Write-side idle hold](#write-side-idle-hold). `ActiveWriteReactor`
+  claims the hold it keeps for its whole write flow, see [Write-flow hold](#write-flow-hold).
 
 ### Application-facing API
 
@@ -113,9 +112,10 @@ These methods are exposed to application code with naming that reflects applicat
 | `TryCancel()`          | Cancel the entire RPC                        | Thread-safe, any thread                      |
 | `Status()`             | Get final RPC status                         | Valid after `OnDone`                         |
 
-`CloseRequestStream()` returns `false` (does nothing) if already closed, if a write is still in flight, or if the
-RPC has already failed/finished. Callers should wait for `OnWriteDone()` and retry, or use `SendLastRequest()`
-instead when the last message is known in advance.
+`CloseRequestStream()` returns `false` if already closed, if a write is still in flight, or if the RPC has already
+failed/finished. While a write is in flight it does nothing, and callers should wait for `OnWriteDone()` and retry, or
+use `SendLastRequest()` instead when the last message is known in advance. On `ActiveWriteReactor`, a refusal because
+the RPC is over still ends the write side, so that `OnDone()` can follow. See [Write-flow hold](#write-flow-hold).
 
 Which reactor offers `GetResponse()` and `ResumeRead()` depends on both template parameters. A call that the table
 marks as not offered does not compile.
@@ -418,8 +418,9 @@ stray call, such as one for a declined message, may release a message the applic
 ## Write-side idle hold
 
 `ActiveBidiReactor` keeps one hold outstanding exactly while its write stream is idle, and claiming that hold is
-what grants permission to write. `ActiveWriteReactor` has no equivalent, so the two classes differ here rather
-than mirroring each other.
+what grants permission to write. `ActiveWriteReactor` cannot release a hold that way, so it holds its whole write
+flow instead, described under [Write-flow hold](#write-flow-hold). The two classes differ here rather than mirroring
+each other.
 
 | Moment                          | What happens to the hold                                   |
 |---------------------------------|------------------------------------------------------------|
@@ -464,6 +465,44 @@ the read one.
 
 The table holds under either `Delivery`.
 
+## Write-flow hold
+
+`ActiveWriteReactor` keeps one hold outstanding for its whole write flow, from `StartCall()` until the write side
+ends. This is the pattern gRPC documents for operations started outside the reactions, under `AddHold()` in
+`grpcpp/support/client_callback.h`: a hold taken before `StartCall()`, and released once no more writes will be
+issued. Each write call claims the flow before it writes, so nothing can release the hold under it.
+
+| Moment                                        | What happens to the write flow and its hold                   |
+|-----------------------------------------------|---------------------------------------------------------------|
+| `StartCall()`                                 | Opened: the hold is taken, before the RPC is activated        |
+| `SendRequest()`                               | Claimed, the write is issued, then returned open              |
+| `SendLastRequest()`                           | Claimed, the last write is issued, then ended: hold released  |
+| `CloseRequestStream()`                        | Claimed, `StartWritesDone()` is issued, then ended: released  |
+| A write call that finds the RPC over          | Claimed, then ended without writing: hold released            |
+| `OnWriteDone(false)`, `TryCancel()`           | Ended, or, if a write call holds the claim, ended by that     |
+|                                               | call when it returns the flow                                 |
+
+A write call returns `false` when it cannot claim the flow, because the write side has ended or a call on another
+thread holds the claim. With the claim won, it still returns `false` when a write is in flight, which gRPC forbids, and
+then the caller retries after `OnWriteDone()`. It also returns `false` when the RPC is over or cancelled, and then it
+ends the flow, so no retry is needed and `OnDone()` follows.
+
+`ActiveBidiReactor` can release its idle hold when the RPC ends on its own, because `OnReadDone(false)` always reports
+that. A client-streaming RPC has no read side, so no reaction reports a deadline, a server error, or a lost connection
+while no write is in flight. The hold then stays, and so does `OnDone()`. This is the obligation the writer adds:
+
+> An `ActiveWriteReactor` completes only once its write side has ended: through `SendLastRequest()`,
+> `CloseRequestStream()`, or `TryCancel()`, or through a write that fails.
+
+An application that is still writing learns of such an ending from its next write, which fails, or which the reactor
+refuses once a failure was seen. An application that is idle learns of it when it closes or cancels. Without the hold,
+gRPC would destroy the call as soon as the status arrived, before calling `OnDone()`, and a write issued in between
+would reach a destroyed call.
+
+Ending the flow from another thread is safe because both sides publish before they test. `TryCancel()` and
+`OnWriteDone(false)` set `stream_no_more_` before trying to end an open flow, and a write call reopens the flow before
+reading `stream_no_more_`. Whichever side looks last ends the flow, so the hold is released exactly once.
+
 ## Hold requirements
 
 gRPC's `AddHold()`/`RemoveHold()` keeps `OnDone()` from concluding an RPC while an operation on its state is still
@@ -471,7 +510,7 @@ being issued. One rule decides where the library needs one:
 
 > An operation issued from inside a reaction needs no hold. One issued from outside a reaction needs one.
 
-Applied per direction, the rule accounts for every gRPC call the library makes, including the one defect:
+Applied per direction, the rule accounts for every gRPC call the library makes:
 
 | Operation                                  | Issued by                           | Hold                     |
 |--------------------------------------------|-------------------------------------|--------------------------|
@@ -487,17 +526,16 @@ Applied per direction, the rule accounts for every gRPC call the library makes, 
 | declined                                   |                                     |                          |
 | `StartRead()`, unbound `read_ok`           | The reactor, in `OnReadDone()`      | Not needed, none taken   |
 | `StartWrite()`, bidi                       | The application, in `SendRequest()` | Required, and taken      |
-| `StartWrite()`, write reactor              | The application, in `SendRequest()` | Required, and missing    |
+| `StartWrite()`, write reactor              | The application, in `SendRequest()` | Required, and taken      |
 
 Under `kPerMessage` the hold is taken before the `read_ok` callback runs, so before the reactor knows whether the
 message is kept or declined. A declined message has its hold claimed back and released in the same reaction, right
 after `OnReadDone()` re-arms the read itself.
 
-`ActiveBidiReactor` takes its write-side hold for the window where the write stream sits idle, so claiming that
-hold is what grants permission to write, under either `Delivery`. `ActiveWriteReactor` still guards itself with
-`stream_no_more_` only, described under [Stream completion tracking](#stream-completion-tracking), which narrows the
-window without closing it: it has no read stream, so it has no reliable trigger to release an idle hold on, and the
-last row stays a residual race. The reasoning behind every row is in
+`ActiveBidiReactor` takes its write-side hold for the window where the write stream sits idle, so claiming that hold is
+what grants permission to write, under either `Delivery`. `ActiveWriteReactor` has no read stream, so no reaction could
+release an idle hold when the RPC ends on its own. It holds its whole write flow instead, and claiming that flow is what
+grants permission to write, as described under [Write-flow hold](#write-flow-hold). The reasoning behind every row is in
 [architecture.md](/docs/architecture.md#why-one-rule-decides-every-hold).
 
 `Status()` and `TryCancel()` are safe from any thread at any time, because neither touches gRPC's internal
@@ -1460,7 +1498,9 @@ event loop rather than to process it in place.
 
 The write direction is what distinguishes it. The application drives that direction, so `SendRequest()` issues a
 gRPC write from the application thread, outside any reaction. gRPC allows one write in flight at a time, which
-makes the write flow a turn-by-turn exchange: send one request, wait for `OnWriteDone`, send the next.
+makes the write flow a turn-by-turn exchange: send one request, wait for `OnWriteDone`, send the next. Because those
+writes are issued outside the reactions, the reactor holds the RPC for its whole write flow, and the RPC completes
+only once the application ends the write side. See [Write-flow hold](#write-flow-hold).
 
 A client-streaming RPC receives exactly one response, and gRPC writes it as part of completing the call rather
 than through a read operation. There is therefore no `OnReadDone` here, and the terminal response is delivered
@@ -1519,8 +1559,9 @@ Six public functions can be called by the application side:
 - `void TryCancel()`
 
 `SendRequest()` takes ownership of the request: the caller passes a temporary or an explicit `std::move()`, and
-must not keep using the object afterwards. It returns false without side effects when the reactor cannot accept
-the write, which leaves the caller free to retry the same object after the next `OnWriteDone`.
+must not keep using the object afterwards. It returns false when the reactor cannot accept the write, and leaves the
+request untouched. While a write is in flight, that is all it does, and the caller may retry the same object after the
+next `OnWriteDone`. Once the RPC is over or cancelled, the refusal also ends the write flow, so `OnDone()` can follow.
 
 `SendLastRequest()` sends the final request and closes the request stream in one operation, which avoids the gap a
 separate `SendRequest()` then `CloseRequestStream()` pair leaves open. It still produces an `OnWriteDone` event,
@@ -1528,9 +1569,14 @@ so a handler that pumps the next request must check whether any request remains 
 unconditionally.
 
 `CloseRequestStream()` signals the end of the request stream on its own, for the case where the last request is
-not known in advance.
+not known in advance. It is refused while a write is in flight.
 
-`GetResponse()`, `Status()` and `TryCancel()` behave as described for the unary reactor.
+`SendLastRequest()` and `CloseRequestStream()` end the write flow, and release its hold. One of them, a failed write,
+or `TryCancel()` must end it, or the RPC never completes.
+
+`GetResponse()` and `Status()` behave as described for the unary reactor. `TryCancel()` also ends the write flow,
+since no write can succeed after it, so that `OnDone()` follows even when the write side is idle. It is safe from any
+thread, including while a write call runs on another.
 
 ### Code snippet
 
@@ -1553,7 +1599,7 @@ pointer, because there is no message to carry.
 From the PlantUML sequence diagram, the corresponding points are:
 
 - 1.x : the `std::make_unique<ClientReactor>(...)` line
-- 2.6 : the `cbs.write_done = [](auto* reactor, bool) {...}` lines
+- 2.8 : the `cbs.write_done = [](auto* reactor, bool) {...}` lines
 - 5.4 : the `cbs.done = [](auto*, const grpc::Status&, std::unique_ptr<ResponseT> response) {...}` lines
 
 ````cpp
@@ -1582,7 +1628,7 @@ void RecordRoute(std::vector<routeguide::Point> points) {
 The write flow advances one request per `OnWriteDone`. The pump sends the final request through
 `SendLastRequest()`, so no separate close is needed.
 
-From the PlantUML sequence diagrams, the corresponding points are 2.1 and 2.8, and 3.1 for the last request.
+From the PlantUML sequence diagrams, the corresponding points are 2.1 and 2.10, and 3.1 for the last request.
 
 ````cpp
 void SendNextRecordRoutePoint() {
@@ -1642,9 +1688,8 @@ EventLoop::RegisterEvent(kRecordRouteOnDone, [this](const Event* event) {
 ### PlantUML sequence flow
 
 The two diagrams differ only in section 5, where the terminal response reaches the application, exactly as the two
-unary diagrams do. Sections 2 and 3 show the write path's guards, and what it lacks: no hold covers a write issued from
-the application thread, so the `stream_no_more_` guard narrows a race it cannot close. The reason is under
-[Why the write side of ActiveWriteReactor has no hold](/docs/architecture.md#why-the-write-side-of-activewritereactor-has-no-hold).
+unary diagrams do. Sections 1 to 4 show the write-flow hold: taken before `StartCall()`, claimed by each write, and
+released when the write side ends. It is described under [Write-flow hold](#write-flow-hold).
 
 #### Delivery::kPull
 
@@ -1676,6 +1721,12 @@ autonumber 1.1
     data o-[#darkblue]->> reactor : Response holder
     & reactor -[#darkblue]\ grpc : async RPC service call\nstub.async()->RpcMethod()
     activate grpc #lightgreen
+    reactor -[#darkblue]\ grpc : AddHold()
+    note right of reactor
+      Covers the whole write flow, since the
+      application writes from its own thread.
+      Held until the write side ends.
+    end note
     reactor -[#darkblue]\ grpc : StartCall()
     activate grpc #green
 
@@ -1684,15 +1735,12 @@ autonumber 2.1
 == 2. Request streaming ==
 loop one request at a time, while more than one remains
     app -[#darkblue]> reactor : SendRequest()
-alt Accepted | the stream is open, and no write is in flight
+alt Accepted | the write flow is claimed, no write is in flight, and the RPC is not over
+    reactor -[#darkblue]> reactor : <i>claims the write flow,\n<i>so nothing can release the hold
     reactor -[#darkblue]> reactor : <i>moves request into\nthe write buffer
     reactor -[#darkblue]\ grpc : StartWrite()
     & grpc --\? : send Request\nto server
-    note right of reactor
-      No hold covers this write. A gRPC thread
-      can end the RPC between the guards above
-      and StartWrite(): the residual race.
-    end note
+    reactor -[#darkblue]> reactor : <i>returns the write flow, open
     deactivate grpc
 group #lightgreen (grpc-thread callback) onwritedone
     reactor <[#darkgreen]- grpc : OnWriteDone : true
@@ -1708,7 +1756,7 @@ group #lightblue (app-thread callback) onwritedone
     activate app #blue
     deactivate app
 end
-else Rejected | the stream is over or closed, or a write is in flight
+else Rejected | a write is in flight, or the write side has ended
     reactor -[#darkblue]-> app : false
 end
 end
@@ -1719,11 +1767,13 @@ alt the last request closes the stream with it
     app -[#darkblue]> reactor : SendLastRequest()
     reactor -[#darkblue]\ grpc : StartWriteLast()
     & grpc --\? : send the last Request\nand close the stream
+    reactor -[#darkblue]\ grpc : RemoveHold()\n<i>ends the write flow
     reactor <[#darkgreen]- grpc : OnWriteDone : true\n<i>handled as in section 2,\n<i>with nothing left to send
 else the stream is closed after the last request
     app -[#darkblue]> reactor : CloseRequestStream()
     reactor -[#darkblue]\ grpc : StartWritesDone()
     & grpc --\? : close the\nrequest stream
+    reactor -[#darkblue]\ grpc : RemoveHold()\n<i>ends the write flow
     reactor <[#darkgreen]- grpc : OnWritesDoneDone
 end
 
@@ -1733,9 +1783,15 @@ autonumber 4.1
     app -[#darkblue]> reactor : TryCancel()
     & reactor -[#darkblue]\ grpc : TryCancel()
     & grpc --\? : RPC termination\nbehest
+    reactor -[#darkblue]\ grpc : RemoveHold()\n<i>ends the write flow,\n<i>unless a write call holds it
 
 autonumber 5.1
 == 5. RPC completion ==
+note across
+  OnDone fires only once the write side has ended: closed in section 3, cancelled in section 4,
+  or by a failed write. If the RPC ends on its own first, the write-flow hold keeps the call alive,
+  and the application learns of it from its next write or close.
+end note
     grpc <--? : receive Response\nand RPC termination
     &grpc -[#darkgreen]> data : <i>writes terminal response
     activate data #yellow
@@ -1790,6 +1846,12 @@ autonumber 1.1
     reactor -[#darkblue]> reactor : <i>internal response target ready
     reactor -[#darkblue]\ grpc : async RPC service call\nstub.async()->RpcMethod(response_.get())
     activate grpc #lightgreen
+    reactor -[#darkblue]\ grpc : AddHold()
+    note right of reactor
+      Covers the whole write flow, since the
+      application writes from its own thread.
+      Held until the write side ends.
+    end note
     reactor -[#darkblue]\ grpc : StartCall()
     activate grpc #green
 
@@ -1798,15 +1860,12 @@ autonumber 2.1
 == 2. Request streaming ==
 loop one request at a time, while more than one remains
     app -[#darkblue]> reactor : SendRequest()
-alt Accepted | the stream is open, and no write is in flight
+alt Accepted | the write flow is claimed, no write is in flight, and the RPC is not over
+    reactor -[#darkblue]> reactor : <i>claims the write flow,\n<i>so nothing can release the hold
     reactor -[#darkblue]> reactor : <i>moves request into\nthe write buffer
     reactor -[#darkblue]\ grpc : StartWrite()
     & grpc --\? : send Request\nto server
-    note right of reactor
-      No hold covers this write. A gRPC thread
-      can end the RPC between the guards above
-      and StartWrite(): the residual race.
-    end note
+    reactor -[#darkblue]> reactor : <i>returns the write flow, open
     deactivate grpc
 group #lightgreen (grpc-thread callback) onwritedone
     reactor <[#darkgreen]- grpc : OnWriteDone : true
@@ -1824,7 +1883,7 @@ group #lightblue (app-thread callback) onwritedone
     activate app #blue
     deactivate app
 end
-else Rejected | the stream is over or closed, or a write is in flight
+else Rejected | a write is in flight, or the write side has ended
     reactor -[#darkblue]-> app : false
 end
 end
@@ -1835,11 +1894,13 @@ alt the last request closes the stream with it
     app -[#darkblue]> reactor : SendLastRequest()
     reactor -[#darkblue]\ grpc : StartWriteLast()
     & grpc --\? : send the last Request\nand close the stream
+    reactor -[#darkblue]\ grpc : RemoveHold()\n<i>ends the write flow
     reactor <[#darkgreen]- grpc : OnWriteDone : true\n<i>handled as in section 2,\n<i>with nothing left to send
 else the stream is closed after the last request
     app -[#darkblue]> reactor : CloseRequestStream()
     reactor -[#darkblue]\ grpc : StartWritesDone()
     & grpc --\? : close the\nrequest stream
+    reactor -[#darkblue]\ grpc : RemoveHold()\n<i>ends the write flow
     reactor <[#darkgreen]- grpc : OnWritesDoneDone
 end
 
@@ -1849,9 +1910,15 @@ autonumber 4.1
     app -[#darkblue]> reactor : TryCancel()
     & reactor -[#darkblue]\ grpc : TryCancel()
     & grpc --\? : RPC termination\nbehest
+    reactor -[#darkblue]\ grpc : RemoveHold()\n<i>ends the write flow,\n<i>unless a write call holds it
 
 autonumber 5.1
 == 5. RPC completion ==
+note across
+  OnDone fires only once the write side has ended: closed in section 3, cancelled in section 4,
+  or by a failed write. If the RPC ends on its own first, the write-flow hold keeps the call alive,
+  and the application learns of it from its next write or close.
+end note
     grpc <--? : receive Response\nand RPC termination
     &grpc -[#darkgreen]> reactor : <i>writes terminal response
     activate reactor #gold
@@ -1887,7 +1954,7 @@ Only the asynchronous method is provided.
 Inherit from `grpc::ClientBidiReactor`, this class implements the Method Request component of the
 [Active Object pattern][active-object-pattern] and uses the [Reactor pattern][reactor-pattern] for event handling.
 It combines the two directions already described: its read side behaves as `ActiveReadReactor`'s, and its write
-side as `ActiveWriteReactor`'s.
+side as `ActiveWriteReactor`'s, except for the hold that covers the writes.
 
 The two directions are independent. The application drives the write side one request at a time, gRPC drives the
 read side, and neither waits for the other. A bidirectional RPC carries no terminal response, so `OnDoneCallback`
@@ -1932,10 +1999,11 @@ Seven public functions can be called by the application side:
 - `void TryCancel()`
 
 `GetResponse()` and `ResumeRead()` behave exactly as on `ActiveReadReactor`, and neither is offered under
-`ReadPacing::kContinuous`. The three write functions differ from `ActiveWriteReactor`'s: each one claims the
-write-side idle hold before it issues anything, and returns false when that claim is lost, as described under
-[Write-side idle hold](#write-side-idle-hold). What a caller observes is unchanged, since a lost claim covers the same
-three rejection cases the flag checks used to report. The write side is identical in all six combinations.
+`ReadPacing::kContinuous`. The three write functions claim a hold before they issue anything, as
+`ActiveWriteReactor`'s do, but a different one: the write-side idle hold, described under
+[Write-side idle hold](#write-side-idle-hold), which the read side releases when the RPC ends on its own. So, unlike
+the writer, a bidirectional RPC completes without the application ending its write side. The write side is identical
+in all six combinations.
 
 Under `Delivery::kPush`, like the three other reactors, `ActiveBidiReactor` exposes no response accessor: its
 `response_` read target keeps a stable address across every read, and each message is swapped out of it by pointer,

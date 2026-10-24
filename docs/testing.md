@@ -108,7 +108,7 @@ See the file list above for which file covers which RPC type.
 | ---------- | --------------- | ----------- |
 | Unary (`GetFeature`) | `ActiveUnaryReactor` | Success, empty, error, failed response, cancel, deadline, concurrent |
 | Server stream (`ListFeatures`) | `ActiveReadReactor` | Multiple/empty, error, cancel, concurrent, held stream |
-| Client stream (`RecordRoute`) | `ActiveWriteReactor` | Multiple/empty point, overlapping writes, cancel, no done |
+| Client stream (`RecordRoute`) | `ActiveWriteReactor` | Points, overlapping writes, cancel, no done, write-flow hold |
 | Bidirectional (`RouteChat`) | `ActiveBidiReactor` | Send/receive, interleaved, closes, cancel, held reads, write hold |
 | EventLoop dispatch | N/A | `GetFeature`/`ListFeatures`/cancel dispatched through a real `EventLoop` |
 
@@ -227,6 +227,25 @@ since removing it hangs the test for its full timeout. Two properties are delibe
 recorded in [deferred-work.md](/_bmad-output/implementation-artifacts/deferred-work.md): the atomicity of the claim,
 whose race window is too narrow to hit from a test and which needs ThreadSanitizer, and the non-re-arm after a terminal
 write, which `OnReadDone(false)` masks.
+
+### Write-flow hold coverage
+
+`ActiveWriteReactor` holds the RPC for its whole write flow, and releases the hold when the write side ends. Five tests
+cover it, in [active_write_reactor_push_test.cpp][write-push-test]. Two of them use the test service's early-ending
+mode, `SetEndEarly()`, where the server ends the RPC as soon as it starts, so the client is idle when the status arrives.
+
+| Test | Asserts |
+| ------ | --------- |
+| `RecordRoute_ServerEndsWhileIdle_OnDoneWaitsForWriteSide` | `OnDone` waits for the close, then has the status |
+| `RecordRoute_ServerEndsWhileIdle_FailedWriteEndsWriteSide` | A failed write alone ends the write side |
+| `RecordRoute_TryCancelWhileIdle_CompletesWithoutWriteSideAction` | `TryCancel()` alone completes an idle RPC |
+| `RecordRoute_EndedWriteSide_RejectsEveryWriteCall` | After `SendLastRequest()`, every write and close is refused |
+| `RecordRoute_TryCancelRacingWrites_CompletesOnce` | A cancel racing a writing thread ends the flow once |
+
+The first one was mutation-verified: against the reactor without the write-flow hold, `OnDone` fired about 7 ms after
+the server ended the RPC, while the application could still write. The write path is identical under both `Delivery`
+approaches, so the tests run under `kPush` only. `RecordRoute_NoDoneCallbackBound_RpcStillCompletes` retries its close
+until it is accepted, since an unclosed write side would now keep the RPC from completing.
 
 ### Naming convention
 
