@@ -35,16 +35,17 @@ application pulls it out through `GetResponse()` once its event loop has dispatc
 `ActiveReadReactor` and `ActiveBidiReactor` move each received message into the `read_ok` callback.
 
 On the two reading reactors, what remains is who arms the read that follows. A second template parameter,
-`ReadPacing`, answers it, independently of `Delivery` and again with no default:
+`ReadPacing`, answers it, independently of `Delivery`. Its modes sit on one scale of how much the stream waits for the
+application, and `kPerMessage`, in the middle, is the default:
 
 | `ReadPacing`  | Who arms the next read                                 | Hold                                       |
 |---------------|--------------------------------------------------------|--------------------------------------------|
 | `kContinuous` | The reactor, as the last action of the same reaction   | None: the next read cannot complete while  |
 |               |                                                        | that reaction runs                         |
-| `kTurnByTurn` | The application, through `GetResponse()` or            | One per message, which keeps the RPC alive |
-|               | `ResumeRead()`, from outside any reaction              | across that gap                            |
 | `kPerMessage` | Either one, as the `read_ok` callback decides for each | One per message, whether kept or declined  |
 |               | message                                                |                                            |
+| `kTurnByTurn` | The application, through `GetResponse()` or            | One per message, which keeps the RPC alive |
+|               | `ResumeRead()`, from outside any reaction              | across that gap                            |
 
 The implementation follows this component structure:
 
@@ -262,18 +263,31 @@ configuration, which is why they read `Status()` on the main thread only after t
 
 ### Why the reading reactors offer three pacing modes
 
-For a stream of messages, one question remains once delivery is chosen: who arms the next read, and therefore where
-the backpressure goes. The answer can be fixed for the whole RPC, or decided for each message. The library offers
-both, under either delivery approach.
+For a stream of messages, one question remains once delivery is chosen: who arms the next read, and therefore how
+much the stream waits for the application, which is where the backpressure goes. The three modes answer it along one
+scale, under either delivery approach:
+
+```text
+kContinuous  ─────────────  kPerMessage  ─────────────  kTurnByTurn
+never waits                 waits when read_ok          always waits
+                            says so (the default)
+```
 
 | `ReadPacing`  | Decided     | Who arms the next read                   | Holds per message     |
 |---------------|-------------|------------------------------------------|-----------------------|
 | `kContinuous` | Upfront     | The reactor                              | None                  |
-| `kTurnByTurn` | Upfront     | The application                          | One                   |
 | `kPerMessage` | Per message | Whichever one the `read_ok` answer names | One, kept or declined |
+| `kTurnByTurn` | Upfront     | The application                          | One                   |
 
-`ReadPacing::kContinuous` has the reactor re-arm inside the reaction, so the stream never waits for the
-application. What it costs depends on the delivery approach:
+`ReadPacing::kPerMessage` is the general mode. The `read_ok` callback returns its decision, so each message is either
+held as under `kTurnByTurn` or read past as under `kContinuous`, and the answer can depend on the message itself, or on
+the consumer's state when the message arrives. It pays for that generality with a hold on every message, explained
+under [Why kPerMessage takes one for every message](#why-kpermessage-takes-one-for-every-message), and with a rule
+the application must follow: one release call per kept message, and none per declined one.
+
+The two other modes are the two ends of the scale, fixed for the whole RPC. `ReadPacing::kContinuous` has the reactor
+re-arm inside the reaction, so the stream never waits for the application. What it costs depends on the delivery
+approach:
 
 | Delivery | Cost                         | Cause                                   | Accepted because              |
 |----------|------------------------------|-----------------------------------------|-------------------------------|
@@ -288,19 +302,45 @@ is ever in flight and the stream stalls for as long as the consumer is slow. The
 disappearing: an application that drops a held message without its release call strands the RPC, since the hold
 suppresses `OnDone()` and no outstanding read is left to report the stream ending.
 
-`ReadPacing::kPerMessage` is for a stream where the right answer depends on the message itself, or on the
-consumer's state when the message arrives. The `read_ok` callback returns its decision, so each message is either
-held as under `kTurnByTurn` or read past as under `kContinuous`. It is the most general mode, and it pays for that
-generality with a hold on every message, explained under
-[Why kPerMessage takes one for every message](#why-kpermessage-takes-one-for-every-message).
-
-Before `ReadPacing` applied to both approaches, `kPull` had only a per-message `bool` from `read_ok`, and `kPush`
-had only the two upfront modes. That `kPull` behaviour is exactly the `kPull` and `kPerMessage` combination, so
-making the two axes independent removed nothing. It added the three combinations that were missing: `kPull` with
-`kContinuous` or `kTurnByTurn`, and `kPush` with `kPerMessage`.
+Before `ReadPacing` applied to both approaches, `kPull` had only a per-message `bool` from `read_ok`, and `kPush` had
+only the two upfront modes. That `kPull` behaviour is the `kPull` and `kPerMessage` combination, so making the two axes
+independent removed nothing. It added the three combinations that were missing: `kPull` with `kContinuous` or
+`kTurnByTurn`, and `kPush` with `kPerMessage`. The one behaviour that changed is an unbound `read_ok` slot, for which
+the reactor used to take a hold and give it back in the same reaction, and now takes none.
 
 A fourth option, bounded buffering inside the reactor, was evaluated and rejected for an unresolved lost-wakeup
 race.
+
+#### Why kPerMessage is the default, and the two others still exist
+
+`kPerMessage` can do everything the two fixed modes do. A callback that always returns `true` behaves as
+`kTurnByTurn`, and one that always returns `false` behaves as `kContinuous`. That is why it is the default: an
+application that names only its `Delivery` still gets every behaviour, decided one message at a time. `Delivery` has
+no default for the opposite reason: neither approach contains the other, so each RPC has to pick one from its
+constraints.
+
+The two fixed modes are for a design that has already made that decision. They add no behaviour. What they add is
+the decision fixed in the type, where the compiler enforces it and rules out the mistakes it leaves no room for:
+
+| Guarantee                   | `kContinuous`         | `kPerMessage`                    | `kTurnByTurn`          |
+|-----------------------------|-----------------------|----------------------------------|------------------------|
+| Holds taken                 | None                  | One per message, declined or not | One per message        |
+| Release call owed           | None, and none exists | One per kept message only        | One per message        |
+| A handler bug can strand it | No                    | Yes: a missed release, or a      | Yes: a missed release  |
+|                             |                       | `true` returned by mistake       |                        |
+| A stray release can misfire | Cannot be written     | Yes, see below                   | No, while each handler |
+|                             |                       |                                  | releases once          |
+
+The stray release is the subtle one. `GetResponse()` and `ResumeRead()` release whichever message is held at that
+moment, not a particular one. Under `kTurnByTurn` every message is held, so a handler that calls one of them once is
+always right. Under `kPerMessage` the same handler is wrong for a declined message: by the time it runs, the next
+message can already be held, while its own `read_ok` is still deciding, and the stray call releases it. The demo's
+`kPush` and `kPerMessage` scenario was first written that way, and its log showed messages handled out of order and
+four messages in flight against a bound of three. It now releases only from the handler of the message its `read_ok`
+held.
+
+So a fixed mode is chosen for what it rules out. `kContinuous` rules out holding, and with it every release call.
+`kTurnByTurn` rules out deciding, and with it the difference between a kept message and a declined one.
 
 #### Why the pacing is a template parameter
 
@@ -315,8 +355,8 @@ The same choice turns meaningless calls into compile errors rather than runtime 
 
 | Call            | Exists only where                            | Absent under `kContinuous` because      |
 |-----------------|----------------------------------------------|-----------------------------------------|
-| `GetResponse()` | `kPull`, with `kTurnByTurn` or `kPerMessage` | No message is ever held for it          |
-| `ResumeRead()`  | `kPush`, with `kTurnByTurn` or `kPerMessage` | No hold is ever taken for it to release |
+| `GetResponse()` | `kPull`, with `kPerMessage` or `kTurnByTurn` | No message is ever held for it          |
+| `ResumeRead()`  | `kPush`, with `kPerMessage` or `kTurnByTurn` | No hold is ever taken for it to release |
 
 A pacing fixed in the type also stays out of the race between the application thread and `OnReadDone()`, since
 nothing can change it while a reaction reads it.
@@ -331,18 +371,18 @@ of consumer:
 | Each message is consumed inside the reaction:  | `kPull`, `kContinuous` | The callback reads the lent message in     |
 | an aggregate, a latest-value-wins snapshot, or |                        | place, with no allocation and no hold      |
 | a filter that drops what it does not need      |                        |                                            |
-| One message in flight, with no ownership rules | `kPull`, `kTurnByTurn` | The stream waits for `GetResponse()`, and  |
-| for the application                            |                        | the event carries only the reactor         |
 | Messages are filtered on the gRPC thread: some | `kPull`, `kPerMessage` | A declined message costs no allocation and |
 | kept for the application, the others declined  |                        | no event, and a kept one is swapped out    |
 |                                                |                        | without a copy                             |
+| One message in flight, with no ownership rules | `kPull`, `kTurnByTurn` | The stream waits for `GetResponse()`, and  |
+| for the application                            |                        | the event carries only the reactor         |
 | The consumer defers its processing, and the    | `kPush`, `kContinuous` | Each message leaves the reactor at once,   |
 | stream must never wait for it                  |                        | at the cost of an unbounded queue          |
-| One message in flight, and each message must   | `kPush`, `kTurnByTurn` | The stream is bounded, and every message   |
-| outlive the next read                          |                        | is its own object                          |
 | The stream should run freely until the         | `kPush`, `kPerMessage` | The callback holds only while the backlog  |
 | application falls behind                       |                        | is above a threshold: adaptive             |
 |                                                |                        | backpressure                               |
+| One message in flight, and each message must   | `kPush`, `kTurnByTurn` | The stream is bounded, and every message   |
+| outlive the next read                          |                        | is its own object                          |
 
 Under `kPull` with `kContinuous`, a callback that wants to keep a whole message pays a deep copy for it. Once most
 messages are kept whole, `kPush` serves the same consumer without the copy.
@@ -393,27 +433,21 @@ message safe to read: the read that overwrites it is not armed until the callbac
 upfront. The reactor knows before calling `read_ok` that it will re-arm the read itself, inside the reaction, so no
 operation ever crosses the reaction boundary.
 
-### Why kTurnByTurn needs one
+### Why kPerMessage takes one for every message
 
-`GetResponse()` and `ResumeRead()` run on the application thread, after `OnReadDone(true)` has already returned.
-That is precisely the window a hold exists for: with no read armed and no reaction in progress, gRPC's
-outstanding-callback count can otherwise reach zero, fire `OnDone()`, and invalidate the state `StartRead()` is
-about to go through.
+A message the `read_ok` callback keeps leaves the re-arm to `GetResponse()` or `ResumeRead()`. They run on the
+application thread, after `OnReadDone(true)` has already returned. That is precisely the window a hold exists for: with
+no read armed and no reaction in progress, gRPC's outstanding-callback count can otherwise reach zero, fire `OnDone()`,
+and invalidate the state `StartRead()` is about to go through.
 
 The ordering within the pair is what makes it correct:
 
-- `AddHold()` runs before the `read_ok` callback, because that callback may resume inline, or hand the message to
-  a thread that resumes before the reaction returns.
+- `AddHold()` runs before the `read_ok` callback, because that callback may release inline, or hand the message to
+  a thread that releases before the reaction returns.
 - `StartRead()` runs before `RemoveHold()`, because `StartRead()` raises the count first, so the count never
   reaches zero between the two calls.
 - `RemoveHold()` runs whether or not a read was armed, because gRPC requires exactly one release per hold, and a
   hold left outstanding stalls the RPC forever.
-
-### Why kPerMessage takes one for every message
-
-A message the `read_ok` callback keeps leaves the re-arm to `GetResponse()` or `ResumeRead()`, on the application
-thread. That is the same window as `kTurnByTurn`, and it needs the hold for the same reason, with the same
-orderings.
 
 The reactor learns whether a message is kept only when `read_ok` returns, but the hold has to exist before
 `read_ok` runs. The callback is the hand-off: by the time it returns, it may already have passed the message to the
@@ -438,6 +472,13 @@ boolean claim would find the flag set and take the hold of N+1, which the applic
 The decline instead compares against the token of N, so it can only ever take back its own hold, and a lost claim
 simply means that hold is already gone. The release calls need no such match: each claims whichever message is held
 at that moment, by exchanging its token for zero.
+
+### Why kTurnByTurn needs one
+
+`kTurnByTurn` is the kept branch of `kPerMessage`, taken for every message, so it needs the hold for the same reason,
+with the same orderings. It skips only what the decision costs: no hold is ever given back inside the reaction, so
+nothing has to be claimed back against a decline. The release calls still claim the token, which is what keeps a
+duplicate call from releasing a hold twice.
 
 ### Why the bidi write side holds while idle
 
@@ -556,8 +597,8 @@ project-specific settings:
 | | | `Delivery`, `ReadPacing` |
 
 `Delivery` has no default, so every instantiation names its approach. The two reading reactors also take
-`ReadPacing` as a template parameter, with no default either, so they name both. No constructor takes a pacing
-argument.
+`ReadPacing` as a template parameter, which defaults to `kPerMessage`, so an instantiation names it only to fix the
+pacing to `kContinuous` or `kTurnByTurn`. No constructor takes a pacing argument.
 
 **Service-Specific Adapters** (`applications/reactor/reactor_client_routeguide.h`):
 
@@ -674,7 +715,7 @@ re-read after the hold claim is won rather than before, so a stale read cannot l
 the reading side it decides whether `GetResponse()` or `ResumeRead()` re-arms. `ActiveUnaryReactor` has only
 `response_ready_`, because it issues nothing from the application thread and owns no stream.
 
-**Hold mechanism, read side (`ReadPacing::kTurnByTurn` and `kPerMessage`, under either `Delivery`):**
+**Hold mechanism, read side (`ReadPacing::kPerMessage` and `kTurnByTurn`, under either `Delivery`):**
 
 ```cpp
 // In OnReadDone, after the delivery step and before invoking the callback, since the callback may hand off

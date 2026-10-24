@@ -37,25 +37,29 @@ enum class Delivery {
   kPush,
 };
 
-/// Selects who arms the read that follows a delivered message on a reading reactor, and when that is
-/// decided. It is the second axis next to Delivery, independent of it, so every combination of the two
-/// exists. The reading reactors take it as a template parameter, with no default, for the same reason as
-/// Delivery. See "Read pacing modes" in reactor_client.md.
+/// Selects who arms the read that follows a delivered message on a reading reactor, which is how much
+/// the stream waits for the application. It is the second axis next to Delivery, independent of it, so
+/// every combination of the two exists. The modes are declared along that one scale, from a stream that
+/// never waits to one that always does. kPerMessage, in the middle, is the default: it reaches both
+/// ends at runtime, one message at a time. kContinuous and kTurnByTurn fix one end for the whole RPC,
+/// for a design that has already made that decision, and the compiler then enforces it. See "Read
+/// pacing modes" in reactor_client.md.
 enum class ReadPacing {
-  /// Decided upfront: the reactor arms the next read itself, as the last statement of the reaction, so
-  /// it takes no hold. The stream never waits for the application, which costs an unbounded queue
-  /// between them. Under kPull the callback is only lent the message until it returns, so it must copy
-  /// out whatever it keeps.
+  /// Never waits: the reactor arms the next read itself, as the last statement of the reaction, so it
+  /// takes no hold, and no release call exists to forget or to misplace. The stream never waits for the
+  /// application, which costs an unbounded queue between them. Under kPull the callback is only lent the
+  /// message until it returns, so it must copy out whatever it keeps.
   kContinuous,
-  /// Decided upfront: the reactor holds the RPC and arms nothing. The application releases it with
-  /// GetResponse() (kPull) or ResumeRead() (kPush), which bounds the stream to one message in flight and
-  /// stalls it meanwhile.
-  kTurnByTurn,
-  /// Decided at runtime, for each message: the read_ok callback returns true to hold the stream as under
-  /// kTurnByTurn, or false to let the reactor read on at once as under kContinuous. The reactor cannot
-  /// know the answer before calling the callback, so it takes a hold for every message and releases it
-  /// itself when the callback declines.
+  /// Waits when the read_ok callback says so, for each message: it returns true to hold the stream as
+  /// under kTurnByTurn, or false to let the reactor read on at once as under kContinuous. The reactor
+  /// cannot know the answer before calling the callback, so it takes a hold for every message and
+  /// releases it itself when the callback declines. The application then owes a release call for each
+  /// kept message, and none for a declined one.
   kPerMessage,
+  /// Always waits: the reactor holds the RPC and arms nothing. The application releases it with
+  /// GetResponse() (kPull) or ResumeRead() (kPush), once for every message, which bounds the stream to
+  /// one message in flight and stalls it meanwhile.
+  kTurnByTurn,
 };
 
 namespace detail {
@@ -202,7 +206,7 @@ class ActiveUnaryReactor : public grpc::ClientUnaryReactor {
 /// @tparam ResponseT type of protobuf message the RPC handles
 /// @tparam kDelivery how the reactor hands each message over, which sets the read_ok slot's parameter
 /// @tparam kPacing who arms the next read, which sets the read_ok slot's return type
-template <class ResponseT, Delivery kDelivery, ReadPacing kPacing>
+template <class ResponseT, Delivery kDelivery, ReadPacing kPacing = ReadPacing::kPerMessage>
 requires std::derived_from<ResponseT, google::protobuf::Message>
 struct ActiveReadCallbacks {
   /// Function signature for ClientReadReactor::OnReadDone event with positive OK flag. Its parameter
@@ -248,7 +252,7 @@ struct ActiveReadCallbacks {
 /// @tparam ResponseT type of protobuf message the RPC handles
 /// @tparam kDelivery how the reactor hands each message over, see Delivery
 /// @tparam kPacing who arms the read that follows a delivered message, see ReadPacing
-template <class ResponseT, Delivery kDelivery, ReadPacing kPacing>
+template <class ResponseT, Delivery kDelivery, ReadPacing kPacing = ReadPacing::kPerMessage>
 requires std::derived_from<ResponseT, google::protobuf::Message>
 class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
  public:
@@ -283,7 +287,7 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
     context_->TryCancel();
   }
 
-  /// Delivery::kPull only, under ReadPacing::kTurnByTurn or kPerMessage. Swaps the underlying data storage of the
+  /// Delivery::kPull only, under ReadPacing::kPerMessage or kTurnByTurn. Swaps the underlying data storage of the
   /// response object and resume the held RPC.
   /// The swap mechanism is important to avoid a deep-copy of the content of the
   /// response. Having the response swapped is acceptable because the stream-reader
@@ -304,18 +308,18 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
     // Claiming the token is what makes a duplicate or spurious call safe, as in ResumeRead(): only the
     // caller that takes the message away from OnReadDone() goes on to release the hold.
     if (response_ready_.exchange(0) == 0) return false;
-    // (Point 2.8, 2.15) extracts response
+    // (Point 2.9, 2.10) extracts response
     swap(response_, response);  // Moving the read content on the user side
     if (!stream_no_more_) {
-      // (Point 2.9, 2.10) Restart reading
+      // (Point 2.11, 2.12) Restart reading
       this->StartRead(&response_);
     }
-    // (Point 2.11) Resuming RPC - must run regardless of whether reading restarted, see above.
+    // (Point 2.13) Resuming RPC - must run regardless of whether reading restarted, see above.
     this->RemoveHold();
     return true;
   }
 
-  /// Delivery::kPush only, under ReadPacing::kTurnByTurn or kPerMessage. Arms the read that OnReadDone()
+  /// Delivery::kPush only, under ReadPacing::kPerMessage or kTurnByTurn. Arms the read that OnReadDone()
   /// left unarmed, and releases the hold it took. The application calls this once per held message, when
   /// it no longer needs the stream stalled. Until it does, the RPC cannot terminate: the hold suppresses
   /// OnDone(), and no outstanding read is left to report the stream ending, so an application that
@@ -334,9 +338,9 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
     // StartRead() before RemoveHold(), so the outstanding-callback count never reaches zero between
     // the two and lets OnDone() fire while this call is still running.
     const bool armed = !stream_no_more_;
-    // (Point 2.18) Restart reading
+    // (Point 2.10, 2.11) Restart reading
     if (armed) this->StartRead(&response_);
-    // (Point 2.19) Resuming RPC. Must run exactly once per AddHold(), armed or not, or the RPC
+    // (Point 2.12) Resuming RPC. Must run exactly once per AddHold(), armed or not, or the RPC
     // stalls forever.
     this->RemoveHold();
     return armed;
@@ -396,18 +400,22 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
       this->StartRead(&response_);
       return;
     }
-    // Step 1, Delivery: prepare what the callback receives. Done before any hold is published, so a
-    // ResumeRead() racing ahead cannot arm a read into response_ while it is still being swapped out.
+    // (Point 2.4) Step 1, Delivery: prepare what the callback receives. Done before any hold is
+    // published, so a ResumeRead() racing ahead cannot arm a read into response_ while it is still
+    // being swapped out.
     auto message = TakeMessage();
-    // Step 2, ReadPacing: who arms the next read.
+    // Step 2, ReadPacing: who arms the next read. The diagrams in reactor_client.md draw kPerMessage,
+    // whose two branches are what the two other modes do for every message: kTurnByTurn the kept one,
+    // and kContinuous the declined one without its hold. Points in that declined branch are numbered
+    // differently in the kPull and kPush diagrams, so both are cited, kPull first.
     if constexpr (kPacing == ReadPacing::kContinuous) {
-      // (Point 2.5) TriggerEvent: OnReadDoneOk
+      // (Point 2.17 / 2.14) TriggerEvent: OnReadDoneOk
       HandOver(message);
-      // (Point 2.6) Restart reading. Last action of the reaction, which is what removes the need for a
-      // hold. See "Read pacing modes" in reactor_client.md.
+      // (Point 2.19 / 2.15) Restart reading. Last action of the reaction, which is what removes the need
+      // for a hold. See "Read pacing modes" in reactor_client.md.
       this->StartRead(&response_);
     } else {
-      // (Point 2.4) Holding the RPC. Taken before the callback, never after: the callback is what hands
+      // (Point 2.5) Holding the RPC. Taken before the callback, never after: the callback is what hands
       // the message off, so GetResponse() or ResumeRead(), and their RemoveHold(), can run on the
       // application thread before the callback even returns. See "Hold before handing off, not after"
       // in reactor_client.md, and https://github.com/grpc/grpc/pull/18072 for why the hold exists.
@@ -415,13 +423,14 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
       // Published only once the hold is taken: the flag is what the releasing call claims, so setting
       // it is already part of the hand-off.
       [[maybe_unused]] const auto held = PublishHeld();
-      if constexpr (kPacing == ReadPacing::kTurnByTurn) {
-        // (Point 2.5) TriggerEvent: OnReadDoneOk. The application owns the re-arm from here.
-        HandOver(message);
-      } else {
-        // (Point 2.5) TriggerEvent: OnReadDoneOk. Held if the callback keeps the message.
+      if constexpr (kPacing == ReadPacing::kPerMessage) {
+        // (Point 2.6, or 2.17 / 2.14 when declined) TriggerEvent: OnReadDoneOk. Held if the callback keeps
+        // the message.
         if (HandOver(message)) return;
         ReleaseDeclined(held);
+      } else {
+        // (Point 2.6) TriggerEvent: OnReadDoneOk. The application owns the re-arm from here.
+        HandOver(message);
       }
     }
   }
@@ -473,28 +482,28 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
   void ReleaseDeclined(std::uint64_t held) {
     auto& flag = (kDelivery == Delivery::kPull) ? response_ready_ : read_held_;
     if (!flag.compare_exchange_strong(held, 0)) return;
-    // (Point 2.17, 2.18) Restart reading, before the release, which keeps the RPC alive on its own
+    // (Point 2.18, 2.19 / 2.15) Restart reading, before the release, which keeps the RPC alive on its own
     this->StartRead(&response_);
-    // (Point 2.19) Resuming RPC
+    // (Point 2.20 / 2.16) Resuming RPC
     this->RemoveHold();
   }
 
   grpc::Status status_;
   ActiveReadCallbacks<ResponseT, kDelivery, kPacing> cbs_;
 
-  // Under ReadPacing::kTurnByTurn or kPerMessage: the number of messages held so far, which gives each
+  // Under ReadPacing::kPerMessage or kTurnByTurn: the number of messages held so far, which gives each
   // held message its token. Only touched by OnReadDone(), whose successive runs are ordered by the
   // StartRead() between them.
   std::uint64_t held_count_{0};
 
-  // Delivery::kPush, under ReadPacing::kTurnByTurn or kPerMessage: the token of the held message whose
+  // Delivery::kPush, under ReadPacing::kPerMessage or kTurnByTurn: the token of the held message whose
   // hold is outstanding and still unclaimed, waiting for the ResumeRead() that releases it, or 0 when
   // none is. Claiming it atomically is what makes a duplicate or spurious ResumeRead() a no-op rather
   // than an underflow while nothing is held.
   // Set by gRPC thread, cleared by whichever thread claims it.
   std::atomic<std::uint64_t> read_held_{0};
 
-  // Delivery::kPull, under ReadPacing::kTurnByTurn or kPerMessage: the token of the held message waiting
+  // Delivery::kPull, under ReadPacing::kPerMessage or kTurnByTurn: the token of the held message waiting
   // in response_ for GetResponse(), and with it an unclaimed hold, or 0 when none is. Claimed the same
   // way as read_held_. Once claimed by GetResponse(), the response_ may be thread-safely used by the
   // application.
@@ -745,7 +754,7 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
 /// @tparam ResponseT type of protobuf message the RPC receives
 /// @tparam kDelivery how the reactor hands each message over, which sets the read_ok slot's parameter
 /// @tparam kPacing who arms the next read, which sets the read_ok slot's return type
-template <class RequestT, class ResponseT, Delivery kDelivery, ReadPacing kPacing>
+template <class RequestT, class ResponseT, Delivery kDelivery, ReadPacing kPacing = ReadPacing::kPerMessage>
 requires std::derived_from<RequestT, google::protobuf::Message> &&
          std::derived_from<ResponseT, google::protobuf::Message>
 struct ActiveBidiCallbacks {
@@ -787,7 +796,7 @@ struct ActiveBidiCallbacks {
 /// @tparam ResponseT type of protobuf message the RPC receives
 /// @tparam kDelivery how the reactor hands each message over, see Delivery
 /// @tparam kPacing who arms the read that follows a delivered message, see ReadPacing
-template <class RequestT, class ResponseT, Delivery kDelivery, ReadPacing kPacing>
+template <class RequestT, class ResponseT, Delivery kDelivery, ReadPacing kPacing = ReadPacing::kPerMessage>
 requires std::derived_from<RequestT, google::protobuf::Message> &&
          std::derived_from<ResponseT, google::protobuf::Message>
 class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
@@ -921,7 +930,7 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
     context_->TryCancel();
   }
 
-  /// Delivery::kPull only, under ReadPacing::kTurnByTurn or kPerMessage. Swaps the underlying data storage of the
+  /// Delivery::kPull only, under ReadPacing::kPerMessage or kTurnByTurn. Swaps the underlying data storage of the
   /// response object and resume the held RPC.
   /// The swap mechanism is important to avoid a deep-copy of the content of the
   /// response. Having the response swapped is acceptable because the bidirectional
@@ -953,7 +962,7 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
     return true;
   }
 
-  /// Delivery::kPush only, under ReadPacing::kTurnByTurn or kPerMessage. Arms the read that OnReadDone()
+  /// Delivery::kPush only, under ReadPacing::kPerMessage or kTurnByTurn. Arms the read that OnReadDone()
   /// left unarmed, and releases the hold it took. The application calls this once per held message, when
   /// it no longer needs the read side stalled. Until it does, the RPC cannot terminate: the hold suppresses
   /// OnDone(), and no outstanding read is left to report the stream ending, so an application that
@@ -1082,11 +1091,11 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
       // Holding the read side. Taken before the callback, for the same reason as in ActiveReadReactor.
       this->AddHold();
       [[maybe_unused]] const auto held = PublishHeld();
-      if constexpr (kPacing == ReadPacing::kTurnByTurn) {
-        HandOver(message);
-      } else {
+      if constexpr (kPacing == ReadPacing::kPerMessage) {
         if (HandOver(message)) return;
         ReleaseDeclined(held);
+      } else {
+        HandOver(message);
       }
     }
   }
@@ -1147,16 +1156,16 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   grpc::Status status_;
   ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kPacing> cbs_;
 
-  // Under ReadPacing::kTurnByTurn or kPerMessage: the number of messages held so far, as in
+  // Under ReadPacing::kPerMessage or kTurnByTurn: the number of messages held so far, as in
   // ActiveReadReactor. Only touched by OnReadDone().
   std::uint64_t held_count_{0};
 
-  // Delivery::kPush, under ReadPacing::kTurnByTurn or kPerMessage: the token of the message whose read
+  // Delivery::kPush, under ReadPacing::kPerMessage or kTurnByTurn: the token of the message whose read
   // hold is outstanding and still unclaimed, waiting for the ResumeRead() that releases it, or 0.
   // Set by gRPC thread, cleared by whichever thread claims it.
   std::atomic<std::uint64_t> read_held_{0};
 
-  // Delivery::kPull, under ReadPacing::kTurnByTurn or kPerMessage: the token of the held message waiting
+  // Delivery::kPull, under ReadPacing::kPerMessage or kTurnByTurn: the token of the held message waiting
   // in response_ for GetResponse(), and with it an unclaimed read hold, or 0. Claimed the same way as
   // read_held_.
   // Set by gRPC thread, cleared by whichever thread claims it.

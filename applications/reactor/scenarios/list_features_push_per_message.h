@@ -32,11 +32,11 @@ namespace rg_demo::push::per_message {
 /// - list_features_pull_per_message.h, the delivery: the message is pulled with GetResponse(), and the
 ///   per-message decision serves a filter there rather than backpressure
 class ListFeatures {
-  // The reactor flavour this scenario exhibits: its Delivery approach, then its ReadPacing mode.
+  // The reactor flavour this scenario exhibits: its Delivery approach only. Its ReadPacing is the
+  // default, ReadPacing::kPerMessage, which its fixed-pacing siblings name explicitly instead.
   using Delivery = routeguide::ListFeatures::Delivery;
-  using ReadPacing = routeguide::ListFeatures::ReadPacing;
-  using Callbacks = routeguide::ListFeatures::Callbacks<Delivery::kPush, ReadPacing::kPerMessage>;
-  using ClientReactor = routeguide::ListFeatures::ClientReactor<Delivery::kPush, ReadPacing::kPerMessage>;
+  using Callbacks = routeguide::ListFeatures::Callbacks<Delivery::kPush>;
+  using ClientReactor = routeguide::ListFeatures::ClientReactor<Delivery::kPush>;
 
  public:
   /// Registers the event handlers this scenario needs, for its own lifetime.

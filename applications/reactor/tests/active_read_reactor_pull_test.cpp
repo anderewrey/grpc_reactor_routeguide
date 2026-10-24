@@ -70,6 +70,13 @@ static_assert(std::is_same_v<
 static_assert(std::is_same_v<
               routeguide::ListFeatures::Callbacks<kDelivery, ReadPacing::kContinuous>::OnReadDoneOkCallback,
               std::function<void(grpc::ClientReadReactor<routeguide::Feature>*, const routeguide::Feature&)>>);
+/// kPerMessage is the default ReadPacing, in the generic layer and in the RouteGuide one alike: naming only
+/// the Delivery selects it.
+static_assert(std::is_same_v<RpcReactor::Client::ActiveReadReactor<routeguide::Feature, kDelivery>,
+                             RpcReactor::Client::ActiveReadReactor<routeguide::Feature, kDelivery,
+                                                                   ReadPacing::kPerMessage>>);
+static_assert(std::is_same_v<routeguide::ListFeatures::ClientReactor<kDelivery>,
+                             routeguide::ListFeatures::ClientReactor<kDelivery, ReadPacing::kPerMessage>>);
 
 /// Controllable test service for server-side streaming RPC testing
 class TestRouteGuideService final : public routeguide::RouteGuide::CallbackService {
@@ -168,7 +175,7 @@ class ActiveReadReactorPacingTest : public RouteGuideTestFixtureBase<TestRouteGu
 
   /// Builds a read_ok callback that gives a copy of every lent message to `keep`, then consumes it the
   /// way the pacing requires: nothing more under kContinuous, where the reactor re-arms by itself and
-  /// the next read overwrites the lent message, and a GetResponse() under kTurnByTurn and kPerMessage,
+  /// the next read overwrites the lent message, and a GetResponse() under kPerMessage and kTurnByTurn,
   /// where the callback keeps the message held. The copy is handed to `keep` before the release,
   /// because GetResponse() arms the next read, and the next read_ok could then run before this one
   /// returns. The pulled message must match the lent one, which checks GetResponse() hands out the
@@ -195,7 +202,7 @@ TYPED_TEST_SUITE(ActiveReadReactorPacingTest, pacing_test::AllPacings);
 
 /// Fixture for the behaviours of a held message, under the two pacings that hold one: kTurnByTurn
 /// always, and kPerMessage when read_ok returns true.
-/// @tparam PacingTagT a pacing_test::PacingTag, selecting kTurnByTurn or kPerMessage
+/// @tparam PacingTagT a pacing_test::PacingTag, selecting kPerMessage or kTurnByTurn
 template <class PacingTagT>
 class ActiveReadReactorHeldPacingTest : public RouteGuideTestFixtureBase<TestRouteGuideService> {
  protected:

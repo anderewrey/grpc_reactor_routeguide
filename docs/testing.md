@@ -133,8 +133,8 @@ three pacings of its own approach, with GoogleTest typed tests over the pacing t
 
 | Typed suite | Pacings | Runs |
 | ------------- | --------- | ------ |
-| `Active*ReactorPacingTest` | `kContinuous`, `kTurnByTurn`, `kPerMessage` | Behaviours independent of the pacing |
-| `Active*ReactorHeldPacingTest` | `kTurnByTurn`, `kPerMessage` | Behaviours of a held message |
+| `Active*ReactorPacingTest` | `kContinuous`, `kPerMessage`, `kTurnByTurn` | Behaviours independent of the pacing |
+| `Active*ReactorHeldPacingTest` | `kPerMessage`, `kTurnByTurn` | Behaviours of a held message |
 
 Each pacing is a named tag type, such as `pacing_test::TurnByTurn`. CTest names each case after it, as in
 `ActiveReadReactorPacingTest.ListFeatures_EmptyStream_CompletesSuccessfully<pacing_test::TurnByTurn>`, so the ctest
@@ -154,9 +154,9 @@ consumes it the way the cell requires:
 | Cell | What `ConsumeEach()` does |
 | ------ | --------------------------- |
 | `kPull`, `kContinuous` | Copies the lent message, since the next read overwrites it |
-| `kPull`, `kTurnByTurn` or `kPerMessage` | Copies the message, then checks `GetResponse()` hands out the same one |
+| `kPull`, `kPerMessage` or `kTurnByTurn` | Copies the message, then checks `GetResponse()` hands out the same one |
 | `kPush`, `kContinuous` | Takes the owned message, and nothing more |
-| `kPush`, `kTurnByTurn` or `kPerMessage` | Takes the owned message, then calls `ResumeRead()` |
+| `kPush`, `kPerMessage` or `kTurnByTurn` | Takes the owned message, then calls `ResumeRead()` |
 
 Under `kPerMessage` the helper returns true, so these suites exercise the kept path. The message reaches the test
 before the release, because the release arms the next read, whose callback could otherwise run first. The
@@ -190,7 +190,7 @@ The behaviours specific to some cells run as the held typed suites, or as `TEST_
 | `ListFeatures_PerMessage_DeclinedAfterResumeRead_ReleasesOnce` | Push per-message | No double release |
 | `*_PerMessage_DeclinedAfter*_LeavesNextHoldAlone` | Both per-message | The next message's hold is left alone |
 
-"Held" stands for both `kTurnByTurn` and `kPerMessage`, through the held typed suite. The last row is one test in
+"Held" stands for both `kPerMessage` and `kTurnByTurn`, through the held typed suite. The last row is one test in
 each reading file. It orders two `read_ok` callbacks explicitly, so a claim that takes the wrong hold fails on every
 run. `RouteChat_ReleasedAfterCloseRequestStream_ReadsOn` guards the bidirectional reactor's close: a successful
 `CloseRequestStream()` ends only the write side, so a message held across it must still re-arm the read.
@@ -201,11 +201,12 @@ Some cells must not offer a method at all, which no runtime test can show. Each 
 
 | Method | Exists only under |
 | -------- | ------------------- |
-| `GetResponse()` | `kPull`, with `kTurnByTurn` or `kPerMessage` |
-| `ResumeRead()` | `kPush`, with `kTurnByTurn` or `kPerMessage` |
+| `GetResponse()` | `kPull`, with `kPerMessage` or `kTurnByTurn` |
+| `ResumeRead()` | `kPush`, with `kPerMessage` or `kTurnByTurn` |
 
 The same checks pin the `read_ok` signature: its parameter follows the approach, and it returns `bool` only under
-`kPerMessage`.
+`kPerMessage`. They also pin `kPerMessage` as the default pacing, in the generic reactors and in the RouteGuide
+`ClientReactor` alike, so naming only the `Delivery` selects it.
 
 ### Write-side idle hold coverage
 

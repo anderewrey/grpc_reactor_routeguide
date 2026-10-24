@@ -41,7 +41,7 @@ void ListFeatures::Start(routeguide::Rectangle rect) {
   }
 
   Callbacks cbs;
-  // (Point 2.5) TriggerEvent: OnReadDoneOk, handing the message ownership to the queue. The reactor
+  // (Point 2.14) TriggerEvent: OnReadDoneOk, handing the message ownership to the queue. The reactor
   // arms the next read as soon as this returns, so the queue grows as fast as the server sends.
   cbs.read_ok = [this](auto*, std::unique_ptr<ResponseT> response) {
     assert(!OnApplicationThread());  // gRPC thread
@@ -65,13 +65,13 @@ void ListFeatures::Start(routeguide::Rectangle rect) {
 }
 
 void ListFeatures::OnReadOk(const EventLoop::Event* event) {
-  // (Point 2.8) ProceedEvent: OnReadDoneOk
+  // (Point 2.18) ProceedEvent: OnReadDoneOk
   assert(OnApplicationThread());
   // The event data is the message, not the reactor: reclaim the released ownership
   const std::unique_ptr<routeguide::ListFeatures::ResponseT> response{
       static_cast<routeguide::ListFeatures::ResponseT*>(event->getData())};
   const auto seq = ++handled_seq_;
-  // (Point 2.9) update application with response. Nothing to resume: the reactor already re-armed the
+  // (Point 2.19) update application with response. Nothing to resume: the reactor already re-armed the
   // read when read_ok returned, and offers no ResumeRead() under this pacing.
   logger_.info("RESPONSE | #{} {}: {}", seq, response->GetTypeName(), protobuf_utils::ToString(*response));
 }

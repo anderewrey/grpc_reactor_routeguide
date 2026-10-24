@@ -39,7 +39,7 @@ void ListFeatures::Start(routeguide::Rectangle rect) {
   }
 
   Callbacks cbs;
-  // (Point 2.5) Consumes the message inside the reaction. Delta against the turn-by-turn counterpart: no
+  // (Point 2.16) Consumes the message inside the reaction. Delta against the turn-by-turn counterpart: no
   // event is queued per message, since the reactor re-arms the read into the same storage as soon as
   // this returns, and the lent message is overwritten before the application thread could look at it.
   // Whatever the application needs from a message is therefore taken here, on the gRPC thread, without

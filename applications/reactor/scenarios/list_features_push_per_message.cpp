@@ -47,8 +47,9 @@ void ListFeatures::Start(routeguide::Rectangle rect) {
   }
 
   Callbacks cbs;
-  // (Point 2.13) TriggerEvent: OnReadDoneOk, handing the message ownership to the queue. Delta against
-  // the turn-by-turn counterpart: the return value is the hold decision, taken for this message only.
+  // (Point 2.6, or 2.14 when not held) TriggerEvent: OnReadDoneOk, handing the message ownership to the
+  // queue. Delta against the turn-by-turn counterpart: the return value is the hold decision, taken for
+  // this message only.
   // Returning true holds the RPC until ResumeRead(); returning false lets the reactor read on at once.
   // The message is queued either way, so its ownership always ends in exactly one OnReadOk(): only the
   // pace of the stream depends on the answer.
@@ -82,17 +83,17 @@ void ListFeatures::Start(routeguide::Rectangle rect) {
 }
 
 void ListFeatures::OnReadOk(const EventLoop::Event* event) {
-  // (Point 2.8) ProceedEvent: OnReadDoneOk
+  // (Point 2.8, or 2.18 when not held) ProceedEvent: OnReadDoneOk
   assert(OnApplicationThread());
   // The event data is the message, not the reactor: reclaim the released ownership
   const std::unique_ptr<routeguide::ListFeatures::ResponseT> response{
       static_cast<routeguide::ListFeatures::ResponseT*>(event->getData())};
   const auto seq = ++handled_seq_;
-  // (Point 2.9) update application with response
+  // (Point 2.9, or 2.19 when not held) update application with response
   logger_.info("RESPONSE | #{} {}: {}", seq, response->GetTypeName(), protobuf_utils::ToString(*response));
   // Done with the message: its in-flight slot is freed.
   --in_flight_;
-  // (Point 2.17, 2.18, 2.19) Delta against the turn-by-turn counterpart: a hold is released only by the
+  // (Point 2.10, 2.11, 2.12) Delta against the turn-by-turn counterpart: a hold is released only by the
   // handler of the message read_ok held. The queue is FIFO, so every message read before it has been
   // handled by then: the stream stops once kMaxInFlight messages wait, and restarts once they are gone.
   // Not called for a declined message, although ResumeRead() returns false when nothing is held.

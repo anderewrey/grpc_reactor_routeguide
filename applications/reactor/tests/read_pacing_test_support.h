@@ -27,14 +27,14 @@ struct PacingTag : std::integral_constant<ReadPacing, kPacing> {};
 /// GoogleTest print `TypeParam = pacing_test::TurnByTurn`, and CMake's gtest_discover_tests() name each
 /// CTest case `Suite.Test<pacing_test::TurnByTurn>`, so a failure report says which pacing broke.
 struct Continuous : PacingTag<ReadPacing::kContinuous> {};
-struct TurnByTurn : PacingTag<ReadPacing::kTurnByTurn> {};
 struct PerMessage : PacingTag<ReadPacing::kPerMessage> {};
+struct TurnByTurn : PacingTag<ReadPacing::kTurnByTurn> {};
 
 /// Every pacing: for the behaviours that must not depend on who arms the next read.
-using AllPacings = ::testing::Types<Continuous, TurnByTurn, PerMessage>;
+using AllPacings = ::testing::Types<Continuous, PerMessage, TurnByTurn>;
 
 /// The pacings that can hold a delivered message: kTurnByTurn always, kPerMessage when read_ok returns true.
-using HeldPacings = ::testing::Types<TurnByTurn, PerMessage>;
+using HeldPacings = ::testing::Types<PerMessage, TurnByTurn>;
 
 /// What a read_ok callback returns to keep its message held: true under kPerMessage, and nothing under
 /// kTurnByTurn, where holding is the only outcome. Lets one callback body serve both held pacings, since

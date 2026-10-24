@@ -41,7 +41,7 @@ void ListFeatures::Start(routeguide::Rectangle rect) {
   }
 
   Callbacks cbs;
-  // (Point 2.5) TriggerEvent: OnReadDoneOk, for kept messages only. Delta against the turn-by-turn
+  // (Point 2.6) TriggerEvent: OnReadDoneOk, for kept messages only. Delta against the turn-by-turn
   // counterpart: the return value is the hold decision, taken for this message only, which makes the
   // callback a filter. Returning true keeps the message: the reactor holds the RPC until GetResponse(),
   // exactly as under kTurnByTurn, and the event carries the reactor itself. Returning false declines it:
@@ -50,7 +50,7 @@ void ListFeatures::Start(routeguide::Rectangle rect) {
   cbs.read_ok = [this](auto* reactor, const ResponseT& response) -> bool {
     assert(!OnApplicationThread());  // gRPC thread
     if (response.name().empty()) {
-      // (Point 2.17, 2.18, 2.19) Declined: the reactor itself arms the next read and releases the hold.
+      // (Point 2.18, 2.19, 2.20) Declined: the reactor itself arms the next read and releases the hold.
       logger_.info("skipped  | #{} unnamed feature: {}", ++skipped_seq_, protobuf_utils::ToString(response));
       return false;
     }
@@ -85,7 +85,7 @@ void ListFeatures::OnReadOk(const EventLoop::Event* event) {
   // issues StartRead() internally, so read_ok #k+1 can be logged before this thread runs another
   // statement.
   logger_.info("pulled   | #{} arming next read", seq);
-  // (Point 2.9, 2.10, 2.11) Delta against the push counterpart: extract the message, arm the next read
+  // (Point 2.9 to 2.13) Delta against the push counterpart: extract the message, arm the next read
   // and release the hold OnReadDone() took, all in one call.
   routeguide::ListFeatures::ResponseT response;
   if (!reactor_->GetResponse(response)) {

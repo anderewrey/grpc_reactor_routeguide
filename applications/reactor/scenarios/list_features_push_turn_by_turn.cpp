@@ -41,7 +41,7 @@ void ListFeatures::Start(routeguide::Rectangle rect) {
   }
 
   Callbacks cbs;
-  // (Point 2.13) TriggerEvent: OnReadDoneOk, handing the message ownership to the queue. The reactor
+  // (Point 2.6) TriggerEvent: OnReadDoneOk, handing the message ownership to the queue. The reactor
   // holds the RPC from here until ResumeRead(), so no further read is armed meanwhile.
   cbs.read_ok = [this](auto*, std::unique_ptr<ResponseT> response) {
     assert(!OnApplicationThread());  // gRPC thread
@@ -73,7 +73,7 @@ void ListFeatures::OnReadOk(const EventLoop::Event* event) {
   const auto seq = ++handled_seq_;
   // (Point 2.9) update application with response
   logger_.info("RESPONSE | #{} {}: {}", seq, response->GetTypeName(), protobuf_utils::ToString(*response));
-  // (Point 2.17, 2.18, 2.19) Delta against the continuous counterpart: arm the next read and release
+  // (Point 2.10, 2.11, 2.12) Delta against the continuous counterpart: arm the next read and release
   // the hold OnReadDone() took. Called from the application thread on purpose: resuming inline from
   // the gRPC callback is legal and erases the point of the mode.
   assert(reactor_);

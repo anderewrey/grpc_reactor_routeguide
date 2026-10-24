@@ -70,6 +70,14 @@ static_assert(std::is_same_v<
               routeguide::RouteChat::Callbacks<kDelivery, ReadPacing::kPerMessage>::OnReadDoneOkCallback,
               std::function<bool(grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                                  std::unique_ptr<routeguide::RouteNote>)>>);
+/// kPerMessage is the default ReadPacing, in the generic layer and in the RouteGuide one alike: naming only
+/// the Delivery selects it.
+static_assert(
+    std::is_same_v<RpcReactor::Client::ActiveBidiReactor<routeguide::RouteNote, routeguide::RouteNote, kDelivery>,
+                   RpcReactor::Client::ActiveBidiReactor<routeguide::RouteNote, routeguide::RouteNote, kDelivery,
+                                                         ReadPacing::kPerMessage>>);
+static_assert(std::is_same_v<routeguide::RouteChat::ClientReactor<kDelivery>,
+                             routeguide::RouteChat::ClientReactor<kDelivery, ReadPacing::kPerMessage>>);
 
 /// Test service implementing RouteChat for bidirectional streaming tests.
 /// Stores received notes by location and sends back all previously stored notes
@@ -219,7 +227,7 @@ class ActiveBidiReactorPacingTest : public ActiveBidiReactorTest {
 
   /// Builds a read_ok callback that gives every owned message to `keep`, then consumes it the way the
   /// pacing requires: nothing more under kContinuous, where the reactor re-arms by itself, and a
-  /// ResumeRead() under kTurnByTurn and kPerMessage, where the callback keeps the message held. The
+  /// ResumeRead() under kPerMessage and kTurnByTurn, where the callback keeps the message held. The
   /// message is handed to `keep` before the release, because ResumeRead() arms the next read, and the
   /// next read_ok could then run before this one returns. ResumeRead()'s result is not checked: unlike
   /// a read-only stream, a failed write or a cancel can end the RPC while the hold stands, and the
@@ -240,7 +248,7 @@ TYPED_TEST_SUITE(ActiveBidiReactorPacingTest, pacing_test::AllPacings);
 
 /// Fixture for the behaviours of a held message, under the two pacings that hold one: kTurnByTurn
 /// always, and kPerMessage when read_ok returns true.
-/// @tparam PacingTagT a pacing_test::PacingTag, selecting kTurnByTurn or kPerMessage
+/// @tparam PacingTagT a pacing_test::PacingTag, selecting kPerMessage or kTurnByTurn
 template <class PacingTagT>
 class ActiveBidiReactorHeldPacingTest : public ActiveBidiReactorTest {
  protected:

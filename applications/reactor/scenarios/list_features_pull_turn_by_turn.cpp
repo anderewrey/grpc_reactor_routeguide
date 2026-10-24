@@ -41,7 +41,7 @@ void ListFeatures::Start(routeguide::Rectangle rect) {
   }
 
   Callbacks cbs;
-  // (Point 2.5) TriggerEvent: OnReadDoneOk. The message stays in the reactor, so the event carries the
+  // (Point 2.6) TriggerEvent: OnReadDoneOk. The message stays in the reactor, so the event carries the
   // reactor itself. The reactor holds the RPC from here until GetResponse(), so no further read is
   // armed meanwhile, and the lent message stays valid until it is pulled.
   cbs.read_ok = [this](auto* reactor, const ResponseT& response) {
@@ -76,7 +76,7 @@ void ListFeatures::OnReadOk(const EventLoop::Event* event) {
   // issues StartRead() internally, so read_ok #k+1 can be logged before this thread runs another
   // statement.
   logger_.info("pulled   | #{} arming next read", seq);
-  // (Point 2.9, 2.10, 2.11) Delta against the push counterpart: extract the message, arm the next read
+  // (Point 2.9 to 2.13) Delta against the push counterpart: extract the message, arm the next read
   // and release the hold OnReadDone() took, all in one call.
   routeguide::ListFeatures::ResponseT response;
   if (!reactor_->GetResponse(response)) {

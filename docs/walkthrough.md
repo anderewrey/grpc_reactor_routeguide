@@ -114,7 +114,7 @@ cbs.done = [](auto*, const grpc::Status&, std::unique_ptr<ResponseT> response) {
 };
 ```
 
-The template parameter has no default. Each `ClientReactor` names its approach, as both scenario headers do with
+`Delivery` has no default. Each `ClientReactor` names its approach, as both scenario headers do with
 `ClientReactor<Delivery::kPull>` and `ClientReactor<Delivery::kPush>`.
 
 ## Step 4: choose for your RPC
@@ -131,25 +131,31 @@ reasoning applies to `RecordRoute`, whose reactor also delivers one terminal res
 ## Step 5: what changes with a stream
 
 A streaming RPC delivers many messages, so a second question appears: who arms the next read? A second template
-parameter, `ReadPacing`, answers it. It works with either `Delivery`, so a reading reactor names both, as in
-`ClientReactor<Delivery::kPull, ReadPacing::kTurnByTurn>`.
+parameter, `ReadPacing`, answers it, with either `Delivery`. Its three modes sit on one scale, from a stream that never
+waits for your handler to one that always does:
 
 | `ReadPacing` | Who arms the next read | Under `kPull`, your handler calls | Under `kPush`, your handler calls |
 | --- | --- | --- | --- |
 | `kContinuous` | The reactor, once `read_ok` returns | Nothing: `read_ok` used it in place | Nothing: it owns it |
-| `kTurnByTurn` | Your handler, once it is done | `GetResponse()` | `ResumeRead()` |
 | `kPerMessage` | `read_ok`, for each message | `GetResponse()`, if `read_ok` kept it | `ResumeRead()`, if kept |
+| `kTurnByTurn` | Your handler, once it is done | `GetResponse()` | `ResumeRead()` |
+
+The middle one, `kPerMessage`, is the default, so `ClientReactor<Delivery::kPull>` uses it: your `read_ok` returns
+`true` to hold a message for your handler, or `false` to let the stream run on. The two ends fix that answer for the
+whole RPC, for a design that has already made it, as in `ClientReactor<Delivery::kPull, ReadPacing::kTurnByTurn>`.
 
 That makes six combinations, and the demo runs all six for `ListFeatures`. Whenever your handler arms the next
 read, it does so from the application thread, which needs a hold, so the hold rule now matters. Run the demo again
-and filter on `ListFeatures.pull.turn`. The `read_ok` lines carry a different thread id from the `pulled` and
-`RESPONSE` lines, because `read_ok` is logged on the gRPC thread.
+and filter on `ListFeatures.pull.msg`, the default pacing used as a filter. The `read_ok` and `skipped` lines carry
+a different thread id from the `pulled` and `RESPONSE` lines, because `read_ok` is logged on the gRPC thread. A
+skipped feature is one `read_ok` declined, so no handler line follows it.
 
-Two comparisons show the two axes, one at a time:
+Three comparisons show the two axes, one at a time:
 
 ```bash
 cd applications/reactor/scenarios
-diff list_features_push_continuous.cpp list_features_push_turn_by_turn.cpp  # the pacing, at the same delivery
+diff list_features_pull_turn_by_turn.cpp list_features_pull_per_message.cpp  # what deciding per message adds
+diff list_features_push_continuous.cpp list_features_push_turn_by_turn.cpp    # the two ends of the scale
 diff list_features_pull_turn_by_turn.cpp list_features_push_turn_by_turn.cpp  # the delivery, at the same pacing
 ```
 

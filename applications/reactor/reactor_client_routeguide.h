@@ -72,7 +72,7 @@ using Delivery = RpcReactor::Client::Delivery;
 using ReadPacing = RpcReactor::Client::ReadPacing;
 
 /// Specialized callback slots for RouteGuide::ListFeatures stream-reader RPC client
-template <Delivery kDelivery, ReadPacing kPacing>
+template <Delivery kDelivery, ReadPacing kPacing = ReadPacing::kPerMessage>
 using Callbacks = RpcReactor::Client::ActiveReadCallbacks<ResponseT, kDelivery, kPacing>;
 
 /// Specialized reactor class for RouteGuide::ListFeatures stream-reader RPC client.
@@ -80,7 +80,7 @@ using Callbacks = RpcReactor::Client::ActiveReadCallbacks<ResponseT, kDelivery, 
 /// untouched: which combination suits a ListFeatures call is the application's decision.
 /// @tparam kDelivery how the reactor hands each message over, chosen by the application per RPC
 /// @tparam kPacing who arms the next read, chosen by the application per RPC
-template <Delivery kDelivery, ReadPacing kPacing>
+template <Delivery kDelivery, ReadPacing kPacing = ReadPacing::kPerMessage>
 class ClientReactor final : public RpcReactor::Client::ActiveReadReactor<ResponseT, kDelivery, kPacing> {
   using Base = RpcReactor::Client::ActiveReadReactor<ResponseT, kDelivery, kPacing>;
 
@@ -156,7 +156,7 @@ using Delivery = RpcReactor::Client::Delivery;
 using ReadPacing = RpcReactor::Client::ReadPacing;
 
 /// Specialized callback slots for RouteGuide::RouteChat bidirectional streaming RPC client
-template <Delivery kDelivery, ReadPacing kPacing>
+template <Delivery kDelivery, ReadPacing kPacing = ReadPacing::kPerMessage>
 using Callbacks = RpcReactor::Client::ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kPacing>;
 
 /// Specialized reactor class for RouteGuide::RouteChat bidirectional streaming RPC client.
@@ -180,7 +180,7 @@ using Callbacks = RpcReactor::Client::ActiveBidiCallbacks<RequestT, ResponseT, k
 /// GetResponse() and ResumeRead() are not offered under ReadPacing::kContinuous, which holds nothing.
 /// @tparam kDelivery how the reactor hands each message over, chosen by the application per RPC
 /// @tparam kPacing who arms the next read, chosen by the application per RPC
-template <Delivery kDelivery, ReadPacing kPacing>
+template <Delivery kDelivery, ReadPacing kPacing = ReadPacing::kPerMessage>
 class ClientReactor final
     : public RpcReactor::Client::ActiveBidiReactor<RequestT, ResponseT, kDelivery, kPacing> {
   using Base = RpcReactor::Client::ActiveBidiReactor<RequestT, ResponseT, kDelivery, kPacing>;

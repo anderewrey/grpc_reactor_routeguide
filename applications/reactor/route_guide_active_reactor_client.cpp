@@ -48,7 +48,7 @@
  * - A scenario's application-thread handlers = Servant (business logic placeholder)
  * - Status() = Future, and GetResponse() for the Delivery::kPull scenarios whose reactor keeps a
  *   response for the application to pull: the unary and write ones, and the reading ones under a
- *   pacing that holds (kTurnByTurn, or kPerMessage when read_ok keeps the message). A kPull reader
+ *   pacing that holds (kPerMessage when read_ok keeps the message, or kTurnByTurn). A kPull reader
  *   under kContinuous has nothing to pull, and the Delivery::kPush scenarios' reactors hand each
  *   message out as an owned object instead
  * - AddHold/RemoveHold = Guards, wherever a read is re-armed from the application thread
@@ -57,20 +57,20 @@
  * everything one RPC needs on the application side, so a variant added to one RPC touches no other
  * RPC's file. The flavour of a variant is named by the filename and by the enclosing namespace,
  * never by the class, so a class is named after the RPC method it drives. A reading reactor has two
- * independent axes, the Delivery (kPull, kPush) and the ReadPacing (kContinuous, kTurnByTurn,
- * kPerMessage), so its namespace names both, delivery first:
+ * independent axes, the Delivery (kPull, kPush) and the ReadPacing (kContinuous, kPerMessage,
+ * kTurnByTurn), so its namespace names both, delivery first:
  *
  * - rg_demo::pull::GetFeature                  unary, Delivery::kPull
  * - rg_demo::push::GetFeature                  unary, Delivery::kPush
  * - rg_demo::pull::continuous::ListFeatures    read, consumes each lent message inside read_ok, into
  *                                              an aggregate reported at OnDone
- * - rg_demo::pull::turn_by_turn::ListFeatures  read, every message held, then pulled by GetResponse()
  * - rg_demo::pull::per_message::ListFeatures   read, a filter: read_ok keeps named features, to be
  *                                              pulled, and declines unnamed ones
+ * - rg_demo::pull::turn_by_turn::ListFeatures  read, every message held, then pulled by GetResponse()
  * - rg_demo::push::continuous::ListFeatures    read, every message queued, the reactor reads on
- * - rg_demo::push::turn_by_turn::ListFeatures  read, every message queued and held until ResumeRead()
  * - rg_demo::push::per_message::ListFeatures   read, backpressure: read_ok holds once a few messages
  *                                              wait for the application
+ * - rg_demo::push::turn_by_turn::ListFeatures  read, every message queued and held until ResumeRead()
  * - rg_demo::pull::RecordRoute                 write, Delivery::kPull
  * - rg_demo::push::RecordRoute                 write, Delivery::kPush
  * - rg_demo::pull::continuous::RouteChat       bidi, as its ListFeatures namesake on the read side
@@ -78,8 +78,9 @@
  * - rg_demo::push::continuous::RouteChat       bidi, as its ListFeatures namesake on the read side
  * - rg_demo::push::turn_by_turn::RouteChat     bidi, as its ListFeatures namesake on the read side
  *
- * ListFeatures covers all six cells of the two axes. RouteChat covers only the four fixed-pacing
- * cells: the read side of ActiveBidiReactor behaves exactly as ActiveReadReactor does, so a
+ * ListFeatures covers all six cells of the two axes. Its two kPerMessage scenarios name only their
+ * Delivery, since kPerMessage is the default pacing; the four others name the fixed pacing they
+ * commit to. RouteChat covers only the four fixed-pacing cells: the read side of ActiveBidiReactor behaves exactly as ActiveReadReactor does, so a
  * kPerMessage RouteChat would repeat what the ListFeatures per-message cells already show. RouteChat's
  * own lesson is the write side, an identical pump in every cell, running next to each delivery and
  * each fixed pacing of the read side.
@@ -141,11 +142,11 @@ int main(int argc, char** argv) {
   rg_demo::pull::GetFeature get_feature_pull{*stub};
   rg_demo::push::GetFeature get_feature_push{*stub};
   rg_demo::pull::continuous::ListFeatures list_features_pull_continuous{*stub};
-  rg_demo::pull::turn_by_turn::ListFeatures list_features_pull_turn_by_turn{*stub};
   rg_demo::pull::per_message::ListFeatures list_features_pull_per_message{*stub};
+  rg_demo::pull::turn_by_turn::ListFeatures list_features_pull_turn_by_turn{*stub};
   rg_demo::push::continuous::ListFeatures list_features_push_continuous{*stub};
-  rg_demo::push::turn_by_turn::ListFeatures list_features_push_turn_by_turn{*stub};
   rg_demo::push::per_message::ListFeatures list_features_push_per_message{*stub};
+  rg_demo::push::turn_by_turn::ListFeatures list_features_push_turn_by_turn{*stub};
   rg_demo::pull::RecordRoute record_route_pull{*stub};
   rg_demo::push::RecordRoute record_route_push{*stub};
   rg_demo::pull::continuous::RouteChat route_chat_pull_continuous{*stub};
@@ -176,16 +177,16 @@ int main(int argc, char** argv) {
 
   spdlog::info("-------------- ListFeatures kPull kContinuous --------------");
   list_features_pull_continuous.Start(rect);
-  spdlog::info("-------------- ListFeatures kPull kTurnByTurn --------------");
-  list_features_pull_turn_by_turn.Start(rect);
   spdlog::info("-------------- ListFeatures kPull kPerMessage --------------");
   list_features_pull_per_message.Start(rect);
+  spdlog::info("-------------- ListFeatures kPull kTurnByTurn --------------");
+  list_features_pull_turn_by_turn.Start(rect);
   spdlog::info("-------------- ListFeatures kPush kContinuous --------------");
   list_features_push_continuous.Start(rect);
-  spdlog::info("-------------- ListFeatures kPush kTurnByTurn --------------");
-  list_features_push_turn_by_turn.Start(rect);
   spdlog::info("-------------- ListFeatures kPush kPerMessage --------------");
   list_features_push_per_message.Start(rect);
+  spdlog::info("-------------- ListFeatures kPush kTurnByTurn --------------");
+  list_features_push_turn_by_turn.Start(rect);
   spdlog::info("-------------- GetFeature kPull --------------");
   get_feature_pull.Start(point);
   spdlog::info("-------------- GetFeature kPush --------------");
