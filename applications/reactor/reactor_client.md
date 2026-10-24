@@ -66,7 +66,9 @@ All three streaming reactors track whether further read/write operations are sti
 the `ok` flag that answers the same question:
 
 - Set by `OnReadDone(false)`, `OnWriteDone(false)`, `OnWritesDoneDone()`, and `OnDone()` (whichever apply to that
-  reactor's direction).
+  reactor's direction). On `ActiveBidiReactor`, `OnWritesDoneDone()` sets it only when the close failed: a
+  successful close ends the write side alone, which `writes_done_` already keeps shut, while the server may still
+  be sending. Setting the flag there would stop a held read from ever being re-armed, and the RPC would never end.
 - Checked before issuing a new `StartRead()`, `StartWrite()`, `StartWriteLast()`, or `StartWritesDone()`. On
   `ActiveBidiReactor`'s write path the check happens after the hold claim is won rather than before, see below.
 - On the read side, only `GetResponse()` (`Delivery::kPull`) and `ResumeRead()` (`Delivery::kPush`, under

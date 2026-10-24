@@ -1011,10 +1011,14 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
 
   /// This event function is called by gRPC when an explicit StartWritesDone() operation (i.e.
   /// CloseRequestStream()) completes. Not called for a close implied via StartWriteLast() (i.e.
-  /// SendLastRequest()). Either way, the write side is conclusively over once this fires, so it
-  /// is tracked the same as OnDone() for that purpose.
+  /// SendLastRequest()). Either way, the write side is already over, and writes_done_ keeps it shut.
+  /// A successful close says nothing about the read side, which the server may keep feeding: marking
+  /// the stream over here would stop a held read from ever being re-armed, and the RPC would never
+  /// end. Only a failed close, like any failed operation, means neither direction can go on.
   /// @param ok true if the close was successful
-  void OnWritesDoneDone(bool /*ok*/) override { stream_no_more_ = true; }
+  void OnWritesDoneDone(bool ok) override {
+    if (!ok) stream_no_more_ = true;
+  }
 
   /// This event function is called by gRPC when the RPC is done and no more operation is possible
   /// with that reactor instance. The OnDoneCallback is then called, but on the same gRPC thread.
@@ -1126,8 +1130,8 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   // Set by application thread, read by application thread.
   std::atomic_bool writes_done_{false};
 
-  // Once we got OnReadDone(false), OnWriteDone(false), or OnDone(), no more StartRead() or
-  // StartWrite() must be called. Per gRPC's own contract (grpcpp/support/client_callback.h), a
+  // Once we got OnReadDone(false), OnWriteDone(false), OnWritesDoneDone(false), or OnDone(), no more
+  // StartRead() or StartWrite() must be called. Per gRPC's own contract (grpcpp/support/client_callback.h), a
   // failure on either direction means neither will succeed anymore, so one flag covers both.
   // Set by gRPC thread, read by application thread.
   std::atomic_bool stream_no_more_{false};
