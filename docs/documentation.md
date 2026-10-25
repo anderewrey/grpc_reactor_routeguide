@@ -63,8 +63,8 @@ This project's existing docs map onto all four:
 | [walkthrough.md](/docs/walkthrough.md) | Tutorial | Pick your reactor and start: one part per RPC shape, built from a demo scenario |
 | [developing.md](/docs/developing.md), [testing.md](/docs/testing.md) | How-to guide | Build, run, and test steps |
 | [reactor_client.md](/applications/reactor/reactor_client.md) | Reference | Every variant side by side, then the class-by-class API |
-| [variants/README.md](/applications/reactor/variants/README.md) | Reference | Every demo scenario, its variant, and what it does |
-| [usecases/README.md](/applications/reactor/usecases/README.md) | Reference | The real-life situation behind each use case |
+| [variants/README.md](/applications/reactor/variants/README.md) | Reference | Every scenario, its variant, and the mechanics it shows |
+| [usecases/README.md](/applications/reactor/usecases/README.md) | Reference | The real-life situation behind each use case, and why its variant fits |
 | [architecture.md](/docs/architecture.md) | Explanation | Design rationale: why this pattern, why these choices |
 
 Before adding to a document, decide which of these four kinds the new content is, and put it in the document
@@ -72,3 +72,7 @@ that matches. Reasoning and trade-offs belong in `architecture.md`, not `reactor
 mechanics belong in `reactor_client.md`, not `architecture.md`. Neither should carry step-by-step build commands;
 those belong in `developing.md`. A guided first contact that walks through running code belongs in `walkthrough.md`,
 which links to the reference and the explanation rather than repeating them.
+
+The two READMEs split the demo the way its code does. A variant shows the mechanics of its parameters and nothing
+else, so what a variant does belongs in `variants/README.md`. A use case adds a real-life reason to choose those
+parameters, so the situation and the reason belong in `usecases/README.md`, and in the use case's own header comment.

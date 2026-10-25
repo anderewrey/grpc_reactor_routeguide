@@ -102,6 +102,20 @@ Both applications use the fixed port 50051, so the test holds a CTest `RESOURCE_
 server is killed at the end, so its exit-time checks (LeakSanitizer, coverage profiles) do not
 run.
 
+### Reactor demo applications
+
+The two reactor applications, `route_guide_active_reactor_client` for the variants and
+`route_guide_reactor_usecases` for the use cases, have no tests of their own, and no CTest entry
+runs them: their event loop never stops, so they run by hand, against `route_guide_callback_server`,
+as described in [developing.md](/docs/developing.md#run). Every scenario asserts which thread runs
+each callback and handler. Each use case also asserts what it claims, so a Debug run checks it every
+time. For example, `turn_by_turn_guidance` asserts that no stop is read before the previous one was
+confirmed, and `live_route_recording` that the summary counts every point the GPS produced. The
+variants' ordering claims are checked in the transcript only: the header comment of each
+application says which log lines to compare, such as a `resumed  | #k` line always coming before
+`read_ok  | #k+1`. The patterns two use cases rely on are tested on their own, in the
+[latest-only](#latest-only-coverage) and [journal](#journal-coverage) suites.
+
 ### When to use each approach
 
 | Scenario | Approach |
@@ -330,7 +344,7 @@ loop, are shared with the journal suite, in [continuous_use_support.h][continuou
 | `MoveOnlyValue_IsMovedThrough` | An owned `kPush` message fits the slot |
 | `ProducerAgainstNotifiedConsumer_KeepsEveryPromise` | 100000 values against a consumer on its own event loop |
 | `BlockedConsumer_StreamRunsOn_AndOnlyTheLastReadingIsLeft` | The stream ends with nothing taken, one event asked for |
-| `SlowConsumer_HandlesOnlyNewerReadings_AndEndsOnTheLast` | A slow consumer on its own event loop, as in the demo |
+| `SlowConsumer_HandlesOnlyNewerReadings_AndEndsOnTheLast` | A slow consumer on its own event loop, as in the use case |
 
 The racing tests check the same promises: at most one event waits in the queue, the consumer only moves forward, every
 value is either taken or counted as replaced, and the last value is the last one taken. Five mutants of `LatestSlot`
@@ -345,7 +359,7 @@ were each caught by at least three tests: always asking for an event, never aski
 | Test | Checks |
 | ------ | --------- |
 | `BlockedJournal_StreamEndsWithEveryRecordQueued_ThenAllAreWrittenInOrder` | Ends with all queued, then all in order |
-| `SlowJournal_WritesEveryRecordInOrder_AfterTheRpcEnded` | A slow journal on its own event loop, as in the demo |
+| `SlowJournal_WritesEveryRecordInOrder_AfterTheRpcEnded` | A slow journal on its own event loop, as in the use case |
 
 Two mutants of `ActiveReadReactor` under `kContinuous` were each caught. Without the re-arm, both tests fail: the stream
 stops after its first message. Taking a hold as `kTurnByTurn` does, the first test aborts, since the stream stalls and

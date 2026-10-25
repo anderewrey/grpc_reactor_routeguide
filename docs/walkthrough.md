@@ -336,8 +336,10 @@ using ClientReactor = routeguide::ListFeatures::ClientReactor<Delivery::kPull>;
 ### Step 2: write read_ok
 
 `read_ok` runs on a gRPC thread, for each message. Under `kPull` with `kPerMessage`, it decides on the lent message,
-queues the reactor pointer for a message it keeps, and returns its decision. The demo keeps named features only, which
-makes it a filter:
+queues the reactor pointer for a message it keeps, and returns its decision. The variant decides by an arbitrary rule,
+keeping every second message, so that it shows the mechanics and nothing else. A real application decides from the
+message. The [place_search](/applications/reactor/usecases/place_search.cpp) use case keeps the named places only,
+which makes it a filter:
 
 ```cpp
 cbs.read_ok = [](auto* reactor, const ResponseT& response) -> bool {
@@ -391,10 +393,12 @@ Two rules come with it:
 - **Never call it for a declined message.** A release call releases whichever message is held at that moment. For a
   declined message, that can be the next one, whose `read_ok` may still be deciding.
 
-In this filter, both rules hold by construction: only a kept message queues an event, so `OnReadOk` runs once per kept
+Under `kPull`, both rules hold by construction: only a kept message queues an event, so `OnReadOk` runs once per kept
 message. Under `kPush`, where you usually queue every message, record which one `read_ok` held, and call `ResumeRead()`
 only from that message's handler, as
-[list_features_push_per_message.cpp](/applications/reactor/variants/list_features_push_per_message.cpp) does.
+[list_features_push_per_message.cpp](/applications/reactor/variants/list_features_push_per_message.cpp) does. The
+[offline_map_download](/applications/reactor/usecases/offline_map_download.cpp) use case applies it to a real decision:
+the download holds the stream once three places wait for the disk writer.
 
 ### Step 6: see it run
 
@@ -402,36 +406,36 @@ only from that message's handler, as
 ./$DIR/applications/reactor/route_guide_active_reactor_client | grep -F '[ListFeatures.pull.msg]'
 ```
 
-The output looks like this, shortened to its first messages, its first declined ones, and its end:
+The output looks like this, shortened to its first messages and its end:
 
 ```text
-[19:22:54.961098][ListFeatures.pull.msg][23807][I]          | reactor[0x555994128d30] created
-[19:22:54.962946][ListFeatures.pull.msg][23817][I] read_ok  | #1 routeguide.Feature
-[19:22:54.966703][ListFeatures.pull.msg][23807][I] pulled   | #1 arming next read
-[19:22:54.966720][ListFeatures.pull.msg][23807][I] RESPONSE | #1 routeguide.Feature: name: "Patriots Path, ..." ...
+[14:54:21.738720][ListFeatures.pull.msg][20403][I]          | reactor[0x564a1b8ffcd0] created
+[14:54:21.853182][ListFeatures.pull.msg][20412][I] skipped  | #1 routeguide.Feature: name: "Patriots Path, ..." ...
+[14:54:21.853384][ListFeatures.pull.msg][20412][I] read_ok  | #1 routeguide.Feature
+[14:54:21.853504][ListFeatures.pull.msg][20403][I] pulled   | #1 arming next read
+[14:54:21.853508][ListFeatures.pull.msg][20403][I] RESPONSE | #1 routeguide.Feature: name: "101 New Jersey 10, ..." ...
+[14:54:21.853764][ListFeatures.pull.msg][20413][I] skipped  | #2 routeguide.Feature: name: "U.S. 6, Shohola, ..." ...
+[14:54:21.853944][ListFeatures.pull.msg][20413][I] read_ok  | #2 routeguide.Feature
+[14:54:21.853962][ListFeatures.pull.msg][20403][I] pulled   | #2 arming next read
+[14:54:21.853970][ListFeatures.pull.msg][20403][I] RESPONSE | #2 routeguide.Feature: name: "5 Conners Road, ..." ...
 ...
-[19:22:54.971357][ListFeatures.pull.msg][23817][I] read_ok  | #23 routeguide.Feature
-[19:22:54.971375][ListFeatures.pull.msg][23807][I] pulled   | #23 arming next read
-[19:22:54.971385][ListFeatures.pull.msg][23807][I] RESPONSE | #23 routeguide.Feature: name: "1300 Airport Road, ..." ...
-[19:22:54.971438][ListFeatures.pull.msg][23817][I] skipped  | #1 unnamed feature: location { latitude: 407113723 ... }
-[19:22:54.971692][ListFeatures.pull.msg][23816][I] skipped  | #2 unnamed feature: location { latitude: 402133926 ... }
-[19:22:54.972371][ListFeatures.pull.msg][23816][I] read_ok  | #24 routeguide.Feature
-[19:22:54.972383][ListFeatures.pull.msg][23807][I] pulled   | #24 arming next read
-...
-[19:22:54.979514][ListFeatures.pull.msg][23807][I]          | ListFeaturesPullMsgOnReadDoneNOk reactor: 0x555994128d30
-[19:22:54.979531][ListFeatures.pull.msg][23807][I]          | ListFeaturesPullMsgOnDone reactor: 0x555994128d30
-[19:22:54.979533][ListFeatures.pull.msg][23807][I] totals   | 64 kept, 36 skipped
-[19:22:54.979555][ListFeatures.pull.msg][23807][I]          | reactor[0x555994128d30] ended
+[14:54:21.865308][ListFeatures.pull.msg][20403][I]          | ListFeaturesPullMsgOnReadDoneNOk reactor: 0x564a1b8ffcd0
+[14:54:21.865310][ListFeatures.pull.msg][20403][I]          | ListFeaturesPullMsgOnDone reactor: 0x564a1b8ffcd0
+[14:54:21.865312][ListFeatures.pull.msg][20403][I] totals   | 50 kept, 50 skipped
+[14:54:21.865313][ListFeatures.pull.msg][20403][I]          | reactor[0x564a1b8ffcd0] ended
 ```
 
 Three things are worth checking in your own run:
 
-- Two kinds of thread appear. Thread 23807 is the application thread. The `read_ok` and `skipped` lines carry other
-  ids, here 23816 and 23817, because `read_ok` logs them on a gRPC thread, which can change from one message to the
+- Two kinds of thread appear. Thread 20403 is the application thread. The `read_ok` and `skipped` lines carry other
+  ids, here 20412 and 20413, because `read_ok` logs them on a gRPC thread, which can change from one message to the
   next.
-- `read_ok #k+1` never comes before `pulled #k`: while a kept feature waits for your handler, the stream waits too.
-- A `skipped` line is never followed by an application-thread line: a declined feature never reaches your handler,
+- `read_ok #k+1` never comes before `pulled #k`: while a kept message waits for your handler, the stream waits too.
+- A `skipped` line is never followed by an application-thread line: a declined message never reaches your handler,
   and the stream did not wait for it.
+
+The same filter in `place_search`, run by `route_guide_reactor_usecases`, keeps the 64 named places of the rectangle
+and skips its 36 unnamed ones, and logs each skipped one as `skipped  | #j unnamed place`.
 
 ### Step 7: fix the pacing once your design has decided
 
@@ -508,7 +512,7 @@ catches up later, in order:
 ```
 
 Nothing bounds that backlog but the length of the stream. When yours must stay bounded, keep `kPush` and choose
-`kPerMessage`, as `list_features_push_per_message.cpp` does. The trade-off is described under
+`kPerMessage`, as the `offline_map_download.cpp` use case does. The trade-off is described under
 [Handling every message without slowing the stream][journal] in the reference.
 
 ### Your checklist
@@ -752,36 +756,34 @@ Your read handlers release each kept note, as in Part 2.
 ./$DIR/applications/reactor/route_guide_active_reactor_client | grep -F '[RouteChat.pull.msg]'
 ```
 
-The output looks like this, with the notes shortened:
+The output looks like this, shortened in the middle:
 
 ```text
-[19:22:54.962006][RouteChat.pull.msg][23807][I]          | reactor[0x555994157960] created
-[19:22:54.962646][RouteChat.pull.msg][23807][I]          | RouteChatPullMsgOnWriteDone reactor: 0x555994157960
-[19:22:54.962996][RouteChat.pull.msg][23807][I]          | RouteChatPullMsgOnWriteDone reactor: 0x555994157960
-[19:22:54.966725][RouteChat.pull.msg][23807][I]          | RouteChatPullMsgOnWriteDone reactor: 0x555994157960
-[19:22:54.967113][RouteChat.pull.msg][23817][I] read_ok  | #1 routeguide.RouteNote
-[19:22:54.967125][RouteChat.pull.msg][23807][I] pulled   | #1 arming next read
-[19:22:54.967250][RouteChat.pull.msg][23817][I] skipped  | #1 repeated note: location { } message: "First message"
-[19:22:54.967276][RouteChat.pull.msg][23817][I] read_ok  | #2 routeguide.RouteNote
-[19:22:54.967151][RouteChat.pull.msg][23807][I] RESPONSE | #1 routeguide.RouteNote: location { } message: "First ..."
-[19:22:54.967745][RouteChat.pull.msg][23807][I] pulled   | #2 arming next read
-[19:22:54.967749][RouteChat.pull.msg][23807][I] RESPONSE | #2 routeguide.RouteNote: location { } message: "Second ..."
+[14:54:21.739284][RouteChat.pull.msg][20403][I]          | reactor[0x564a1b92c370] created
+[14:54:21.837629][RouteChat.pull.msg][20403][I]          | RouteChatPullMsgOnWriteDone reactor: 0x564a1b92c370
+[14:54:21.853031][RouteChat.pull.msg][20403][I]          | RouteChatPullMsgOnWriteDone reactor: 0x564a1b92c370
+[14:54:21.853328][RouteChat.pull.msg][20412][I] skipped  | #1 routeguide.RouteNote: location { } message: "First message"
+[14:54:21.853416][RouteChat.pull.msg][20412][I] read_ok  | #1 routeguide.RouteNote
+[14:54:21.853525][RouteChat.pull.msg][20403][I] pulled   | #1 arming next read
+[14:54:21.853529][RouteChat.pull.msg][20403][I] RESPONSE | #1 routeguide.RouteNote: location { } message: "First message"
+[14:54:21.853550][RouteChat.pull.msg][20403][I]          | RouteChatPullMsgOnWriteDone reactor: 0x564a1b92c370
+[14:54:21.853871][RouteChat.pull.msg][20413][I] skipped  | #2 routeguide.RouteNote: location { } message: "First message"
+[14:54:21.853959][RouteChat.pull.msg][20413][I] read_ok  | #2 routeguide.RouteNote
+[14:54:21.854270][RouteChat.pull.msg][20403][I] pulled   | #2 arming next read
 ...
-[19:22:54.969510][RouteChat.pull.msg][23816][I] read_ok  | #3 routeguide.RouteNote
-[19:22:54.969597][RouteChat.pull.msg][23807][I] pulled   | #3 arming next read
-[19:22:54.969639][RouteChat.pull.msg][23807][I] RESPONSE | #3 routeguide.RouteNote: location { latitude: 10000000 } ...
-[19:22:54.969782][RouteChat.pull.msg][23807][I]          | RouteChatPullMsgOnReadDoneNOk reactor: 0x555994157960
-[19:22:54.969786][RouteChat.pull.msg][23807][I]          | RouteChatPullMsgOnDone reactor: 0x555994157960 Status: OK: ...
-[19:22:54.969788][RouteChat.pull.msg][23807][I] totals   | 3 kept, 7 skipped
-[19:22:54.969829][RouteChat.pull.msg][23807][I]          | reactor[0x555994157960] ended
+[14:54:21.855239][RouteChat.pull.msg][20413][I] skipped  | #5 routeguide.RouteNote: location { latitude: 10000000 } ...
+[14:54:21.855560][RouteChat.pull.msg][20403][I]          | RouteChatPullMsgOnReadDoneNOk reactor: 0x564a1b92c370
+[14:54:21.855563][RouteChat.pull.msg][20403][I]          | RouteChatPullMsgOnDone reactor: 0x564a1b92c370 Status: OK: ...
+[14:54:21.855564][RouteChat.pull.msg][20403][I] totals   | 4 kept, 5 skipped
+[14:54:21.855573][RouteChat.pull.msg][20403][I]          | reactor[0x564a1b92c370] ended
 ```
 
-The write side's three `OnWriteDone` lines come first here, and the read side's lines interleave with the
-application thread's: the two directions do not wait for each other. The read side is Part 2's filter: `read_ok` keeps
-a note the first time it is seen, and declines the repeats that the server echoes again and again. Two threads log at
-once, so a line can appear a few microseconds out of timestamp order, as `RESPONSE #1` does. The counts change from
-run to run, because the reference server keeps one note history for the whole service, so each `RouteChat` scenario
-also receives the notes the others sent.
+The write side's `OnWriteDone` lines interleave with the read side's: the two directions do not wait for each other.
+The read side is Part 2's, with the same arbitrary rule: `read_ok`
+keeps every second note and declines the others. The counts change from run to run, because the reference server
+keeps one note history for the whole service, so each `RouteChat` scenario also receives the notes the others sent. The
+[guided_tour_briefing](/applications/reactor/usecases/guided_tour_briefing.cpp) use case decides for a reason: it keeps
+a reply the first time it is seen, and declines the repeats the server echoes again and again.
 
 ### Step 5: compare along each choice
 
