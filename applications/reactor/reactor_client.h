@@ -582,6 +582,25 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// This class cannot be moved.
   ActiveWriteReactor& operator=(ActiveWriteReactor&&) = delete;
 
+  /// Activates the RPC, and takes the hold that covers the whole write flow. gRPC destroys a call as soon
+  /// as nothing is pending on it, before it even calls OnDone(), so a write issued from outside a reaction
+  /// needs a hold, or it can reach a call that is already gone. This is the pattern gRPC documents for
+  /// such operations (see AddHold() in grpcpp/support/client_callback.h): a hold taken before StartCall(),
+  /// and released once no more writes will be issued. Shadows grpc::ClientWriteReactor::StartCall(),
+  /// which the specialized reactor calls last in its constructor, so a new specialization cannot forget
+  /// to take the hold. gRPC accepts a hold only before StartCall() or from inside a reaction, which is why
+  /// it is taken here. The flow is published as open before StartCall(), so a reaction arriving right
+  /// after it finds the hold claimable.
+  /// Unlike ActiveBidiReactor's idle hold, this one cannot be released when the RPC ends on its own: a
+  /// client-streaming RPC has no read stream, so no reaction reports a deadline or a server error while no
+  /// write is in flight. The application must therefore end the write flow itself, with SendLastRequest(),
+  /// CloseRequestStream() or TryCancel(), or by a write that fails. Until then, OnDone() cannot fire.
+  void StartCall() {
+    this->AddHold();
+    write_flow_ = kFlowOpen;
+    grpc::ClientWriteReactor<RequestT>::StartCall();
+  }
+
   /// Sends a request message asynchronously on the client stream.
   /// The write operation completes asynchronously and OnWriteDone() will be called.
   /// gRPC requires that only one write be in flight at a time, so this method
@@ -589,63 +608,90 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// OnWriteDone() before calling SendRequest() again.
   /// The caller gives up the request to the reactor: it must be a temporary or explicitly
   /// std::move()'d, since the reactor takes ownership and the caller must not keep using it.
+  /// When the write flow is known to be over, because a write failed or TryCancel() was called, this
+  /// call ends it and returns false, which releases the write-flow hold and lets OnDone() follow.
   /// @param request message to send, moved into the reactor
-  /// @return true if the write was initiated, false if rejected (stream closed, write pending,
-  ///         or the RPC has already finished/is finishing)
+  /// @return true if the write was initiated, false if rejected (write pending, write side closed, or
+  ///         the RPC is over or cancelled)
   bool SendRequest(RequestT&& request) {
-    // The stream_no_more_ check narrows a race it cannot close: a gRPC thread can set the flag
-    // right after this check passes. Which reactions set the flag is listed at its declaration.
-    // ActiveBidiReactor closes the same window by claiming a hold that covers only the idle write
-    // stream, but that design needs OnReadDone(false) to release it, and this reactor has no read
-    // stream to supply one. See "Why the write side of ActiveWriteReactor has no hold" in
-    // docs/architecture.md.
-    if (stream_no_more_) return false;  // RPC already finished (or finishing)
-    if (writes_done_) return false;  // Stream already closed
-    if (write_pending_) return false;  // Write already in progress
+    // Winning the claim is what makes the StartWrite() below safe from any thread: the write-flow hold
+    // stays outstanding while the claim is held, so the call cannot be destroyed under it. A lost claim
+    // means the write side is already ended, or another call is using it at this very moment.
+    if (!ClaimWriteFlow()) return false;
+    if (write_pending_) {  // Write already in progress
+      ReturnWriteFlow();
+      return false;
+    }
+    // Checked after write_pending_, which OnWriteDone() clears only after publishing the flag: a write
+    // that just failed is seen as failed here, never as merely completed.
+    if (stream_no_more_) {
+      EndWriteFlow();
+      return false;
+    }
     pending_request_ = std::move(request);
     write_pending_ = true;
     this->StartWrite(&pending_request_);
+    ReturnWriteFlow();
     return true;
   }
 
   /// Sends the final request message and signals the end of the client request stream in a
   /// single operation, avoiding the race between a separate SendRequest()/CloseRequestStream()
-  /// pair. The caller gives up the request the same way SendRequest() requires.
+  /// pair. The caller gives up the request the same way SendRequest() requires. It ends the write
+  /// flow, so no further write call is accepted.
   /// @param request last message to send, moved into the reactor
-  /// @return true if the write was initiated, false if rejected (stream closed, write pending,
-  ///         or the RPC has already finished/is finishing)
+  /// @return true if the write was initiated, false if rejected (write pending, write side closed, or
+  ///         the RPC is over or cancelled, in which case the write flow ends anyway)
   bool SendLastRequest(RequestT&& request) {
-    if (stream_no_more_) return false;  // RPC already finished (or finishing)
-    if (writes_done_) return false;     // Stream already closed
-    if (write_pending_) return false;   // Write already in progress
+    if (!ClaimWriteFlow()) return false;  // Same claim, same reasoning, as SendRequest()
+    if (write_pending_) {
+      ReturnWriteFlow();
+      return false;
+    }
+    if (stream_no_more_) {
+      EndWriteFlow();
+      return false;
+    }
     pending_request_ = std::move(request);
     write_pending_ = true;
-    // Per gRPC's contract, calling this already forbids any further StartWrite/StartWriteLast/
-    // StartWritesDone, the same as CloseRequestStream() - set writes_done_ now, synchronously.
-    writes_done_ = true;
     this->StartWriteLast(&pending_request_, grpc::WriteOptions());
+    // No more writes will be issued, which is when gRPC's pattern releases the write-flow hold. The
+    // write just started keeps the RPC alive until its OnWriteDone().
+    EndWriteFlow();
     return true;
   }
 
-  /// Signals the end of the client request stream.
+  /// Signals the end of the client request stream, and ends the write flow.
   /// After this call, no more SendRequest() calls are allowed.
-  /// @return true if the close was initiated, false if rejected (already closed, write pending,
-  ///         or the RPC has already finished/is finishing). Callers should wait for OnWriteDone()
-  ///         and retry.
+  /// @return true if the close was initiated. false if rejected: a write is pending (wait for
+  ///         OnWriteDone() and retry), the write side is already closed, or the RPC is over or
+  ///         cancelled, in which case the write flow ends anyway and OnDone() follows.
   bool CloseRequestStream() {
-    if (stream_no_more_) return false;  // Same race-narrowing guard as SendRequest(), see above
-    if (writes_done_) return false;     // Already closed
-    if (write_pending_) return false;   // Wait for the in-flight write to complete first
-    writes_done_ = true;
+    if (!ClaimWriteFlow()) return false;  // Already closed, or another call is using the write side
+    if (write_pending_) {  // Wait for the in-flight write to complete first
+      ReturnWriteFlow();
+      return false;
+    }
+    if (stream_no_more_) {  // Nothing left to close: end the flow so that OnDone() can follow
+      EndWriteFlow();
+      return false;
+    }
     this->StartWritesDone();
+    // Released after StartWritesDone(), as gRPC's pattern prescribes. The close just started keeps the
+    // RPC alive until its OnWritesDoneDone().
+    EndWriteFlow();
     return true;
   }
 
-  /// Sends a best-effort out-of-band cancel to the RPC. That signal is thread-safe
-  /// and can be sent anytime from any thread. The goal of that signal is to provoke
-  /// the `OnDone` event from the RPC.
-  void TryCancel() const {
+  /// Sends a best-effort out-of-band cancel to the RPC, to provoke the `OnDone` event. Safe from any
+  /// thread. It also ends the write flow, since no write can succeed once the RPC is cancelled: an idle
+  /// write side would otherwise keep the write-flow hold, and OnDone() would never come. A write call
+  /// running on another thread at that moment ends the flow itself when it returns.
+  void TryCancel() {
     context_->TryCancel();
+    // Published before the attempt to end the flow, for the reason given at ReturnWriteFlow().
+    stream_no_more_ = true;
+    EndOpenWriteFlow();
   }
 
   /// Delivery::kPull only. Swaps the underlying data storage of the response object.
@@ -667,31 +713,26 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// @return reference to the grpc::Status object
   const grpc::Status& Status() { return status_; }
 
-  // REJECTED: gRPC's AddMultipleHolds(int holds) reserves a fixed hold budget upfront (before
-  // StartCall()) for an operation-flow issued outside the reactions, which is what SendRequest()
-  // does from the application thread. Reserving one hold for the whole write flow was prototyped on
-  // 2026-07-26 and rejected: it suppresses OnDone() for the life of the RPC, and a passive
-  // termination gives the application no event to release on, so the RPC never completes. Kept as
-  // the concrete shape both docs refer to, not as a plan. The reasoning, and what remains open for
-  // this reactor, is in docs/architecture.md.
-  // void UseMultipleHolds() {
-  //     this->AddMultipleHolds(/* holds */ 1);
-  // }
-
  protected:
   /// This event function is called by gRPC when a write operation completes.
   /// The OnWriteDoneCallback is then called, but on the same gRPC thread.
   /// @param ok true if the write was successful
   void OnWriteDone(bool ok) override {
-    write_pending_ = false;
+    // Published before write_pending_ is cleared, so a write call that sees no write pending also sees
+    // the failure, and ends the write flow rather than issuing a write that cannot succeed.
     if (!ok) stream_no_more_ = true;
+    write_pending_ = false;
+    // A failed write ends the write flow, since no write can succeed anymore. Ending it from inside the
+    // reaction is safe: gRPC counts this write as pending until the reaction returns.
+    if (!ok) EndOpenWriteFlow();
     if (cbs_.write_done) cbs_.write_done(this, ok);
   }
 
   /// This event function is called by gRPC when an explicit StartWritesDone() operation (i.e.
   /// CloseRequestStream()) completes. Not called for a close implied via StartWriteLast() (i.e.
-  /// SendLastRequest()). Either way, the write side is conclusively over once this fires, so it
-  /// is tracked the same as OnDone() for that purpose.
+  /// SendLastRequest()). Either way, the write side is conclusively over once this fires, and, since a
+  /// client-streaming RPC has no read side, so is the stream. The write flow already ended when the
+  /// close was issued.
   /// @param ok true if the close was successful
   void OnWritesDoneDone(bool /*ok*/) override { stream_no_more_ = true; }
 
@@ -735,17 +776,51 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
 
   // Flag indicating a write operation is in progress.
   // gRPC requires that only one write be in flight at a time.
-  // Set by application thread via StartWrite, cleared by gRPC thread via OnWriteDone.
+  // Set by the thread that claimed the write flow, cleared by gRPC thread via OnWriteDone.
   std::atomic_bool write_pending_{false};
 
-  // Flag indicating CloseRequestStream() has been called.
-  // After this, no more SendRequest() calls are allowed.
-  // Set by application thread, read by application thread.
-  std::atomic_bool writes_done_{false};
+  /// Claims the open write flow for one write call, so nothing can end it, and release the hold,
+  /// until that call returns it.
+  /// @return false when the write flow is ended, or claimed by a call on another thread
+  bool ClaimWriteFlow() {
+    int open = kFlowOpen;
+    return write_flow_.compare_exchange_strong(open, kFlowBusy);
+  }
 
-  // Once we got OnWriteDone(false) or OnDone(), no more StartWrite() must be called.
-  // Mirrors stream_no_more_ in ActiveBidiReactor, which covers both directions with one flag.
-  // Set by gRPC thread, read by application thread.
+  /// Returns the claimed write flow, open, unless a request to end it arrived meanwhile. Both sides
+  /// publish before they test: the requester sets stream_no_more_ before trying to end an open flow, and
+  /// this reopens the flow before reading stream_no_more_. So whichever side looks last ends it.
+  void ReturnWriteFlow() {
+    write_flow_ = kFlowOpen;
+    if (stream_no_more_) EndOpenWriteFlow();
+  }
+
+  /// Ends the write flow its caller has claimed, and releases the write-flow hold.
+  void EndWriteFlow() {
+    write_flow_ = kFlowEnded;
+    this->RemoveHold();
+  }
+
+  /// Ends the write flow if it is open and unclaimed, and releases the write-flow hold. A claimed flow is
+  /// ended by its claimer instead, when it returns it.
+  void EndOpenWriteFlow() {
+    int open = kFlowOpen;
+    if (write_flow_.compare_exchange_strong(open, kFlowEnded)) this->RemoveHold();
+  }
+
+  // The write flow, and with it the hold StartCall() took for it. Open while writes may still be
+  // issued, busy while one write call holds the claim, ended once the hold is released. Only the
+  // transition to ended releases the hold, so it is released exactly once. Ended until StartCall()
+  // opens it, since there is no hold to release before.
+  static constexpr int kFlowEnded = 0;
+  static constexpr int kFlowOpen = 1;
+  static constexpr int kFlowBusy = 2;
+  std::atomic<int> write_flow_{kFlowEnded};
+
+  // Once a write failed, TryCancel() was called, the close completed, or OnDone() fired, no more
+  // StartWrite() must be called. A request to end the write flow: whoever sees it with the flow open,
+  // or returns the flow while it is set, ends it.
+  // Set by any thread, read by whichever thread claims the write flow.
   std::atomic_bool stream_no_more_{false};
 };
 /// Template callbacks for bidirectional streaming RPC client reactor. It contains all available
