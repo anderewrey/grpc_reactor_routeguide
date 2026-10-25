@@ -41,10 +41,10 @@ per writing reactor under `Submission::kReactorPulls`, one for tearing reactors 
   as described in [request submission coverage](#request-submission-coverage)
 - [reactor_teardown_test.cpp][teardown-test]: `CancelAndWait()` on all four reactors, as described in
   [teardown coverage](#teardown-coverage)
-- [latest_slot_test.cpp][latest-test]: `LatestSlot`, and the latest-only pattern, as the `live_vehicle_position` usage
-  scenario runs it, on `ActiveReadReactor` under `kPull` and `kContinuous`, as described in
+- [latest_slot_test.cpp][latest-test]: `LatestSlot`, and the latest-only pattern, as the `live_vehicle_position` use
+  case runs it, on `ActiveReadReactor` under `kPull` and `kContinuous`, as described in
   [latest-only coverage](#latest-only-coverage)
-- [continuous_journal_test.cpp][journal-test]: the journal pattern, as the `trip_recorder` usage scenario runs it, on
+- [continuous_journal_test.cpp][journal-test]: the journal pattern, as the `trip_recorder` use case runs it, on
   `ActiveReadReactor` under `kPush` and `kContinuous`, as described in [journal coverage](#journal-coverage)
 
 Each file pins its approach in a single `kDelivery` constant and instantiates every reactor with it, so a pull file

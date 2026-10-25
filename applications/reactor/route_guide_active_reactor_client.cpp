@@ -15,27 +15,27 @@
 #include <memory>
 #include <vector>
 
-#include "applications/reactor/scenarios/get_feature_pull.h"
-#include "applications/reactor/scenarios/get_feature_push.h"
-#include "applications/reactor/scenarios/live_vehicle_position.h"
-#include "applications/reactor/scenarios/list_features_pull_continuous.h"
-#include "applications/reactor/scenarios/list_features_pull_per_message.h"
-#include "applications/reactor/scenarios/list_features_pull_turn_by_turn.h"
-#include "applications/reactor/scenarios/list_features_push_continuous.h"
-#include "applications/reactor/scenarios/list_features_push_per_message.h"
-#include "applications/reactor/scenarios/list_features_push_turn_by_turn.h"
-#include "applications/reactor/scenarios/record_route_pull.h"
-#include "applications/reactor/scenarios/record_route_pull_producer.h"
-#include "applications/reactor/scenarios/record_route_push.h"
-#include "applications/reactor/scenarios/route_chat_pull_continuous.h"
-#include "applications/reactor/scenarios/route_chat_pull_per_message.h"
-#include "applications/reactor/scenarios/route_chat_pull_per_message_producer.h"
-#include "applications/reactor/scenarios/route_chat_pull_turn_by_turn.h"
-#include "applications/reactor/scenarios/route_chat_push_continuous.h"
-#include "applications/reactor/scenarios/route_chat_push_per_message.h"
-#include "applications/reactor/scenarios/route_chat_push_turn_by_turn.h"
-#include "applications/reactor/scenarios/support.h"
-#include "applications/reactor/scenarios/trip_recorder.h"
+#include "applications/reactor/variants/get_feature_pull.h"
+#include "applications/reactor/variants/get_feature_push.h"
+#include "applications/reactor/usecases/live_vehicle_position.h"
+#include "applications/reactor/variants/list_features_pull_continuous.h"
+#include "applications/reactor/variants/list_features_pull_per_message.h"
+#include "applications/reactor/variants/list_features_pull_turn_by_turn.h"
+#include "applications/reactor/variants/list_features_push_continuous.h"
+#include "applications/reactor/variants/list_features_push_per_message.h"
+#include "applications/reactor/variants/list_features_push_turn_by_turn.h"
+#include "applications/reactor/variants/record_route_pull.h"
+#include "applications/reactor/variants/record_route_pull_producer.h"
+#include "applications/reactor/variants/record_route_push.h"
+#include "applications/reactor/variants/route_chat_pull_continuous.h"
+#include "applications/reactor/variants/route_chat_pull_per_message.h"
+#include "applications/reactor/variants/route_chat_pull_per_message_producer.h"
+#include "applications/reactor/variants/route_chat_pull_turn_by_turn.h"
+#include "applications/reactor/variants/route_chat_push_continuous.h"
+#include "applications/reactor/variants/route_chat_push_per_message.h"
+#include "applications/reactor/variants/route_chat_push_turn_by_turn.h"
+#include "applications/reactor/demo_support.h"
+#include "applications/reactor/usecases/trip_recorder.h"
 #include "rg_service/rg_db.h"
 #include "rg_service/rg_utils.h"
 #include "rg_service/route_guide_service.h"
@@ -59,7 +59,7 @@
  *   message out as an owned object instead
  * - AddHold/RemoveHold = Guards, wherever a read is re-armed from the application thread
  *
- * Layout: one scenario per reactor variant, one file per scenario, under scenarios/. A scenario owns
+ * Layout: one scenario per reactor variant, one file per scenario, under variants/. A scenario owns
  * everything one RPC needs on the application side, so a variant added to one RPC touches no other
  * RPC's file. The flavour of a variant is named by the filename and by the enclosing namespace,
  * never by the class, so a class is named after the RPC method it drives. A reading reactor has two
@@ -102,17 +102,17 @@
  * it names, so `diff record_route_pull.cpp record_route_pull_producer.cpp` is what the outgoing axis
  * changes, and the same for route_chat_pull_per_message.cpp.
  *
- * Two usage scenarios follow the variants, named after a real-life situation rather than a variant, in
- * rg_demo::usage. Each runs one kContinuous cell for what it is best at, and is a clone of that cell
- * along the use only:
- * - rg_demo::usage::LiveVehiclePosition, ListFeatures under kPull and kContinuous: a map draws a vehicle's
+ * Two use cases follow the variants, under usecases/ and in rg_demo::usecase, named after a real-life
+ * situation rather than a variant. Each runs one kContinuous cell for what it is best at, and is a clone
+ * of that cell along the use only:
+ * - rg_demo::usecase::LiveVehiclePosition, ListFeatures under kPull and kContinuous: a map draws a vehicle's
  *   position from a live feed, and only the newest fix matters. read_ok keeps it in a LatestSlot, which
- *   the slow map takes. `diff list_features_pull_continuous.cpp live_vehicle_position.cpp` is what an
- *   application adds to drop the stale fixes.
- * - rg_demo::usage::TripRecorder, ListFeatures under kPush and kContinuous: a vehicle's black box stores
+ *   the slow map takes. `diff variants/list_features_pull_continuous.cpp usecases/live_vehicle_position.cpp`
+ *   is what an application adds to drop the stale fixes.
+ * - rg_demo::usecase::TripRecorder, ListFeatures under kPush and kContinuous: a vehicle's black box stores
  *   every position report, and the feed must never wait for storage. `diff
- *   list_features_push_continuous.cpp trip_recorder.cpp` is what an application adds to see the backlog
- *   it accepted.
+ *   variants/list_features_push_continuous.cpp usecases/trip_recorder.cpp` is what an application adds to
+ *   see the backlog it accepted.
  *
  * A flavoured family is cloned rather than parameterised, which is the teaching device: its members
  * are files with identical structure, each cloned from its nearest sibling, so a diff between two
@@ -195,8 +195,8 @@ int main(int argc, char** argv) {
   rg_demo::push::continuous::RouteChat route_chat_push_continuous{*stub};
   rg_demo::push::per_message::RouteChat route_chat_push_per_message{*stub};
   rg_demo::push::turn_by_turn::RouteChat route_chat_push_turn_by_turn{*stub};
-  rg_demo::usage::LiveVehiclePosition live_vehicle_position{*stub};
-  rg_demo::usage::TripRecorder trip_recorder{*stub};
+  rg_demo::usecase::LiveVehiclePosition live_vehicle_position{*stub};
+  rg_demo::usecase::TripRecorder trip_recorder{*stub};
 
   // A flavoured family receives the same input, so its transcripts differ in the order their lines
   // interleave, and in what each cell deliberately does with the messages, not in what it is sent.
@@ -255,9 +255,9 @@ int main(int argc, char** argv) {
   route_chat_push_per_message.Start(notes);
   spdlog::info("-------------- RouteChat kPush kTurnByTurn --------------");
   route_chat_push_turn_by_turn.Start(notes);
-  spdlog::info("-------------- Usage: live vehicle position (ListFeatures kPull kContinuous) --------------");
+  spdlog::info("-------------- Use case: live vehicle position (ListFeatures kPull kContinuous) --------------");
   live_vehicle_position.Start(rect);
-  spdlog::info("-------------- Usage: trip recorder (ListFeatures kPush kContinuous) --------------");
+  spdlog::info("-------------- Use case: trip recorder (ListFeatures kPush kContinuous) --------------");
   trip_recorder.Start(rect);
   EventLoop::Run();  // Scheduler component: Continuously processes queued events on main application thread
   spdlog::info("-------------- LEAVING APPLICATION --------------");

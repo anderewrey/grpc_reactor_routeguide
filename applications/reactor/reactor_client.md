@@ -212,7 +212,7 @@ void OnLatestFix(const EventLoop::Event*) {                                 // a
   taken. Every reaction returns before `OnDone()`, so a done handler that takes once more always ends on the last one.
 
 `kPush` with `kContinuous` serves the same consumer without the copy, by putting the owned message into the slot. The
-`live_vehicle_position` usage scenario runs the pattern, with a map that takes 5 ms to redraw a vehicle's position, and
+`live_vehicle_position` use case runs the pattern, with a map that takes 5 ms to redraw a vehicle's position, and
 [latest_slot_test.cpp](/applications/reactor/tests/latest_slot_test.cpp) tests it.
 
 ### Handling every message without slowing the stream
@@ -243,34 +243,39 @@ The price is the backlog: the records queued but not yet stored. Nothing bounds 
 storage slower than the server for long enough runs out of memory. The RPC also ends before storage has caught up, so
 the end of the RPC is not the end of the work. A consumer that must bound its backlog keeps `kPush` but chooses
 `kPerMessage`, whose `read_ok` holds the stream once the backlog passes a threshold, as `list_features_push_per_message`
-does. The `trip_recorder` usage scenario runs the pattern, with storage that takes 1 ms per position report, and
+does. The `trip_recorder` use case runs the pattern, with storage that takes 1 ms per position report, and
 [continuous_journal_test.cpp](/applications/reactor/tests/continuous_journal_test.cpp) tests it.
 
 ### Where each variant runs
 
-The demo client, `route_guide_active_reactor_client`, runs 18 of the 24 variants at once, from 20 scenario files:
+The demo client, `route_guide_active_reactor_client`, runs 18 of the 24 variants at once, from 20 scenario files under
+`applications/reactor/`:
 
-| Reactor              | Scenario files, under `applications/reactor/scenarios/`                 |
-|----------------------|-------------------------------------------------------------------------|
-| `ActiveUnaryReactor` | `get_feature_pull`, `get_feature_push`                                  |
-| `ActiveReadReactor`  | `list_features_<delivery>_<pacing>`, for each of the six pairs, such as |
-|                      | `list_features_pull_per_message`                                        |
-| `ActiveWriteReactor` | `record_route_pull`, `record_route_push`, `record_route_pull_producer`  |
-| `ActiveBidiReactor`  | `route_chat_<delivery>_<pacing>`, for each of the six pairs, and        |
-|                      | `route_chat_pull_per_message_producer`                                  |
-| Usage scenarios      | `live_vehicle_position` and `trip_recorder`, on `ActiveReadReactor`     |
+| Reactor              | Scenario files                                                            |
+|----------------------|---------------------------------------------------------------------------|
+| `ActiveUnaryReactor` | `variants/get_feature_pull`, `variants/get_feature_push`                  |
+| `ActiveReadReactor`  | `variants/list_features_<delivery>_<pacing>`, for each of the six pairs,  |
+|                      | such as `variants/list_features_pull_per_message`                         |
+| `ActiveWriteReactor` | `variants/record_route_pull`, `variants/record_route_push`,               |
+|                      | `variants/record_route_pull_producer`                                     |
+| `ActiveBidiReactor`  | `variants/route_chat_<delivery>_<pacing>`, for each of the six pairs, and |
+|                      | `variants/route_chat_pull_per_message_producer`                           |
+| Use cases            | `usecases/live_vehicle_position` and `usecases/trip_recorder`, on         |
+|                      | `ActiveReadReactor`                                                       |
 
 A file name gives the RPC, then the `Delivery`, then the `ReadPacing` for a reading reactor. A `_producer` file runs
 `Submission::kReactorPulls`, and every other writing scenario `kApplicationPushes`. Neighbouring files differ along one
 parameter only, so a `diff` between two of them shows exactly what that parameter changes. The six variants left out
 all use `kReactorPulls`, which combines with every `Delivery` and `ReadPacing` exactly as `kApplicationPushes` does, so
-one producer scenario per writing reactor shows it. The two usage scenarios are named after a real-life situation
-instead, and each runs a `kContinuous` variant for what it is best at: `live_vehicle_position` uses `kPull` for a
-realtime reading, as described under [Keeping only the newest message](#keeping-only-the-newest-message), and
+one producer scenario per writing reactor shows it. The two use cases are named after a real-life situation instead,
+and each runs a `kContinuous` variant for what it is best at: `live_vehicle_position` uses `kPull` for a realtime
+reading, as described under [Keeping only the newest message](#keeping-only-the-newest-message), and
 `trip_recorder` uses `kPush` for ingestion, as described under
 [Handling every message without slowing the stream](#handling-every-message-without-slowing-the-stream).
-[The scenarios' README](/applications/reactor/scenarios/README.md) lists every scenario with its variant, what it does
-with each message and the file to diff it against, and the usage scenarios still planned.
+[The variants' README](/applications/reactor/variants/README.md) lists every scenario with its variant, what it does
+with each message and the file to diff it against, and
+[the use cases' README](/applications/reactor/usecases/README.md) the situation behind each use case, including the
+ones still planned.
 
 ## API naming conventions
 
@@ -1007,7 +1012,7 @@ to read the original code from the route_guide_active_reactor_client.cpp file.
 Each snippet keeps its reactor in a typed `std::unique_ptr`, so no snippet ever recovers a reactor type with a cast.
 The snippets name that slot after the RPC, such as `get_feature_`, to stay readable out of context. In the demo
 itself the slot is a `reactor_` member of a per-variant scenario class under
-[scenarios](/applications/reactor/scenarios), one class per reactor variant.
+[scenarios](/applications/reactor/variants), one class per reactor variant.
 
 #### Instantiation of the ActiveUnaryReactor class
 

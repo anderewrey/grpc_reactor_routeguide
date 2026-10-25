@@ -54,8 +54,9 @@ DIR=cmake-build-vcpkg-debug-gcc
 The demo starts all of its scenarios at once, one per variant it shows, and keeps its event loop running, so stop it
 with Ctrl+C once the output settles. Each scenario logs under its own name, and each part below gives the `grep` that picks
 it out. The scenario files live in
-[applications/reactor/scenarios/](/applications/reactor/scenarios/), one per variant, and they are what you copy. Its
-[README](/applications/reactor/scenarios/README.md) lists every scenario with its variant.
+[applications/reactor/variants/](/applications/reactor/variants/), one per variant, and they are what you copy. Its
+[README](/applications/reactor/variants/README.md) lists every scenario with its variant, and the use cases, which
+show a variant serving a real-life situation, are in [usecases/](/applications/reactor/usecases/).
 
 Every log line reads `[time][logger][thread id][level] message`. The thread id is how you tell the two threads apart.
 
@@ -73,7 +74,7 @@ a gRPC thread, which gRPC needs for other RPCs, so it does as little as possible
 ### The five moves every reactor follows
 
 Every scenario is one class that owns one RPC. Here is the smallest one,
-[get_feature_pull.h](/applications/reactor/scenarios/get_feature_pull.h), condensed:
+[get_feature_pull.h](/applications/reactor/variants/get_feature_pull.h), condensed:
 
 ```cpp
 class GetFeature {
@@ -122,7 +123,7 @@ Whatever the reactor, your code makes the same five moves:
    reactor to outlive `OnDone()`, and never uses it after that. If you must tear a reactor down before its RPC ends,
    such as at shutdown, call `reactor_->CancelAndWait(timeout)` first, and destroy it only if that returns `true`.
    The demo's scenario destructors do it through `TearDownReactor()`, in
-   [support.h](/applications/reactor/scenarios/support.h).
+   [support.h](/applications/reactor/demo_support.h).
 
 The parts below only fill in moves 2 to 4 for each reactor.
 
@@ -184,8 +185,8 @@ arms its first read just before it.
 `ActiveUnaryReactor` sends one request and receives one response, which arrives with the end of the RPC. It is the
 simplest reactor: one choice, one callback, one handler, and no obligation beyond the five moves.
 
-Demo: `GetFeature`, in [get_feature_pull.cpp](/applications/reactor/scenarios/get_feature_pull.cpp) and
-[get_feature_push.cpp](/applications/reactor/scenarios/get_feature_push.cpp).
+Demo: `GetFeature`, in [get_feature_pull.cpp](/applications/reactor/variants/get_feature_pull.cpp) and
+[get_feature_push.cpp](/applications/reactor/variants/get_feature_push.cpp).
 
 ### Step 1: choose the delivery
 
@@ -282,7 +283,7 @@ Every line carries thread 23807, the application thread that logs the `Main` ban
 a gRPC thread. Compare the two files to see everything the delivery changes, which is the `done` slot and the handler:
 
 ```bash
-diff applications/reactor/scenarios/get_feature_pull.cpp applications/reactor/scenarios/get_feature_push.cpp
+diff applications/reactor/variants/get_feature_pull.cpp applications/reactor/variants/get_feature_push.cpp
 ```
 
 ### Your checklist
@@ -303,7 +304,7 @@ when the server has sent everything, then `done`. A stream adds one question to 
 delivered, who arms the next read?
 
 Demo: `ListFeatures`, in the six `list_features_<delivery>_<pacing>.cpp` files. This part follows
-[list_features_pull_per_message.cpp](/applications/reactor/scenarios/list_features_pull_per_message.cpp).
+[list_features_pull_per_message.cpp](/applications/reactor/variants/list_features_pull_per_message.cpp).
 
 ### Step 1: choose the delivery and the pacing
 
@@ -388,7 +389,7 @@ Two rules come with it:
 In this filter, both rules hold by construction: only a kept message queues an event, so `OnReadOk` runs once per kept
 message. Under `kPush`, where you usually queue every message, record which one `read_ok` held, and call `ResumeRead()`
 only from that message's handler, as
-[list_features_push_per_message.cpp](/applications/reactor/scenarios/list_features_push_per_message.cpp) does.
+[list_features_push_per_message.cpp](/applications/reactor/variants/list_features_push_per_message.cpp) does.
 
 ### Step 6: see it run
 
@@ -447,18 +448,18 @@ copy it, inside the callback. A call the pacing rules out does not compile. In
 message to pull. Compare the files one step at a time:
 
 ```bash
-cd applications/reactor/scenarios
+cd applications/reactor/variants
 diff list_features_pull_per_message.cpp list_features_pull_turn_by_turn.cpp  # every message kept
 diff list_features_pull_turn_by_turn.cpp list_features_pull_continuous.cpp   # no message kept
 diff list_features_pull_turn_by_turn.cpp list_features_push_turn_by_turn.cpp # the delivery, same pacing
 ```
 
-Two usage scenarios, named after the situation they serve, show what each `kContinuous` delivery is for. Each is a
-clone of its `kContinuous` scenario along the use only:
+Two use cases, in [usecases/](/applications/reactor/usecases/) and named after the situation they serve, show what
+each `kContinuous` delivery is for. Each is a clone of its `kContinuous` variant along the use only:
 
 ```bash
-diff list_features_pull_continuous.cpp live_vehicle_position.cpp  # only the newest kept
-diff list_features_push_continuous.cpp trip_recorder.cpp          # every one kept, backlog seen
+diff list_features_pull_continuous.cpp ../usecases/live_vehicle_position.cpp  # only the newest kept
+diff list_features_push_continuous.cpp ../usecases/trip_recorder.cpp          # every one kept, backlog seen
 ```
 
 `live_vehicle_position.cpp` is the use `kContinuous` with `kPull` is best at: a map drawing a vehicle's position from a
@@ -523,8 +524,8 @@ end of the RPC, as in a unary call. It takes two choices: who sends each request
 delivered.
 
 Demo: `RecordRoute`, which sends a route as a stream of points and receives a `RouteSummary`, in
-[record_route_pull_producer.cpp](/applications/reactor/scenarios/record_route_pull_producer.cpp) and
-[record_route_pull.cpp](/applications/reactor/scenarios/record_route_pull.cpp).
+[record_route_pull_producer.cpp](/applications/reactor/variants/record_route_pull_producer.cpp) and
+[record_route_pull.cpp](/applications/reactor/variants/record_route_pull.cpp).
 
 ### Step 1: choose who sends each request
 
@@ -611,7 +612,7 @@ inside the constructor. The others come from gRPC threads, each after the previo
 
 gRPC allows one write in flight per stream. So your application sends the first request, then the next one from each
 `OnWriteDone` handler, and sends the last one through `SendLastRequest()`, which closes the stream in the same
-operation. The demo's pump, from [record_route_pull.cpp](/applications/reactor/scenarios/record_route_pull.cpp):
+operation. The demo's pump, from [record_route_pull.cpp](/applications/reactor/variants/record_route_pull.cpp):
 
 ```cpp
 void RecordRoute::SendNextPoint() {
@@ -662,7 +663,7 @@ completed write, and each one drives the next.
 ### Step 4: compare along each choice
 
 ```bash
-cd applications/reactor/scenarios
+cd applications/reactor/variants
 diff record_route_pull.cpp record_route_pull_producer.cpp  # who sends: the pump becomes next_request
 diff record_route_pull.cpp record_route_push.cpp           # the delivery of the summary
 ```
@@ -687,7 +688,7 @@ where they meet.
 
 Demo: `RouteChat`, which sends route notes, while the server echoes back every note already recorded at the same
 location. This part follows
-[route_chat_pull_per_message.cpp](/applications/reactor/scenarios/route_chat_pull_per_message.cpp).
+[route_chat_pull_per_message.cpp](/applications/reactor/variants/route_chat_pull_per_message.cpp).
 
 ### Step 1: choose all three
 
@@ -779,7 +780,7 @@ also receives the notes the others sent.
 ### Step 5: compare along each choice
 
 ```bash
-cd applications/reactor/scenarios
+cd applications/reactor/variants
 diff route_chat_pull_per_message.cpp route_chat_pull_per_message_producer.cpp  # who sends
 diff route_chat_pull_per_message.cpp route_chat_push_per_message.cpp           # the delivery
 diff route_chat_pull_per_message.cpp route_chat_pull_turn_by_turn.cpp          # the pacing
