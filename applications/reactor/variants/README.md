@@ -1,13 +1,18 @@
 # Demo variants
 
-Each file pair in this directory is one variant scenario: a class that owns one RPC and runs one variant, started by
-the demo client, `route_guide_active_reactor_client`. The demo has two kinds of scenarios, one directory each:
+Each file pair in this directory is one variant scenario: a class that owns one RPC and runs one variant. There are two
+kinds of scenarios, one directory and one application each:
 
-| Kind     | Directory                                       | Named after                                           |
-|----------|-------------------------------------------------|-------------------------------------------------------|
-| Variant  | `variants/`, this one                           | Its RPC and variant: `<rpc>_<delivery>_<pacing>`, and |
-|          |                                                 | `_producer` under `Submission::kReactorPulls`         |
-| Use case | [usecases/](/applications/reactor/usecases/)    | A real-life situation, such as `trip_recorder`        |
+| Kind     | Directory                                    | Application                         | Named after          |
+|----------|----------------------------------------------|-------------------------------------|----------------------|
+| Variant  | `variants/`, this one                        | `route_guide_active_reactor_client` | Its RPC and variant: |
+|          |                                              |                                     | `<rpc>_<delivery>_`  |
+|          |                                              |                                     | `<pacing>`, and      |
+|          |                                              |                                     | `_producer` under    |
+|          |                                              |                                     | `kReactorPulls`      |
+| Use case | [usecases/](/applications/reactor/usecases/) | `route_guide_reactor_usecases`      | A real-life          |
+|          |                                              |                                     | situation, such as   |
+|          |                                              |                                     | `trip_recorder`      |
 
 A variant shows what one choice of parameters changes, against the neighbouring file that differs along that one
 choice. A use case shows why a variant fits a real need, and is a clone of the variant it uses, along the use only. The
@@ -53,8 +58,9 @@ reactor does not take. A planned use case does not exist yet: a follow-up adds i
 | `guided_tour_briefing`                 | planned  | RouteChat    | either   | `kReactorPulls`      | to choose     |
 | `whats_here`                           | planned  | GetFeature   | either   | —                    | —             |
 
-The demo runs the 18 variants and the 2 use cases at once, so 18 of the 24 variants. The six variants left out all use
-`kReactorPulls`, which combines with every `Delivery` and `ReadPacing` exactly as `kApplicationPushes` does.
+The demo client runs the 18 variants at once, so 18 of the 24, and `route_guide_reactor_usecases` runs the use cases.
+The six variants left out all use `kReactorPulls`, which combines with every `Delivery` and `ReadPacing` exactly as
+`kApplicationPushes` does.
 
 ## What each variant does
 

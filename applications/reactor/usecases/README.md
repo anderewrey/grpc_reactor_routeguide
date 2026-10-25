@@ -1,8 +1,9 @@
 # Use cases
 
 Each file pair in this directory is one use case: a class that owns one RPC to serve a real-life situation, with the
-variant that situation calls for, started by the demo client, `route_guide_active_reactor_client`. The variants
-themselves, one file each, are in [variants/](/applications/reactor/variants/), whose
+variant that situation calls for, started by its own application, `route_guide_reactor_usecases`. The variants
+themselves, one file each, are in [variants/](/applications/reactor/variants/), run by the demo client,
+`route_guide_active_reactor_client`, and their
 [README](/applications/reactor/variants/README.md) also lists every scenario, variants and use cases, with its
 parameters.
 

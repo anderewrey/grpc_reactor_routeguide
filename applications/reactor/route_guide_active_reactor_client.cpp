@@ -17,7 +17,6 @@
 
 #include "applications/reactor/variants/get_feature_pull.h"
 #include "applications/reactor/variants/get_feature_push.h"
-#include "applications/reactor/usecases/live_vehicle_position.h"
 #include "applications/reactor/variants/list_features_pull_continuous.h"
 #include "applications/reactor/variants/list_features_pull_per_message.h"
 #include "applications/reactor/variants/list_features_pull_turn_by_turn.h"
@@ -35,7 +34,6 @@
 #include "applications/reactor/variants/route_chat_push_per_message.h"
 #include "applications/reactor/variants/route_chat_push_turn_by_turn.h"
 #include "applications/reactor/demo_support.h"
-#include "applications/reactor/usecases/trip_recorder.h"
 #include "rg_service/rg_db.h"
 #include "rg_service/rg_utils.h"
 #include "rg_service/route_guide_service.h"
@@ -102,17 +100,8 @@
  * it names, so `diff record_route_pull.cpp record_route_pull_producer.cpp` is what the outgoing axis
  * changes, and the same for route_chat_pull_per_message.cpp.
  *
- * Two use cases follow the variants, under usecases/ and in rg_demo::usecase, named after a real-life
- * situation rather than a variant. Each runs one kContinuous cell for what it is best at, and is a clone
- * of that cell along the use only:
- * - rg_demo::usecase::LiveVehiclePosition, ListFeatures under kPull and kContinuous: a map draws a vehicle's
- *   position from a live feed, and only the newest fix matters. read_ok keeps it in a LatestSlot, which
- *   the slow map takes. `diff variants/list_features_pull_continuous.cpp usecases/live_vehicle_position.cpp`
- *   is what an application adds to drop the stale fixes.
- * - rg_demo::usecase::TripRecorder, ListFeatures under kPush and kContinuous: a vehicle's black box stores
- *   every position report, and the feed must never wait for storage. `diff
- *   variants/list_features_push_continuous.cpp usecases/trip_recorder.cpp` is what an application adds to
- *   see the backlog it accepted.
+ * The use cases, under usecases/ and named after a real-life situation rather than a variant, run in a
+ * separate application, route_guide_reactor_usecases, whose header comment lists them.
  *
  * A flavoured family is cloned rather than parameterised, which is the teaching device: its members
  * are files with identical structure, each cloned from its nearest sibling, so a diff between two
@@ -137,15 +126,10 @@
  *   "pulled   | #k" line at its GetResponse() call site (kPull), and never emits read_ok #k+1 before
  *   it. The kPerMessage scenarios follow the same rule for the messages they hold.
  * - A kContinuous kPush scenario emits its read_ok lines in a burst ahead of the matching
- *   application-thread lines, and never emits a resumed or pulled line. TripRecorder ends each read_ok
- *   line with the backlog, logs a "done     |" line from the gRPC thread with the reports still queued
- *   when the RPC ends, and a "totals   |" line once the trip log has stored every one of them.
+ *   application-thread lines, and never emits a resumed or pulled line.
  * - A kContinuous kPull scenario emits only read_ok lines, each carrying the message it consumed on
  *   the gRPC thread, and no RESPONSE line; its OnDone handler then logs a "totals   |" line with the
- *   aggregate. LiveVehiclePosition does log RESPONSE lines, but only for the fixes its slow map drew,
- *   each the newest at the time, so their numbers skip; its "totals   |" line counts the fixes drawn
- *   and replaced, which add up to the fixes received, and the last one drawn is always the last one
- *   received.
+ *   aggregate.
  * - A kPull kPerMessage scenario logs a declined message as "skipped  | #j", numbered on its own,
  *   from the gRPC thread, with no application-thread line after it; its read_ok, pulled and RESPONSE
  *   lines count kept messages only. It ends with a "totals   |" line of kept and skipped messages.
@@ -195,8 +179,6 @@ int main(int argc, char** argv) {
   rg_demo::push::continuous::RouteChat route_chat_push_continuous{*stub};
   rg_demo::push::per_message::RouteChat route_chat_push_per_message{*stub};
   rg_demo::push::turn_by_turn::RouteChat route_chat_push_turn_by_turn{*stub};
-  rg_demo::usecase::LiveVehiclePosition live_vehicle_position{*stub};
-  rg_demo::usecase::TripRecorder trip_recorder{*stub};
 
   // A flavoured family receives the same input, so its transcripts differ in the order their lines
   // interleave, and in what each cell deliberately does with the messages, not in what it is sent.
@@ -255,10 +237,6 @@ int main(int argc, char** argv) {
   route_chat_push_per_message.Start(notes);
   spdlog::info("-------------- RouteChat kPush kTurnByTurn --------------");
   route_chat_push_turn_by_turn.Start(notes);
-  spdlog::info("-------------- Use case: live vehicle position (ListFeatures kPull kContinuous) --------------");
-  live_vehicle_position.Start(rect);
-  spdlog::info("-------------- Use case: trip recorder (ListFeatures kPush kContinuous) --------------");
-  trip_recorder.Start(rect);
   EventLoop::Run();  // Scheduler component: Continuously processes queued events on main application thread
   spdlog::info("-------------- LEAVING APPLICATION --------------");
   return 0;

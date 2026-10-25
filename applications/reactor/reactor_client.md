@@ -248,8 +248,9 @@ does. The `trip_recorder` use case runs the pattern, with storage that takes 1 m
 
 ### Where each variant runs
 
-The demo client, `route_guide_active_reactor_client`, runs 18 of the 24 variants at once, from 20 scenario files under
-`applications/reactor/`:
+The demo client, `route_guide_active_reactor_client`, runs 18 of the 24 variants at once, from 18 scenario files under
+`applications/reactor/variants/`. The use cases run in their own application, `route_guide_reactor_usecases`, from
+`applications/reactor/usecases/`:
 
 | Reactor              | Scenario files                                                            |
 |----------------------|---------------------------------------------------------------------------|
@@ -260,8 +261,8 @@ The demo client, `route_guide_active_reactor_client`, runs 18 of the 24 variants
 |                      | `variants/record_route_pull_producer`                                     |
 | `ActiveBidiReactor`  | `variants/route_chat_<delivery>_<pacing>`, for each of the six pairs, and |
 |                      | `variants/route_chat_pull_per_message_producer`                           |
-| Use cases            | `usecases/live_vehicle_position` and `usecases/trip_recorder`, on         |
-|                      | `ActiveReadReactor`                                                       |
+| Use cases, in        | `usecases/live_vehicle_position` and `usecases/trip_recorder`, on         |
+| their own executable | `ActiveReadReactor`                                                       |
 
 A file name gives the RPC, then the `Delivery`, then the `ReadPacing` for a reading reactor. A `_producer` file runs
 `Submission::kReactorPulls`, and every other writing scenario `kApplicationPushes`. Neighbouring files differ along one

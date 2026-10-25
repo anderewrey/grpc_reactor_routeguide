@@ -56,7 +56,12 @@ with Ctrl+C once the output settles. Each scenario logs under its own name, and 
 it out. The scenario files live in
 [applications/reactor/variants/](/applications/reactor/variants/), one per variant, and they are what you copy. Its
 [README](/applications/reactor/variants/README.md) lists every scenario with its variant, and the use cases, which
-show a variant serving a real-life situation, are in [usecases/](/applications/reactor/usecases/).
+show a variant serving a real-life situation, are in [usecases/](/applications/reactor/usecases/), run by their own
+application against the same server:
+
+```bash
+./$DIR/applications/reactor/route_guide_reactor_usecases
+```
 
 Every log line reads `[time][logger][thread id][level] message`. The thread id is how you tell the two threads apart.
 
@@ -455,7 +460,8 @@ diff list_features_pull_turn_by_turn.cpp list_features_push_turn_by_turn.cpp # t
 ```
 
 Two use cases, in [usecases/](/applications/reactor/usecases/) and named after the situation they serve, show what
-each `kContinuous` delivery is for. Each is a clone of its `kContinuous` variant along the use only:
+each `kContinuous` delivery is for, in the `route_guide_reactor_usecases` application. Each is a clone of its
+`kContinuous` variant along the use only:
 
 ```bash
 diff list_features_pull_continuous.cpp ../usecases/live_vehicle_position.cpp  # only the newest kept
