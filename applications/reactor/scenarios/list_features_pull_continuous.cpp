@@ -30,6 +30,10 @@ ListFeatures::ListFeatures(routeguide::RouteGuide::Stub& stub)
       on_done_(kOnDone, [this](const EventLoop::Event* e) { OnDone(e); }) {
 }
 
+ListFeatures::~ListFeatures() {
+  TearDownReactor(reactor_, logger_);
+}
+
 void ListFeatures::Start(routeguide::Rectangle rect) {
   using ResponseT = routeguide::ListFeatures::ResponseT;
   if (reactor_) {

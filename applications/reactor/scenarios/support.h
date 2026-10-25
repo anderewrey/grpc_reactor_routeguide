@@ -8,6 +8,7 @@
 #include <grpcpp/client_context.h>
 #include <spdlog/logger.h>
 
+#include <chrono>
 #include <memory>
 #include <string>
 
@@ -35,5 +36,23 @@ std::unique_ptr<grpc::ClientContext> CreateClientContext();
 /// @param name logger name, for example "ListFeatures.cont"
 /// @return reference to the registered logger
 spdlog::logger& VariantLogger(const std::string& name);
+
+/// Tears a scenario's reactor down when the scenario is destroyed, whether or not its RPC has ended. An RPC
+/// still in flight is cancelled, and the reactor destroyed only once its OnDone() has run, since gRPC still
+/// calls a reactor until then. Should OnDone() never come, the reactor is leaked rather than freed under
+/// gRPC. The demo only reaches this with an RPC in flight when its event loop stops while one runs, which
+/// nothing in it does today: the hardening is for an application that does.
+/// @param reactor the scenario's reactor slot, empty once the RPC has ended
+/// @param logger the scenario's logger, for the case where OnDone() never comes
+template <class ReactorT>
+void TearDownReactor(std::unique_ptr<ReactorT>& reactor, spdlog::logger& logger) {
+  if (!reactor) return;
+  if (reactor->CancelAndWait(std::chrono::seconds(5))) {
+    reactor.reset();
+    return;
+  }
+  logger.error("         | reactor[{}] never reached OnDone after its cancel, leaked", fmt::ptr(reactor.get()));
+  static_cast<void>(reactor.release());
+}
 
 }  // namespace rg_demo

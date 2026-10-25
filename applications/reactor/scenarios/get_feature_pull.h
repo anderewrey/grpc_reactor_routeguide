@@ -44,7 +44,8 @@ class GetFeature {
   GetFeature(GetFeature&&) = delete;
   GetFeature& operator=(GetFeature&&) = delete;
 
-  ~GetFeature() = default;
+  /// Cancels an RPC still in flight, and destroys the reactor once its OnDone() has run, see TearDownReactor().
+  ~GetFeature();
 
   /// Proxy component: creates the Method Request and returns immediately.
   /// Runs on the application thread. A second call while one RPC is in flight is refused.
@@ -61,9 +62,9 @@ class GetFeature {
   spdlog::logger& logger_{VariantLogger("GetFeature.pull")};
 
   // Declared last, so destruction deregisters the handler before anything it reaches is gone. The
-  // teardown limitation of Delivery::kPush, where EventLoop::Halt() discards the queued events rather
-  // than draining them (see "Message ownership" in reactor_client.md), does not apply here: a reactor
-  // cancelled during teardown queues its own pointer, not an owned response, so nothing can leak.
+  // destructor first tears the reactor down, waiting for its OnDone() if the RPC is still in flight. The
+  // event that OnDone() then queues carries only the reactor's pointer, so the queue nobody drains after
+  // EventLoop::Halt() holds nothing owned, unlike under Delivery::kPush.
   RpcReactor::EventConnection on_done_;
 };
 

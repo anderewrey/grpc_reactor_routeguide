@@ -24,9 +24,9 @@ The reactor client tests use two complementary approaches, matching the reactor 
 
 ### Synchronous unit tests
 
-Ten test binaries validate reactor callback logic directly, one per reactor type and `Delivery` approach, plus one per
-writing reactor under `Submission::kReactorPulls`, using `std::promise`/`std::future` for synchronization instead of an
-EventLoop:
+Eleven test binaries validate reactor callback logic directly, one per reactor type and `Delivery` approach, plus one per
+writing reactor under `Submission::kReactorPulls`, and one for tearing reactors down mid-RPC, using
+`std::promise`/`std::future` for synchronization instead of an EventLoop:
 
 - [active_unary_reactor_pull_test.cpp][unary-pull-test], [active_unary_reactor_push_test.cpp][unary-push-test]:
   `ActiveUnaryReactor` via `GetFeature`
@@ -39,6 +39,8 @@ EventLoop:
 - [active_write_reactor_producer_test.cpp][write-producer-test],
   [active_bidi_reactor_producer_test.cpp][bidi-producer-test]: both writing reactors under `Submission::kReactorPulls`,
   as described in [request submission coverage](#request-submission-coverage)
+- [reactor_teardown_test.cpp][teardown-test]: `CancelAndWait()` on all four reactors, as described in
+  [teardown coverage](#teardown-coverage)
 
 Each file pins its approach in a single `kDelivery` constant and instantiates every reactor with it, so a pull file
 and its push counterpart read side by side as the same scenarios written against each approach. The writing reactors'
@@ -222,16 +224,19 @@ Four tests cover it, and each was mutation-verified except where noted.
 | Test | Asserts |
 | ------ | --------- |
 | `RouteChat_OverlappingWrite_RejectedWhileHoldIsClaimed` | Accepted writes never exceed completed ones by one |
-| `RouteChat_ConcurrentClaimants_KeepTheHoldAccountingIntact` | Two writer threads cannot both win one claim |
+| `RouteChat_ConcurrentClaimants_KeepTheHoldAccountingIntact` | Two writers and the read stream's end share one claim |
 | `RouteChat_WriteAfterReadStreamClosed_RejectedDeterministically` | Writes are refused once the read stream ends |
 | `RouteChat_ReleaseWithNoHold_DoesNotLetOnDoneOverlapTheReaction` | An unclaimed release lets `OnDone` overlap |
 
 The four live in [active_bidi_reactor_push_test.cpp][bidi-push-test], under `kContinuous`. The write side is identical
 under both `Delivery` approaches, and the one place the two meet it, the `OnReadDone(false)` release, is exercised under
 each: `RouteChat_DeadlineExceeded_PropagatesStatus` exists in both bidi files and doubles as the guard for that release,
-since removing it hangs the test for its full timeout. Two properties are deliberately not covered by tests: the
-atomicity of the claim, whose race window is too narrow to hit from a test and which needs ThreadSanitizer to catch, and
-the non-re-arm after a terminal write, which `OnReadDone(false)` masks.
+since removing it hangs the test for its full timeout. `RouteChat_ConcurrentClaimants_KeepTheHoldAccountingIntact`
+races two writer threads against the server ending the RPC, so `OnReadDone(false)` claims the hold to release it
+while the writers claim it to write. Of three mutants run 200 times each, an unclaimed release and a non-atomic claim
+in `SendRequest()` were caught in every batch of ten runs. A non-atomic claim in the release itself never was: its
+window is too narrow for a test to hit, and no other test in the suite detects it. The non-re-arm after a terminal
+write is not covered either, since `OnReadDone(false)` masks it.
 
 ### Write-flow hold coverage
 
@@ -280,6 +285,29 @@ start with compile-time checks: the write methods do not exist under `kReactorPu
 
 The writer's first test also checks that each pull follows the `write_done` of the write before it, and that the first
 pull runs on the thread that constructs the reactor.
+
+### Teardown coverage
+
+[reactor_teardown_test.cpp][teardown-test] tears reactors down while their RPC is still in flight, which is a
+use-after-free unless `CancelAndWait()` has returned `true` first. Each test leaves outstanding a hold that an
+application tearing down would never release, and checks that `CancelAndWait()` still sees `OnDone()` run.
+
+| Test | Leaves outstanding |
+| ------ | --------- |
+| `Unary_MidRpc_CancelAndWaitThenDestroy` | An unanswered unary call, then destroys the reactor |
+| `Unary_AfterOnDone_ReturnsAtOnce` | Nothing: the RPC has already ended |
+| `Unary_FromDoneCallback_ReturnsAtOnce` | The `OnDone()` the call is made from |
+| `Read_PullHeldMessageNeverPulled` | A message held under `kPull` and `kTurnByTurn` |
+| `Read_PushKeptMessageNeverResumed` | A message kept under `kPush` and `kPerMessage` |
+| `Write_IdleWriteSideNeverClosed` | The write-flow hold of an idle writer |
+| `Write_ReactorPullsEndlessSource` | Nothing to release: a source that never runs dry |
+| `Bidi_HeldEchoNeverResumed` | A held echo, and the idle-window hold with no read armed |
+| `Bidi_KeptEchoNeverPulled` | The same under `kPull` and `kPerMessage` |
+| `Bidi_ReactorPullsEndlessSource` | Nothing to release: a source that never runs dry |
+
+Four mutants of `CancelAndWait()` were each caught. Without the held-message release, the four held-message tests time
+out. With the writer cancelling only its context, the idle-writer test times out. Without the idle-window release, the
+two bidi held-message tests time out. Without the wait, AddressSanitizer reports the use-after-free in the first test.
 
 ### Naming convention
 
@@ -518,6 +546,7 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [bidi-push-test]: /applications/reactor/tests/active_bidi_reactor_push_test.cpp
 [write-producer-test]: /applications/reactor/tests/active_write_reactor_producer_test.cpp
 [bidi-producer-test]: /applications/reactor/tests/active_bidi_reactor_producer_test.cpp
+[teardown-test]: /applications/reactor/tests/reactor_teardown_test.cpp
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp
 [callback-smoke-test]: /applications/callback/tests/callback_smoke_test.sh
 [test-fixture]: /applications/reactor/tests/route_guide_test_fixture.h

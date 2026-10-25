@@ -47,7 +47,8 @@ class ListFeatures {
   ListFeatures(ListFeatures&&) = delete;
   ListFeatures& operator=(ListFeatures&&) = delete;
 
-  ~ListFeatures() = default;
+  /// Cancels an RPC still in flight, and destroys the reactor once its OnDone() has run, see TearDownReactor().
+  ~ListFeatures();
 
   /// Proxy component: creates the Method Request and returns immediately.
   /// Runs on the application thread. A second call while one RPC is in flight is refused.

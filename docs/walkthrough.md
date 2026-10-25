@@ -118,7 +118,10 @@ Whatever the reactor, your code makes the same five moves:
    `reactor_`. A handler runs only after your code has returned, so it can use `reactor_` freely.
 4. **Do the work in the handlers**, on the application thread.
 5. **Destroy the reactor in the `OnDone` handler**, as its last action, after reading `Status()`. gRPC requires the
-   reactor to outlive `OnDone()`, and never uses it after that.
+   reactor to outlive `OnDone()`, and never uses it after that. If you must tear a reactor down before its RPC ends,
+   such as at shutdown, call `reactor_->CancelAndWait(timeout)` first, and destroy it only if that returns `true`.
+   The demo's scenario destructors do it through `TearDownReactor()`, in
+   [support.h](/applications/reactor/scenarios/support.h).
 
 The parts below only fill in moves 2 to 4 for each reactor.
 

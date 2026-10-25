@@ -35,6 +35,10 @@ RouteChat::RouteChat(routeguide::RouteGuide::Stub& stub)
       on_done_(kOnDone, [this](const EventLoop::Event* e) { OnDone(e); }) {
 }
 
+RouteChat::~RouteChat() {
+  TearDownReactor(reactor_, logger_);
+}
+
 void RouteChat::Start(std::vector<routeguide::RouteNote> notes) {
   using ResponseT = routeguide::RouteChat::ResponseT;
   if (reactor_) {

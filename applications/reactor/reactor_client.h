@@ -9,10 +9,14 @@
 #include <grpcpp/client_context.h>
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>  // uint64_t
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <thread>
 #include <type_traits>  // conditional_t
 #include <utility>  // swap
 #include <variant>  // monostate
@@ -100,6 +104,39 @@ using ReadOkResult = std::conditional_t<kPacing == ReadPacing::kPerMessage, bool
 /// placeholder does not compile, so the choice cannot be half made.
 template <Submission kSubmission, class CallbackT>
 using NextRequestSlot = std::conditional_t<kSubmission == Submission::kReactorPulls, CallbackT, std::monostate>;
+
+/// Records that a reactor's OnDone() has run, for CancelAndWait(). OnDone() signals it through a copy of the
+/// reactor's std::shared_ptr taken on entry, so the latch outlives the reactor when the waiter destroys the
+/// reactor as soon as it wakes, while OnDone() is still returning.
+class DoneLatch {
+ public:
+  /// Called on entry to OnDone(): records its thread, so a wait from inside OnDone(), such as from the
+  /// done callback, returns at once instead of waiting for itself.
+  void Enter() { on_done_thread_ = std::this_thread::get_id(); }
+
+  /// Called as OnDone()'s last action, through the caller's own copy of the latch.
+  void Signal() {
+    {
+      std::lock_guard lock(mutex_);
+      done_ = true;
+    }
+    cv_.notify_all();
+  }
+
+  /// @param timeout how long to wait for OnDone() to run
+  /// @return true once OnDone() has run to its end, or when called from inside OnDone(); false on a timeout
+  bool WaitFor(std::chrono::milliseconds timeout) {
+    if (on_done_thread_.load() == std::this_thread::get_id()) return true;
+    std::unique_lock lock(mutex_);
+    return cv_.wait_for(lock, timeout, [this] { return done_; });
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  bool done_{false};
+  std::atomic<std::thread::id> on_done_thread_{};
+};
 }  // namespace detail
 
 /// Template callbacks for unary RPC client reactor. It contains all available callbacks slots
@@ -181,6 +218,20 @@ class ActiveUnaryReactor : public grpc::ClientUnaryReactor {
     return true;
   }
 
+  /// Cancels the RPC and waits until OnDone() has run, so the reactor can be destroyed at once. For an
+  /// application that must tear a reactor down before its RPC ends, such as at shutdown, once its event
+  /// loop no longer runs the OnDone handler. Destroying a reactor whose OnDone() has not run is a
+  /// use-after-free, since gRPC still calls it: the destructor's cancel does not wait.
+  /// Must not be called from a reaction other than OnDone(), which could not run meanwhile. From inside
+  /// OnDone(), such as from the done callback, it returns at once.
+  /// @param timeout how long to wait for OnDone()
+  /// @return true once OnDone() has run, so the reactor may be destroyed; false on a timeout, when it may
+  ///         not be
+  bool CancelAndWait(std::chrono::milliseconds timeout) {
+    context_->TryCancel();
+    return done_latch_->WaitFor(timeout);
+  }
+
   /// Obtain the status of the RPC set by the `OnDone` event. Calling this
   /// function at any other moment is meaningless.
   /// @return reference to the grpc::Status object
@@ -193,6 +244,9 @@ class ActiveUnaryReactor : public grpc::ClientUnaryReactor {
   /// This OnDone is also the relevent event acknowledging the response reception.
   /// @param status info coming from gRPC
   void OnDone(const grpc::Status& status) override {
+    // Copied, so the latch outlives this reactor if a waiter destroys it once signalled.
+    const auto latch = done_latch_;
+    latch->Enter();
     // (Point 3.1, 3.2, 3.3) RPC termination
     if constexpr (kDelivery == Delivery::kPull) {
       response_ready_ = status.ok();
@@ -208,6 +262,7 @@ class ActiveUnaryReactor : public grpc::ClientUnaryReactor {
         cbs_.done(this, status, std::move(response_));
       }
     }
+    latch->Signal();  // Last action: the reactor may be destroyed from here on
   }
 
   std::unique_ptr<grpc::ClientContext> context_;  ///< gRPC client context for this RPC
@@ -217,6 +272,8 @@ class ActiveUnaryReactor : public grpc::ClientUnaryReactor {
 
  private:
   grpc::Status status_;
+  // Signalled once OnDone() has run, for CancelAndWait().
+  std::shared_ptr<detail::DoneLatch> done_latch_{std::make_shared<detail::DoneLatch>()};
   ActiveUnaryCallbacks<ResponseT, kDelivery> cbs_;
 
   // Delivery::kPull only.
@@ -373,6 +430,25 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
     return armed;
   }
 
+  /// Cancels the RPC and waits until OnDone() has run, so the reactor can be destroyed at once. For an
+  /// application that must tear a reactor down before its RPC ends, such as at shutdown, once its event
+  /// loop no longer runs the OnDone handler. Destroying a reactor whose OnDone() has not run is a
+  /// use-after-free, since gRPC still calls it: the destructor's cancel does not wait. A message still held is
+  /// released as by GetResponse() or ResumeRead(), without arming a read, since the application tearing
+  /// down will not make that call.
+  /// Must not be called from a reaction other than OnDone(), which could not run meanwhile. From inside
+  /// OnDone(), such as from the done callback, it returns at once.
+  /// @param timeout how long to wait for OnDone()
+  /// @return true once OnDone() has run, so the reactor may be destroyed; false on a timeout, when it may
+  ///         not be
+  bool CancelAndWait(std::chrono::milliseconds timeout) {
+    context_->TryCancel();
+    // Published before the held message is claimed, so a release call racing this one arms no read.
+    stream_no_more_ = true;
+    ReleaseHeldRead();
+    return done_latch_->WaitFor(timeout);
+  }
+
   /// Obtain the status of the RPC set by the `OnDone` event. Calling this
   /// function at any other moment is meaningless.
   /// @return reference to the grpc::Status object
@@ -402,6 +478,8 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
   /// is also copied into the reactor.
   /// @param status info coming from gRPC
   void OnDone(const grpc::Status& status) override {
+    const auto latch = done_latch_;  // As in ActiveUnaryReactor::OnDone()
+    latch->Enter();
     // (Point 4.4, 4.5) RPC termination
     stream_no_more_ = true;
     if (cbs_.done) {
@@ -409,6 +487,7 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
       // (Point 4.5) OnDone
       cbs_.done(this, status);
     }
+    latch->Signal();
   }
 
   std::unique_ptr<grpc::ClientContext> context_;  ///< gRPC client context for this RPC
@@ -515,7 +594,16 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
     this->RemoveHold();
   }
 
+  /// For CancelAndWait(): releases the hold of a message still held, without arming a read. Claims it with
+  /// the same token GetResponse() and ResumeRead() claim, so exactly one of them releases it.
+  void ReleaseHeldRead() {
+    auto& flag = (kDelivery == Delivery::kPull) ? response_ready_ : read_held_;
+    if (flag.exchange(0) != 0) this->RemoveHold();
+  }
+
   grpc::Status status_;
+  // Signalled once OnDone() has run, for CancelAndWait().
+  std::shared_ptr<detail::DoneLatch> done_latch_{std::make_shared<detail::DoneLatch>()};
   ActiveReadCallbacks<ResponseT, kDelivery, kPacing> cbs_;
 
   // Under ReadPacing::kPerMessage or kTurnByTurn: the number of messages held so far, which gives each
@@ -764,6 +852,22 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
     return true;
   }
 
+  /// Cancels the RPC and waits until OnDone() has run, so the reactor can be destroyed at once. For an
+  /// application that must tear a reactor down before its RPC ends, such as at shutdown, once its event
+  /// loop no longer runs the OnDone handler. Destroying a reactor whose OnDone() has not run is a
+  /// use-after-free, since gRPC still calls it: the destructor's cancel does not wait. Under
+  /// Submission::kApplicationPushes, it also ends the write flow, as TryCancel() does.
+  /// Must not be called from a reaction other than OnDone(), which could not run meanwhile. From inside
+  /// OnDone(), such as from the done callback, it returns at once.
+  /// @param timeout how long to wait for OnDone()
+  /// @return true once OnDone() has run, so the reactor may be destroyed; false on a timeout, when it may
+  ///         not be
+  bool CancelAndWait(std::chrono::milliseconds timeout) {
+    // TryCancel() ends the write flow too, which releases the write-flow hold.
+    TryCancel();
+    return done_latch_->WaitFor(timeout);
+  }
+
   /// Obtain the status of the RPC set by the `OnDone` event. Calling this
   /// function at any other moment is meaningless.
   /// @return reference to the grpc::Status object
@@ -804,6 +908,8 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// is also copied into the reactor.
   /// @param status info coming from gRPC
   void OnDone(const grpc::Status& status) override {
+    const auto latch = done_latch_;  // As in ActiveUnaryReactor::OnDone()
+    latch->Enter();
     stream_no_more_ = true;
     if constexpr (kDelivery == Delivery::kPull) {
       response_ready_ = status.ok();
@@ -817,6 +923,7 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
         cbs_.done(this, status, std::move(response_));
       }
     }
+    latch->Signal();
   }
 
   std::unique_ptr<grpc::ClientContext> context_;  ///< gRPC client context for this RPC
@@ -826,6 +933,8 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
 
  private:
   grpc::Status status_;
+  // Signalled once OnDone() has run, for CancelAndWait().
+  std::shared_ptr<detail::DoneLatch> done_latch_{std::make_shared<detail::DoneLatch>()};
   ActiveWriteCallbacks<RequestT, ResponseT, kDelivery, kSubmission> cbs_;
 
   // Storage for the request currently being written. SendRequest() moves the caller's argument
@@ -1040,9 +1149,10 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
     if (!write_idle_.compare_exchange_strong(idle, false)) return false;
     // Re-checked after winning the claim, and it is not redundant with it. The claim proves the
     // state is still alive, which is what makes the call safe; it says nothing about the stream
-    // being dead. Issuing a write on a terminating RPC is safe but doomed, and gRPC may never
-    // complete it, which would leave the outstanding-callback count above zero and stall OnDone()
-    // forever. Releasing and refusing is what keeps the RPC concludable.
+    // being dead. A write issued on a terminating RPC is safe but doomed: gRPC fails it, with
+    // OnWriteDone(false). Releasing and refusing here reports that synchronously instead, as a false
+    // return. The check can still race the stream ending, and the write it lets through then fails
+    // the same way, so the RPC ends either way.
     if (stream_no_more_) {
       this->RemoveHold();
       return false;
@@ -1172,6 +1282,28 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
     return armed;
   }
 
+  /// Cancels the RPC and waits until OnDone() has run, so the reactor can be destroyed at once. For an
+  /// application that must tear a reactor down before its RPC ends, such as at shutdown, once its event
+  /// loop no longer runs the OnDone handler. Destroying a reactor whose OnDone() has not run is a
+  /// use-after-free, since gRPC still calls it: the destructor's cancel does not wait. A message still held is
+  /// released as by GetResponse() or ResumeRead(), without arming a read, and under
+  /// Submission::kApplicationPushes the idle-window hold is released too, since with no read armed,
+  /// OnReadDone(false) may never come to release it.
+  /// Must not be called from a reaction other than OnDone(), which could not run meanwhile. From inside
+  /// OnDone(), such as from the done callback, it returns at once.
+  /// @param timeout how long to wait for OnDone()
+  /// @return true once OnDone() has run, so the reactor may be destroyed; false on a timeout, when it may
+  ///         not be
+  bool CancelAndWait(std::chrono::milliseconds timeout) {
+    context_->TryCancel();
+    // Published before the releases below, so a release call racing this one arms no read, and an
+    // OnWriteDone() re-arming the idle-window hold meanwhile releases it itself.
+    stream_no_more_ = true;
+    ReleaseHeldRead();
+    if constexpr (kPushes) ReleaseWriteIdleHold();
+    return done_latch_->WaitFor(timeout);
+  }
+
   /// Obtain the status of the RPC set by the `OnDone` event. Calling this
   /// function at any other moment is meaningless.
   /// @return reference to the grpc::Status object
@@ -1234,7 +1366,8 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
 
   /// This event function is called by gRPC when an explicit StartWritesDone() operation (i.e.
   /// CloseRequestStream()) completes. Not called for a close implied via StartWriteLast() (i.e.
-  /// SendLastRequest()). Either way, the write side is already over, and writes_done_ keeps it shut.
+  /// SendLastRequest()). Either way, the write side is already over: under Submission::kApplicationPushes
+  /// writes_done_ keeps it shut, and under kReactorPulls no pull follows a close.
   /// A successful close says nothing about the read side, which the server may keep feeding: marking
   /// the stream over here would stop a held read from ever being re-armed, and the RPC would never
   /// end. Only a failed close, like any failed operation, means neither direction can go on.
@@ -1248,11 +1381,14 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// The received status is also copied into the reactor.
   /// @param status info coming from gRPC
   void OnDone(const grpc::Status& status) override {
+    const auto latch = done_latch_;  // As in ActiveUnaryReactor::OnDone()
+    latch->Enter();
     stream_no_more_ = true;
     if (cbs_.done) {
       status_ = status;  // doing deep-copy unfortunately
       cbs_.done(this, status);
     }
+    latch->Signal();
   }
 
   std::unique_ptr<grpc::ClientContext> context_;  ///< gRPC client context for this RPC
@@ -1336,6 +1472,13 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
     this->RemoveHold();
   }
 
+  /// For CancelAndWait(): releases the hold of a message still held, without arming a read, as
+  /// ActiveReadReactor::ReleaseHeldRead() does.
+  void ReleaseHeldRead() {
+    auto& flag = (kDelivery == Delivery::kPull) ? response_ready_ : read_held_;
+    if (flag.exchange(0) != 0) this->RemoveHold();
+  }
+
   /// Submission::kReactorPulls: asks next_request for the next request, and writes it, or closes the request
   /// stream when there is none, as ActiveWriteReactor::PullNextRequest() does. Closing the request stream
   /// leaves the read side running, so the RPC still ends when the server finishes.
@@ -1359,6 +1502,8 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   }
 
   grpc::Status status_;
+  // Signalled once OnDone() has run, for CancelAndWait().
+  std::shared_ptr<detail::DoneLatch> done_latch_{std::make_shared<detail::DoneLatch>()};
   ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kSubmission, kPacing> cbs_;
 
   // Under ReadPacing::kPerMessage or kTurnByTurn: the number of messages held so far, as in
@@ -1392,7 +1537,7 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
 
   // Submission::kApplicationPushes only: flag indicating CloseRequestStream() or SendLastRequest() has
   // been called. After this, no more SendRequest() calls are allowed.
-  // Set by application thread, read by application thread.
+  // Set by the application thread, read by it and by the gRPC thread running OnWriteDone().
   std::atomic_bool writes_done_{false};
 
   // Once we got OnReadDone(false), OnWriteDone(false), OnWritesDoneDone(false), or OnDone(), no more

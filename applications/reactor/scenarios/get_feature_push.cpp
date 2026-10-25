@@ -27,6 +27,10 @@ GetFeature::GetFeature(routeguide::RouteGuide::Stub& stub)
       on_done_(kOnDone, [this](const EventLoop::Event* e) { OnDone(e); }) {
 }
 
+GetFeature::~GetFeature() {
+  TearDownReactor(reactor_, logger_);
+}
+
 void GetFeature::Start(routeguide::Point point) {
   using ResponseT = routeguide::GetFeature::ResponseT;
   if (reactor_) {

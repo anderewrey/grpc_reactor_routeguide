@@ -564,10 +564,10 @@ is the only thread that proceeds. The same claim also enforces gRPC's one-write-
 
 The `stream_no_more_` test survives, moved to after the claim, because the two answer different questions. The
 claim proves the state is alive, which is what makes the call safe. The flag reports that the stream is dead, which
-is what stops a doomed operation from being issued. Dropping the flag test was tried and reverted: a write accepted
-into a terminating RPC is safe but may never complete, and an operation gRPC never completes holds the
-outstanding-callback count above zero. Safety and futility are separate properties, and the design needs a guard
-for each.
+is what stops a doomed operation from being issued. A write accepted into a terminating RPC is still safe, and gRPC
+fails it with `OnWriteDone(false)`, so the RPC ends either way: the flag test is not what keeps it concludable. It
+makes a write call report the end synchronously, as a `false` return, rather than through a failed write. Safety and
+futility are separate properties, and the design guards each.
 
 The hold is never taken from the application thread. It is reserved before `StartCall()`, where nothing can be in
 flight yet, and re-taken in `OnWriteDone()`, from inside a reaction. Both are positions the rule already permits.

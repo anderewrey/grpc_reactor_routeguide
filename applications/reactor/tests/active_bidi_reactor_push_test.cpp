@@ -1186,20 +1186,21 @@ TEST_F(ActiveBidiReactorTest, RouteChat_OverlappingWrite_RejectedWhileHoldIsClai
 
 /// @test Validates the claim survives concurrent claimants.
 ///
-/// The claim's atomicity only matters when two threads reach it at once: the application thread
-/// writing, and the gRPC thread releasing the hold when the read stream ends. A single-threaded test
-/// cannot tell a compare-exchange from a test-then-set, so this one hammers the write path from two
-/// threads while the server closes the stream underneath them. A non-atomic claim lets two claimants
-/// through, which either breaks the one-write-in-flight invariant or double-releases the hold.
-/// Probabilistic by nature; it is the concurrency the design reasons about, not a proof.
-/// The server is deliberately left running: terminating it underneath the writers hits a separate,
-/// pre-existing defect, where a write accepted into a terminating stream can leave the RPC unable to
-/// conclude. That defect predates the idle-window hold and reproduces identically on the baseline, so
-/// it is not this test's subject.
+/// The claim matters when two threads reach it at once. Two writer threads hammer the write path, and the
+/// server finishes the RPC after a few dozen notes, so the gRPC thread's OnReadDone(false) also claims the
+/// idle-window hold, to release it, while the writers still try to claim it. Each note goes to its own
+/// location, so the server echoes nothing and the read stream ends only with the RPC.
+/// The test asserts the end state: writes were accepted, and OnDone() follows. A claim that lets two
+/// claimants through either issues two writes at once, which gRPC does not allow, or releases the hold
+/// twice, which lets OnDone() overlap the reaction still running: either one makes the process crash, or
+/// the RPC never end. Probabilistic by nature. Of three mutants run 200 times each, an unclaimed release in
+/// OnReadDone(false) and a non-atomic claim in SendRequest() were caught in every batch of ten runs, while a
+/// non-atomic claim in the release itself never was: its window is too narrow for this test to hit.
 TEST_F(ActiveBidiReactorTest, RouteChat_ConcurrentClaimants_KeepTheHoldAccountingIntact) {
-  std::atomic<int> completed{0};
+  test_service_.SetMaxMessages(40);
   std::atomic<int> accepted{0};
-  std::atomic<bool> invariant_held{true};
+  std::atomic<int> location{0};
+  std::atomic<bool> read_ended{false};
 
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
@@ -1207,20 +1208,24 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ConcurrentClaimants_KeepTheHoldAccountin
   ContinuousCallbacks cbs;
   cbs.read_ok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                    std::unique_ptr<routeguide::RouteNote>) {};
-  cbs.read_nok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {};
-  cbs.write_done = [&completed](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
-                                bool) { ++completed; };
+  cbs.read_nok = [&read_ended](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*) {
+    read_ended = true;
+  };
+  cbs.write_done = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*, bool) {};
   cbs.done = [&done_promise](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                             const grpc::Status& status) { done_promise.set_value(status); };
 
   auto reactor = std::make_unique<ContinuousReactor>(
       *stub_, CreateClientContext(), std::move(cbs));
 
-  auto writer = [&reactor, &accepted, &completed, &invariant_held] {
-    for (int i = 0; i < 200; ++i) {
-      if (reactor->SendRequest(rg_utils::MakeRouteNote("concurrent", 920, 920))) {
-        if (++accepted > completed.load() + 1) invariant_held = false;
-      }
+  // Each writer keeps writing until the server has ended the read stream, and a little after, so the
+  // writers are still claiming while OnReadDone(false) claims to release.
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  auto writer = [&reactor, &accepted, &location, &read_ended, deadline] {
+    int after_end = 0;
+    while (after_end < 100 && std::chrono::steady_clock::now() < deadline) {
+      if (reactor->SendRequest(rg_utils::MakeRouteNote("concurrent", 920, ++location))) ++accepted;
+      if (read_ended) ++after_end;
     }
   };
   std::thread a(writer);
@@ -1228,13 +1233,12 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ConcurrentClaimants_KeepTheHoldAccountin
   a.join();
   b.join();
 
-  EXPECT_TRUE(invariant_held.load()) << "Two writes were accepted with only one hold to claim";
   EXPECT_GT(accepted.load(), 0) << "Every concurrent write was rejected, so nothing was exercised";
-
-  // Closing has to win the claim eventually, which it cannot if the accounting drifted.
-  while (!reactor->CloseRequestStream()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  ASSERT_EQ(done_future.wait_for(std::chrono::seconds(5)), std::future_status::ready)
+  // The server finished the RPC meanwhile, so OnDone() follows with no close: the hold accounting survived
+  // the writers and OnReadDone(false) claiming at once.
+  ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }))
       << "RPC never completed, so the hold accounting drifted";
+  EXPECT_TRUE(done_future.get().ok());
 }
 
 /// @test Validates the write path is closed deterministically once the read stream ends.

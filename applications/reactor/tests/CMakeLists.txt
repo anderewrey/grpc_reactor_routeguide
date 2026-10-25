@@ -18,6 +18,7 @@ set(REACTOR_TESTS
     active_bidi_reactor_push_test
     active_bidi_reactor_producer_test
     client_reactor_integration_test
+    reactor_teardown_test
 )
 
 foreach(test_name IN LISTS REACTOR_TESTS)

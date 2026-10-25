@@ -54,7 +54,8 @@ class RouteChat {
   RouteChat(RouteChat&&) = delete;
   RouteChat& operator=(RouteChat&&) = delete;
 
-  ~RouteChat() = default;
+  /// Cancels an RPC still in flight, and destroys the reactor once its OnDone() has run, see TearDownReactor().
+  ~RouteChat();
 
   /// Proxy component: creates the Method Request, fires the first write, then returns.
   /// Runs on the application thread. A second call while one RPC is in flight is refused.

@@ -30,6 +30,10 @@ RecordRoute::RecordRoute(routeguide::RouteGuide::Stub& stub)
       on_done_(kOnDone, [this](const EventLoop::Event* e) { OnDone(e); }) {
 }
 
+RecordRoute::~RecordRoute() {
+  TearDownReactor(reactor_, logger_);
+}
+
 void RecordRoute::Start(std::vector<routeguide::Point> points) {
   using ResponseT = routeguide::RecordRoute::ResponseT;
   if (reactor_) {

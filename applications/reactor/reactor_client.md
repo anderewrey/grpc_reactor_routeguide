@@ -132,7 +132,8 @@ compile, so a misuse is caught at build time rather than at runtime.
 | `CloseRequestStream()`                |                                                                             |
 | The `next_request` slot               | The two writing reactors under `kReactorPulls`. An empty placeholder under  |
 |                                       | `kApplicationPushes`, which a function cannot be bound to                   |
-| `Status()`, `TryCancel()`             | Every variant                                                               |
+| `Status()`, `TryCancel()`,            | Every variant                                                               |
+| `CancelAndWait()`                     |                                                                             |
 
 The full API, member by member, is under [Application-facing API](#application-facing-api).
 
@@ -141,7 +142,8 @@ The full API, member by member, is under [Application-facing API](#application-f
 | Variant                             | The application owes                           | Otherwise              |
 |-------------------------------------|------------------------------------------------|------------------------|
 | Every variant                       | Destroying the reactor only once `OnDone()`    | Use after free         |
-|                                     | has run                                        |                        |
+|                                     | has run, or once `CancelAndWait()` returned    |                        |
+|                                     | `true`                                         |                        |
 | `kPush`                             | Reclaiming each message handed to the event    | Leak or double free    |
 |                                     | queue exactly once, and draining the queue     |                        |
 |                                     | before `Halt()`                                |                        |
@@ -263,8 +265,9 @@ the `ok` flag that answers the same question:
 
 - Set by `OnReadDone(false)`, `OnWriteDone(false)`, `OnWritesDoneDone()`, and `OnDone()` (whichever apply to that
   reactor's direction). On `ActiveBidiReactor`, `OnWritesDoneDone()` sets it only when the close failed: a
-  successful close ends the write side alone, which `writes_done_` already keeps shut, while the server may still
-  be sending. Setting the flag there would stop a held read from ever being re-armed, and the RPC would never end.
+  successful close ends the write side alone, which `writes_done_` already keeps shut under `kApplicationPushes`,
+  and no further pull reopens under `kReactorPulls`, while the server may still be sending. Setting the flag there
+  would stop a held read from ever being re-armed, and the RPC would never end.
 - Checked before issuing a new `StartRead()`, `StartWrite()`, `StartWriteLast()`, or `StartWritesDone()`. On the
   write paths of `ActiveWriteReactor` and `ActiveBidiReactor`, the check happens after the claim is won rather than
   before, see below. On `ActiveWriteReactor`, `TryCancel()` sets it too, since no write can succeed after it, and
@@ -301,6 +304,7 @@ These methods are exposed to application code with naming that reflects applicat
 | `GetResponse()`        | Pull the received message out, by swap       | `Delivery::kPull` only, see below            |
 | `ResumeRead()`         | Arm the read following a held message        | `Delivery::kPush` only, see below            |
 | `TryCancel()`          | Cancel the entire RPC                        | Thread-safe, any thread                      |
+| `CancelAndWait()`      | Cancel, then wait until `OnDone()` has run   | For tearing down mid-RPC, see below          |
 | `Status()`             | Get final RPC status                         | Valid after `OnDone`                         |
 
 The three write methods exist only under `Submission::kApplicationPushes`, and the `next_request` slot only under
@@ -311,6 +315,20 @@ not compile. See [Request submission](#request-submission).
 failed/finished. While a write is in flight it does nothing, and callers should wait for `OnWriteDone()` and retry, or
 use `SendLastRequest()` instead when the last message is known in advance. On `ActiveWriteReactor`, a refusal because
 the RPC is over still ends the write side, so that `OnDone()` can follow. See [Write-flow hold](#write-flow-hold).
+
+`CancelAndWait(timeout)` is for an application that must destroy a reactor before its RPC ends, such as at
+shutdown, once its event loop no longer runs the `OnDone` handler. gRPC still calls a reactor until its `OnDone()` has
+run, and still reads its `ClientContext`, so destroying it earlier is a use-after-free, which `TryCancel()` alone does
+not prevent: it does not wait. `CancelAndWait()` cancels the RPC, releases every hold nobody is left to release, and
+waits for `OnDone()`:
+
+- a message still held, as `GetResponse()` or `ResumeRead()` would, but without arming a read;
+- under `Submission::kApplicationPushes`, the writer's write-flow hold, as `TryCancel()` does, and the bidi reactor's
+  idle-window hold, which `OnReadDone(false)` cannot release when no read is armed.
+
+It returns `true` once `OnDone()` has run, when the reactor may be destroyed, and `false` on a timeout, when it may
+not. It must not be called from another reaction, during which `OnDone()` cannot run. From inside `OnDone()`, such as
+from the `done` callback, it returns `true` at once.
 
 Which reactor offers `GetResponse()` and `ResumeRead()` depends on both template parameters. A call that the table
 marks as not offered does not compile.
@@ -671,8 +689,9 @@ post-claim `stream_no_more_` re-check finds the RPC over, in which case they rel
 
 The two guards answer different questions and neither replaces the other. The claim proves the gRPC-bound state is
 still alive, which is what makes the call safe. The re-check reports whether the stream is dead, which is what
-stops a doomed operation from being issued at all. Issuing a write into a terminating RPC is safe but pointless,
-and gRPC may never complete it, which would hold the outstanding-callback count above zero.
+stops a doomed operation from being issued at all. A write issued into a terminating RPC is safe but pointless: gRPC
+fails it, with `OnWriteDone(false)`, and the RPC still ends. The re-check reports the end synchronously instead, as a
+`false` return.
 
 A caller that wants to retry after a lost claim waits for `OnWriteDone()`. A caller refused by the re-check must
 not wait, because no write is in flight and no `OnWriteDone()` will arrive. The bare `false` does not distinguish
