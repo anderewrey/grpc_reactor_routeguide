@@ -78,7 +78,7 @@ but still no task type, so the layer's core is written here whatever the standar
 | Resumption of awaiter  | Symmetric transfer: `await_suspend` returns the handle to resume                |
 | Ownership              | The caller owns the frame; destroying the `Task` destroys a finished frame      |
 | Root tasks             | `Spawn()` gives a root task to an owner that keeps it until it completes        |
-| Exceptions             | To decide, see [Open questions](#open-questions)                                |
+| Exceptions             | Not relied on: `unhandled_exception()` logs and calls `std::terminate()`        |
 
 Symmetric transfer matters because an awaitable can complete without suspending, for instance a `Read()` on a buffer
 that already holds a message. A loop of such reads would otherwise grow the stack with each iteration.
@@ -86,6 +86,26 @@ that already holds a message. A loop of such reads would otherwise grow the stac
 asio-grpc and stdexec solve the same problem with far more generality. Neither is a dependency here, for the reason
 the reactors were written in this repository: the mechanics stay visible and testable, and the vcpkg build stays as it
 is. Both remain good references.
+
+### Errors: values, not exceptions
+
+The layer reports every failure as a value, as gRPC does. An RPC's outcome is the `grpc::Status` that `Finish()`
+returns, the end of a stream is a `Read()` with no message, and a rejected write is a `Write()` that returns `false`.
+No awaitable throws, and every function of the layer that cannot fail is `noexcept`.
+
+Exceptions are not excluded from the process: spdlog, protobuf and the standard containers can still throw, allocation
+failure included. The layer only never relies on one. An exception that escapes a coroutine body is a bug, so
+`unhandled_exception()` logs it and calls `std::terminate()`, which ends the process loudly, at the place it happened.
+Today an exception escaping an event handler stops `EventLoop::Run()` with a line on stderr, as the EventLoop library
+catches it there, so the layer is stricter than the handlers it replaces.
+
+Two consequences follow:
+
+- **The promise type stores no `std::exception_ptr`.** A frame finishes with a value or never finishes, so there is no
+  rethrow path to write and test, and teardown has no third case.
+- **`noexcept` on a coroutine does not cover its body.** It only covers creating the frame: allocation, and building
+  the promise. An exception from the body still goes to `unhandled_exception()`, which is why that function, not the
+  `noexcept`, is where the policy lives.
 
 ### What an awaited message is: always owned
 
@@ -224,8 +244,6 @@ callbacks are `std::function`, which cannot hold a callback that owns a move-onl
 
 ## Open questions
 
-- **Exceptions.** Does `unhandled_exception()` call `std::terminate()`, or store the exception for the awaiter? The
-  answer depends on whether the project's code may throw at all, which nothing states today.
 - **Where the ported use cases live.** Beside the callback ones in `usecases/`, with a `_coro` suffix, or in a
   directory and an application of their own.
 - **Whether the filter reader belongs in the layer.** It is the one place user code runs on a gRPC thread. Keeping
