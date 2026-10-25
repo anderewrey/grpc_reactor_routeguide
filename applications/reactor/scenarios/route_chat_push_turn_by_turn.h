@@ -35,9 +35,12 @@ namespace rg_demo::push::turn_by_turn {
 class RouteChat {
   // The reactor flavour this scenario exhibits: its Delivery approach, then its ReadPacing mode.
   using Delivery = routeguide::RouteChat::Delivery;
+  using Submission = routeguide::RouteChat::Submission;
   using ReadPacing = routeguide::RouteChat::ReadPacing;
-  using Callbacks = routeguide::RouteChat::Callbacks<Delivery::kPush, ReadPacing::kTurnByTurn>;
-  using ClientReactor = routeguide::RouteChat::ClientReactor<Delivery::kPush, ReadPacing::kTurnByTurn>;
+  using Callbacks =
+      routeguide::RouteChat::Callbacks<Delivery::kPush, Submission::kApplicationPushes, ReadPacing::kTurnByTurn>;
+  using ClientReactor =
+      routeguide::RouteChat::ClientReactor<Delivery::kPush, Submission::kApplicationPushes, ReadPacing::kTurnByTurn>;
 
  public:
   /// Registers the event handlers this scenario needs, for its own lifetime.

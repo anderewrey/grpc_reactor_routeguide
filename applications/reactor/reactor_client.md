@@ -7,18 +7,22 @@ For why the library is built this way, which alternatives were rejected, and the
 see [architecture.md](/docs/architecture.md). For build and test commands, see
 [developing.md](/docs/developing.md) and [testing.md](/docs/testing.md).
 
-Two template parameters orient everything below. The application chooses both per RPC, from that RPC's constraints.
+Three template parameters orient everything below. The application chooses each per RPC, from that RPC's constraints.
 
 | Parameter    | Taken by                 | Decides                                                     | Default       |
 |--------------|--------------------------|-------------------------------------------------------------|---------------|
 | `Delivery`   | All four reactors        | How a received message reaches the `read_ok` or `done` slot | None          |
 | `ReadPacing` | The two reading reactors | Who arms the read that follows a delivered message          | `kPerMessage` |
+| `Submission` | The two writing reactors | Who starts the transfer of each request                     | None          |
 
 Under `Delivery::kPull` the callback is lent the message, which stays in the reactor. When the reactor keeps it, the
 application pulls it with `GetResponse()`. Under `Delivery::kPush` the callback is given the message as an owned
 object, and the reactor keeps nothing. The two axes are independent, so each reading reactor has six combinations, one
 per `Delivery` and `ReadPacing` pair. See [Delivery approaches](#delivery-approaches) and
-[Read pacing modes](#read-pacing-modes).
+[Read pacing modes](#read-pacing-modes). Under `Submission::kApplicationPushes` the application writes each request
+with `SendRequest()`; under `Submission::kReactorPulls` the reactor asks the `next_request` callback for it. See
+[Request submission](#request-submission). Why these choices apply where they do, by direction and by single message or
+stream, is under [The model behind the reactors' choices](/docs/architecture.md#the-model-behind-the-reactors-choices).
 
 ## API naming conventions
 
@@ -41,16 +45,21 @@ These gRPC functions are called internally by the reactor classes and are not ex
 | `StartCall()`           | Initiates the RPC                | Specialized constructor                           |
 | `StartRead(&response_)` | Begins async read operation      | Constructor, then `OnReadDone()`, or the call     |
 |                         |                                  | that releases a read hold (see below)             |
-| `StartWrite()`          | Begins async write operation     | Inside `SendRequest()`                            |
+| `StartWrite()`          | Begins async write operation     | Inside `SendRequest()`. Under `kReactorPulls`:    |
+|                         |                                  | `StartCall()` and `OnWriteDone()`                 |
 | `StartWriteLast()`      | Write + implied close, one op    | Inside `SendLastRequest()`                        |
-| `StartWritesDone()`     | Signals end of client writes     | Inside `CloseRequestStream()`                     |
+| `StartWritesDone()`     | Signals end of client writes     | Inside `CloseRequestStream()`. Under              |
+|                         |                                  | `kReactorPulls`: where a pull gets no request     |
 | `AddHold()`             | Prevents OnDone until RemoveHold | Inside `OnReadDone()`, before the ok callback,    |
-|                         |                                  | under `kPerMessage` and `kTurnByTurn`. Bidi only: |
-|                         |                                  | `StartCall()` and `OnWriteDone()` (write side)    |
+|                         |                                  | under `kPerMessage` and `kTurnByTurn`. Writing    |
+|                         |                                  | reactors under `kApplicationPushes` only:         |
+|                         |                                  | `StartCall()`, and bidi `OnWriteDone()`           |
 | `RemoveHold()`          | Releases hold, allows OnDone     | `GetResponse()` (`kPull`), `ResumeRead()`         |
 |                         |                                  | (`kPush`), or `OnReadDone()` when a `kPerMessage` |
-|                         |                                  | callback declines. Bidi only: the write methods   |
-|                         |                                  | and `OnReadDone(false)` (write side)              |
+|                         |                                  | callback declines. Writing reactors under         |
+|                         |                                  | `kApplicationPushes` only: the write methods,     |
+|                         |                                  | `TryCancel()` and the reactions ending the write  |
+|                         |                                  | side                                              |
 
 ### gRPC callbacks (protected overrides)
 
@@ -79,7 +88,8 @@ the `ok` flag that answers the same question:
   be sending. Setting the flag there would stop a held read from ever being re-armed, and the RPC would never end.
 - Checked before issuing a new `StartRead()`, `StartWrite()`, `StartWriteLast()`, or `StartWritesDone()`. On the
   write paths of `ActiveWriteReactor` and `ActiveBidiReactor`, the check happens after the claim is won rather than
-  before, see below. On `ActiveWriteReactor`, `TryCancel()` sets it too, since no write can succeed after it.
+  before, see below. On `ActiveWriteReactor`, `TryCancel()` sets it too, since no write can succeed after it, and
+  so does `ActiveBidiReactor`'s under `Submission::kReactorPulls`, where the flag is what stops the reactor pulling.
 - On the read side, only `GetResponse()` (`Delivery::kPull`) and `ResumeRead()` (`Delivery::kPush`) consult it,
   under `ReadPacing::kPerMessage` or `kTurnByTurn`, since they are the only calls that arm a read from outside a
   reaction. Every other `StartRead()`, including the one after a declined `kPerMessage` message, runs inside a
@@ -107,10 +117,16 @@ These methods are exposed to application code with naming that reflects applicat
 | `SendRequest()`        | Send a request message on the stream         | Takes ownership; caller gives up the request |
 | `SendLastRequest()`    | Send the final request and close, atomically | For a known-last message                     |
 | `CloseRequestStream()` | Signal end of client requests                | Returns false if rejected (see below)        |
+| `next_request` slot    | Hand the reactor the next request, or none   | Called by the reactor, not by the            |
+|                        |                                              | application, see below                       |
 | `GetResponse()`        | Pull the received message out, by swap       | `Delivery::kPull` only, see below            |
 | `ResumeRead()`         | Arm the read following a held message        | `Delivery::kPush` only, see below            |
 | `TryCancel()`          | Cancel the entire RPC                        | Thread-safe, any thread                      |
 | `Status()`             | Get final RPC status                         | Valid after `OnDone`                         |
+
+The three write methods exist only under `Submission::kApplicationPushes`, and the `next_request` slot only under
+`Submission::kReactorPulls`, where the reactor issues every write and the close itself. Using one under the other does
+not compile. See [Request submission](#request-submission).
 
 `CloseRequestStream()` returns `false` if already closed, if a write is still in flight, or if the RPC has already
 failed/finished. While a write is in flight it does nothing, and callers should wait for `OnWriteDone()` and retry, or
@@ -160,13 +176,17 @@ For server-side reactors, the naming will mirror client-side with role reversal:
 |                   |                 |                        | lent message,     | owned message,    |               |
 |                   |                 |                        | `GetResponse()`   | `ResumeRead()`    |               |
 | **Client-Stream** | `SendRequest()` | `CloseRequestStream()` | done callback,    | done callback,    | `TryCancel()` |
-|                   |                 |                        | `GetResponse()`   | owned response    |               |
+|                   | or the          | or `std::nullopt` from | `GetResponse()`   | owned response    |               |
+|                   | `next_request`  | `next_request`         |                   |                   |               |
+|                   | slot            |                        |                   |                   |               |
 | **Bidi**          | `SendRequest()` | `CloseRequestStream()` | read_ok callback, | read_ok callback, | `TryCancel()` |
-|                   |                 |                        | lent message,     | owned message,    |               |
-|                   |                 |                        | `GetResponse()`   | `ResumeRead()`    |               |
+|                   | or the          | or `std::nullopt` from | lent message,     | owned message,    |               |
+|                   | `next_request`  | `next_request`         | `GetResponse()`   | `ResumeRead()`    |               |
+|                   | slot            |                        |                   |                   |               |
 
 Every reactor exposes `Status()` under both approaches. On the two reading reactors, `GetResponse()` and
-`ResumeRead()` exist only under `ReadPacing::kPerMessage` and `kTurnByTurn`.
+`ResumeRead()` exist only under `ReadPacing::kPerMessage` and `kTurnByTurn`. On the two writing reactors, the write
+methods exist only under `Submission::kApplicationPushes`, and the `next_request` slot only under `kReactorPulls`.
 
 #### Server-side reactors (future)
 
@@ -362,9 +382,9 @@ offered under `kContinuous`.
 
 `read_ok` returns `true` to keep the message, which then holds the stream exactly as under
 [kTurnByTurn](#kturnbyturn). It returns `false` to decline it, which then lets the stream run on as under
-[kContinuous](#kcontinuous). The reactor takes the hold and publishes the message's token (`response_ready_` under `kPull`,
-`read_held_` under `kPush`) before every call to `read_ok`, since the answer is not known yet. Each held message gets
-its own non-zero token, and zero means that nothing is held.
+[kContinuous](#kcontinuous). The reactor takes the hold and publishes the message's token (`response_ready_` under
+`kPull`, `read_held_` under `kPush`) before every call to `read_ok`, since the answer is not known yet. Each held
+message gets its own non-zero token, and zero means that nothing is held.
 
 On a declined message, `OnReadDone()` claims the hold back by compare-exchange against that message's own token,
 arms the next read, then releases the hold, all inside the reaction. If the application has already claimed the
@@ -414,12 +434,46 @@ even while its own `read_ok` is still running. So the application calls one of t
 callback kept: every message under `kTurnByTurn`, and those for which `read_ok` returned `true` under `kPerMessage`. A
 stray call, such as one for a declined message, may release a message the application meant to keep.
 
+## Request submission
+
+`ActiveWriteReactor` and `ActiveBidiReactor` take a `Submission` template parameter after `Delivery`, and before the
+bidi reactor's `ReadPacing`. It selects who starts the transfer of each request, which is the push or pull of the
+outgoing direction, as `Delivery` is that of the incoming one. It has no default: neither value contains the other.
+
+| `Submission`         | Starts each transfer                          | Closes the request stream | Write-side hold |
+|----------------------|-----------------------------------------------|---------------------------|-----------------|
+| `kApplicationPushes` | The application, with `SendRequest()` or      | The application, with     | Yes, see below  |
+|                      | `SendLastRequest()`, from any thread          | `SendLastRequest()` or    |                 |
+|                      |                                               | `CloseRequestStream()`    |                 |
+| `kReactorPulls`      | The reactor, which asks the `next_request`    | The reactor, when         | None            |
+|                      | callback for the request                      | `next_request` returns    |                 |
+|                      |                                               | `std::nullopt`            |                 |
+
+Under `kReactorPulls`, the `next_request` slot has the signature
+`std::optional<RequestT>(reactor)`, and the reactor calls it:
+
+- once in its shadowed `StartCall()`, before the RPC is activated, so inside the specialized reactor's constructor, on
+  the thread that constructs it, before the application holds the reactor. The answer is written, or the request
+  stream closed, before the RPC starts, which gRPC allows.
+- again in `OnWriteDone()`, on a gRPC thread, after each successful write, and right after the `write_done` callback,
+  so the application has seen a write complete before it is asked for the next one.
+
+It is never called twice at once, and never after a failed write, after `TryCancel()`, or, on the bidi reactor, after
+the read stream ended. An unbound slot counts as a source with nothing to send, so the reactor closes the request stream
+at once. The callback runs inside a reaction, so it must answer at once, without blocking, and it cannot answer "not
+yet": a source that may have nothing ready while it is not over needs `kApplicationPushes`.
+
+Every write is then issued before the RPC starts or inside a reaction, so the write side takes no hold, and the RPC ends
+on its own, as a read-only one does. [Write-side idle hold](#write-side-idle-hold) and
+[Write-flow hold](#write-flow-hold) describe `kApplicationPushes` only. The reasoning is in
+[architecture.md](/docs/architecture.md#why-the-writing-reactors-also-let-the-reactor-pull).
+
 ## Write-side idle hold
 
-`ActiveBidiReactor` keeps one hold outstanding exactly while its write stream is idle, and claiming that hold is
-what grants permission to write. `ActiveWriteReactor` cannot release a hold that way, so it holds its whole write
-flow instead, described under [Write-flow hold](#write-flow-hold). The two classes differ here rather than mirroring
-each other.
+Under `Submission::kApplicationPushes`, `ActiveBidiReactor` keeps one hold outstanding exactly while its write stream
+is idle, and claiming that hold is what grants permission to write. `ActiveWriteReactor` cannot release a hold that way,
+so it holds its whole write flow instead, described under [Write-flow hold](#write-flow-hold). The two classes differ
+here rather than mirroring each other.
 
 | Moment                          | What happens to the hold                                   |
 |---------------------------------|------------------------------------------------------------|
@@ -466,10 +520,11 @@ The table holds under either `Delivery`.
 
 ## Write-flow hold
 
-`ActiveWriteReactor` keeps one hold outstanding for its whole write flow, from `StartCall()` until the write side
-ends. This is the pattern gRPC documents for operations started outside the reactions, under `AddHold()` in
-`grpcpp/support/client_callback.h`: a hold taken before `StartCall()`, and released once no more writes will be
-issued. Each write call claims the flow before it writes, so nothing can release the hold under it.
+Under `Submission::kApplicationPushes`, `ActiveWriteReactor` keeps one hold outstanding for its whole write flow, from
+`StartCall()` until the write side ends. This is the pattern gRPC documents for operations started outside the
+reactions, under `AddHold()` in `grpcpp/support/client_callback.h`: a hold taken before `StartCall()`, and released once
+no more writes will be issued. Each write call claims the flow before it writes, so nothing can release the hold under
+it.
 
 | Moment                                        | What happens to the write flow and its hold                   |
 |-----------------------------------------------|---------------------------------------------------------------|
@@ -524,17 +579,22 @@ Applied per direction, the rule accounts for every gRPC call the library makes:
 | `StartRead()`, `kPush`, `kPerMessage`      | The reactor, in `OnReadDone()`      | Not needed, taken anyway |
 | declined                                   |                                     |                          |
 | `StartRead()`, unbound `read_ok`           | The reactor, in `OnReadDone()`      | Not needed, none taken   |
-| `StartWrite()`, bidi                       | The application, in `SendRequest()` | Required, and taken      |
-| `StartWrite()`, write reactor              | The application, in `SendRequest()` | Required, and taken      |
+| `StartWrite()`, bidi, `kApplicationPushes` | The application, in `SendRequest()` | Required, and taken      |
+| `StartWrite()`, write reactor,             | The application, in `SendRequest()` | Required, and taken      |
+| `kApplicationPushes`                       |                                     |                          |
+| `StartWrite()`, `kReactorPulls`            | The reactor, in `StartCall()`,      | Not needed, none taken   |
+|                                            | before the RPC starts, then in      |                          |
+|                                            | `OnWriteDone()`                     |                          |
 
 Under `kPerMessage` the hold is taken before the `read_ok` callback runs, so before the reactor knows whether the
 message is kept or declined. A declined message has its hold claimed back and released in the same reaction, right
 after `OnReadDone()` re-arms the read itself.
 
-`ActiveBidiReactor` takes its write-side hold for the window where the write stream sits idle, so claiming that hold is
-what grants permission to write, under either `Delivery`. `ActiveWriteReactor` has no read stream, so no reaction could
-release an idle hold when the RPC ends on its own. It holds its whole write flow instead, and claiming that flow is what
-grants permission to write, as described under [Write-flow hold](#write-flow-hold). The reasoning behind every row is in
+Under `kApplicationPushes`, `ActiveBidiReactor` takes its write-side hold for the window where the write stream sits
+idle, so claiming that hold is what grants permission to write, under either `Delivery`. `ActiveWriteReactor` has no
+read stream, so no reaction could release an idle hold when the RPC ends on its own. It holds its whole write flow
+instead, and claiming that flow is what grants permission to write, as described under
+[Write-flow hold](#write-flow-hold). The reasoning behind every row is in
 [architecture.md](/docs/architecture.md#why-one-rule-decides-every-hold).
 
 `Status()` and `TryCancel()` are safe from any thread at any time, because neither touches gRPC's internal
@@ -654,12 +714,11 @@ Three public functions can be called by the application side:
 - `void TryCancel()`
 
 `GetResponse()` function swaps the underlying data storage of the response object. The swap mechanism is important to
-avoid a deep-copy of the content of the response. For the `ActiveUnaryReactor`, having the response swapped is acceptable
-because the unary RPC is meant to one response only, so the swap is a good technique to speed up the response proceeding
-time. The function will return true when the returned response is valid, which requires the RPC to have completed
-with an OK status: after a failed RPC it returns false and leaves `response` untouched. Under `Delivery::kPush` there
-is no such
-accessor: the response has already left the reactor through the `OnDoneCallback`.
+avoid a deep-copy of the content of the response. For the `ActiveUnaryReactor`, having the response swapped is
+acceptable because the unary RPC is meant to one response only, so the swap is a good technique to speed up the response
+proceeding time. The function will return true when the returned response is valid, which requires the RPC to have
+completed with an OK status: after a failed RPC it returns false and leaves `response` untouched. Under
+`Delivery::kPush` there is no such accessor: the response has already left the reactor through the `OnDoneCallback`.
 
 `Status()` function simply returns a reference to the `grpc::Status` of the active reactor. Initialized as `Status::OK`,
 its content is updated once `ClientUnaryReactor::OnDone` event is received. It means calling `Status()` at any other
@@ -936,8 +995,8 @@ The three callbacks are: `OnReadDoneOkCallback`, `OnReadDoneNOkCallback`, and `O
 using OnDoneCallback = std::function<void(grpc::ClientReadReactor<ResponseT>* reactor, const grpc::Status&)>;
 ````
 
-When `ClientReadReactor::OnDone` event is handled in the active reactor, the `OnDoneCallback` callback function is called
-with the following arguments:
+When `ClientReadReactor::OnDone` event is handled in the active reactor, the `OnDoneCallback` callback function is
+called with the following arguments:
 
 - the pointer to the active reactor instance (i.e. `this`)
 - a reference to the `grpc::Status` content
@@ -1495,17 +1554,25 @@ Its threading properties match the two reactors above: the constructor runs on t
 callbacks run on a thread from the gRPC pool, and the callback slots exist to hand the work to the application's
 event loop rather than to process it in place.
 
-The write direction is what distinguishes it. The application drives that direction, so `SendRequest()` issues a
-gRPC write from the application thread, outside any reaction. gRPC allows one write in flight at a time, which
-makes the write flow a turn-by-turn exchange: send one request, wait for `OnWriteDone`, send the next. Because those
-writes are issued outside the reactions, the reactor holds the RPC for its whole write flow, and the RPC completes
-only once the application ends the write side. See [Write-flow hold](#write-flow-hold).
+The write direction is what distinguishes it, and its `Submission` decides who drives it. gRPC allows one write in
+flight at a time, which makes the write flow a turn-by-turn exchange either way: one request, then `OnWriteDone`, then
+the next.
+
+- Under `Submission::kApplicationPushes`, the application drives it, so `SendRequest()` issues a gRPC write from the
+  application thread, outside any reaction. Because those writes are issued outside the reactions, the reactor holds
+  the RPC for its whole write flow, and the RPC completes only once the application ends the write side. See
+  [Write-flow hold](#write-flow-hold).
+- Under `Submission::kReactorPulls`, the reactor drives it: it asks the `next_request` callback for the first request
+  before the RPC starts, then for each next one from `OnWriteDone`, and closes the request stream when the callback has
+  none. Every write is issued before the RPC or inside a reaction, so the reactor takes no hold, and the RPC completes
+  on its own. See [Request submission](#request-submission).
 
 A client-streaming RPC receives exactly one response, and gRPC writes it as part of completing the call rather
 than through a read operation. There is therefore no `OnReadDone` here, and the terminal response is delivered
 with the status through `OnDoneCallback`.
 
-The two callbacks are `OnWriteDoneCallback` and `OnDoneCallback`.
+The callbacks are `OnWriteDoneCallback` and `OnDoneCallback`, and `NextRequestCallback` under
+`Submission::kReactorPulls`.
 
 ````cpp
 using OnWriteDoneCallback = std::function<void(grpc::ClientWriteReactor<RequestT>* reactor, bool ok)>;
@@ -1516,6 +1583,18 @@ function is called with the following arguments:
 
 - the pointer to the active reactor instance (i.e. `this`)
 - the `ok` flag, false when the write failed and no further operation will succeed
+
+Under `Submission::kReactorPulls`, the reactor asks for each request through the `next_request` slot:
+
+````cpp
+using NextRequestCallback = std::function<std::optional<RequestT>(grpc::ClientWriteReactor<RequestT>* reactor)>;
+````
+
+It is called with the pointer to the active reactor instance, and returns the next request, which the reactor takes
+over, or `std::nullopt` to close the request stream. The first call runs inside the reactor's constructor, on the
+thread that constructs it, and each later one on a gRPC thread, right after `OnWriteDoneCallback` for a successful
+write. Its full contract is under [Request submission](#request-submission). Under `kApplicationPushes` the slot is an
+empty placeholder, and binding a function to it does not compile.
 
 The `OnDoneCallback` signature depends on the `Delivery` the reactor was instantiated with, exactly as on
 `ActiveUnaryReactor`. Under `Delivery::kPull`, the callback is lent the terminal response, which stays in the reactor
@@ -1550,12 +1629,15 @@ so the status is what tells the callback whether the content is meaningful. See
 
 Six public functions can be called by the application side:
 
-- `bool SendRequest(RequestT&&)`
-- `bool SendLastRequest(RequestT&&)`
-- `bool CloseRequestStream()`
+- `bool SendRequest(RequestT&&)`, under `Submission::kApplicationPushes` only
+- `bool SendLastRequest(RequestT&&)`, under `Submission::kApplicationPushes` only
+- `bool CloseRequestStream()`, under `Submission::kApplicationPushes` only
 - `bool GetResponse(ResponseT& response)`, under `Delivery::kPull` only
 - `const grpc::Status& Status()`
 - `void TryCancel()`
+
+Under `Submission::kReactorPulls`, only the last three remain: the reactor issues every write and the close itself, and
+`TryCancel()` also stops it from pulling another request.
 
 `SendRequest()` takes ownership of the request: the caller passes a temporary or an explicit `std::move()`, and
 must not keep using the object afterwards. It returns false when the reactor cannot accept the write, and leaves the
@@ -1571,7 +1653,7 @@ unconditionally.
 not known in advance. It is refused while a write is in flight.
 
 `SendLastRequest()` and `CloseRequestStream()` end the write flow, and release its hold. One of them, a failed write,
-or `TryCancel()` must end it, or the RPC never completes.
+or `TryCancel()` must end it, or the RPC never completes. Under `kReactorPulls` there is no such obligation.
 
 `GetResponse()` and `Status()` behave as described for the unary reactor. `TryCancel()` also ends the write flow,
 since no write can succeed after it, so that `OnDone()` follows even when the write side is idle. It is safe from any
@@ -1605,8 +1687,9 @@ From the PlantUML sequence diagram, the corresponding points are:
 #include "applications/reactor/reactor_client_routeguide.h"
 void RecordRoute(std::vector<routeguide::Point> points) {
   using routeguide::RecordRoute::Delivery;
-  using Callbacks = routeguide::RecordRoute::Callbacks<Delivery::kPush>;
-  using ClientReactor = routeguide::RecordRoute::ClientReactor<Delivery::kPush>;
+  using routeguide::RecordRoute::Submission;
+  using Callbacks = routeguide::RecordRoute::Callbacks<Delivery::kPush, Submission::kApplicationPushes>;
+  using ClientReactor = routeguide::RecordRoute::ClientReactor<Delivery::kPush, Submission::kApplicationPushes>;
   using routeguide::RecordRoute::ResponseT;
   record_route_pending_ = std::move(points);
   Callbacks cbs;
@@ -1686,9 +1769,14 @@ EventLoop::RegisterEvent(kRecordRouteOnDone, [this](const Event* event) {
 
 ### PlantUML sequence flow
 
-The two diagrams differ only in section 5, where the terminal response reaches the application, exactly as the two
-unary diagrams do. Sections 1 to 4 show the write-flow hold: taken before `StartCall()`, claimed by each write, and
-released when the write side ends. It is described under [Write-flow hold](#write-flow-hold).
+The first two diagrams draw `Submission::kApplicationPushes`, once per `Delivery`. They differ only in section 5, where
+the terminal response reaches the application, exactly as the two unary diagrams do. Sections 1 to 4 show the
+write-flow hold: taken before `StartCall()`, claimed by each write, and released when the write side ends. It is
+described under [Write-flow hold](#write-flow-hold).
+
+The third diagram draws `Submission::kReactorPulls`, under `Delivery::kPull`. Its section 5 is the first diagram's,
+and sections 1 to 4 show the reactor pulling each request instead, with no hold. The pull is independent of the
+delivery, so under `Delivery::kPush` only section 5 changes, as in the second diagram.
 
 #### Delivery::kPull
 
@@ -1942,6 +2030,123 @@ group #lightblue (app-thread callback) ondone
 end
 ```
 
+#### Delivery::kPull, Submission::kReactorPulls
+
+```plantuml
+!pragma teoz true
+skinparam lifelineStrategy solid
+skinparam ParticipantPadding 50
+
+title gRPC Client reactor for client-side stream RPC, Delivery::kPull, Submission::kReactorPulls
+
+boundary    app      as "Application\nside"
+box "ActiveWriteReactor" #beige
+collections data     as "Data"
+control     reactor  as "ClientWriteReactor"
+end box
+entity      grpc     as "gRPC\nClientCallbackWriter"
+
+legend top center
+  <font color=blue><b>blue</b>: main application thread
+  <font color=green><b>green</b>: gRPC thread pool
+endlegend
+
+activate app #lightblue
+
+autonumber 1.1
+== 1. Stream establishment ==
+    app -[#darkblue]> reactor : Create Reactor
+    activate reactor
+    data o-[#darkblue]->> reactor : Response holder
+    & reactor -[#darkblue]\ grpc : async RPC service call\nstub.async()->RpcMethod()
+    activate grpc #lightgreen
+    reactor -[#darkblue]> reactor : <i>next_request() returns\n<i>the first Request
+    note right of reactor
+      The first pull runs in the constructor,
+      on the application thread, before the
+      application holds the reactor.
+    end note
+    reactor -[#darkblue]\ grpc : StartWrite()
+    note right of reactor
+      No hold: issued before the RPC starts,
+      and every later write inside a reaction.
+    end note
+    reactor -[#darkblue]\ grpc : StartCall()
+    activate grpc #green
+    & grpc --\? : send Request\nto server
+
+...
+autonumber 2.1
+== 2. Request streaming ==
+loop while next_request() returns a request
+group #lightgreen (grpc-thread callback) onwritedone
+    reactor <[#darkgreen]- grpc : OnWriteDone : true
+    activate reactor #gold
+    {start2} app /[#darkgreen]- reactor : TriggerEvent : OnWriteDone
+    reactor -[#darkgreen]> reactor : <i>next_request() returns\n<i>the next Request
+    reactor -[#darkgreen]\ grpc : StartWrite()
+    & grpc --\? : send Request\nto server
+    deactivate reactor
+end
+    {end2} app -[#darkblue]> reactor : ProceedEvent: OnWriteDone
+    {start2} <-> {end2} : Eventloop
+group #lightblue (app-thread callback) onwritedone
+    app -[#darkblue]> app : <i>update application,\n<i>with nothing to send
+    activate app #blue
+    deactivate app
+end
+end
+
+autonumber 3.1
+== 3. Request stream closing ==
+group #lightgreen (grpc-thread callback) onwritedone
+    reactor <[#darkgreen]- grpc : OnWriteDone : true\n<i>write_done handled as in section 2
+    activate reactor #gold
+    reactor -[#darkgreen]> reactor : <i>next_request() returns\n<i>std::nullopt
+    reactor -[#darkgreen]\ grpc : StartWritesDone()
+    & grpc --\? : close the\nrequest stream
+    deactivate reactor
+end
+    reactor <[#darkgreen]- grpc : OnWritesDoneDone
+
+...
+autonumber 4.1
+== 4. Client-side cancellation ==
+    app -[#darkblue]> reactor : TryCancel()
+    & reactor -[#darkblue]\ grpc : TryCancel()
+    & grpc --\? : RPC termination\nbehest
+    reactor -[#darkblue]> reactor : <i>no more pulls\n(stream_no_more_)
+
+autonumber 5.1
+== 5. RPC completion ==
+note across
+  OnDone fires as soon as the RPC ends, however it ends: closed in section 3, cancelled in section 4,
+  or ended by the server or a deadline at any time, since the reactor holds nothing on the write side.
+end note
+    grpc <--? : receive Response\nand RPC termination
+    &grpc -[#darkgreen]> data : <i>writes terminal response
+    activate data #yellow
+    deactivate grpc
+    reactor <[#darkgreen]- grpc : OnDone
+    deactivate grpc
+group #lightgreen (grpc-thread callback) ondone
+    {start5} app /[#darkgreen]- reactor : TriggerEvent : OnDone
+end
+    ...
+    {end5} app -[#darkblue]> reactor : ProceedEvent: OnDone
+    {start5} <-> {end5} : Eventloop
+group #lightblue (app-thread callback) ondone
+    app -[#darkblue]> reactor : GetResponse()
+    data o-[#darkblue]> reactor : <i>swaps response out
+    deactivate data
+    reactor -[#darkblue]> app : <i>update application with response
+    activate app #blue
+    deactivate app
+    app -[#darkblue]> reactor : Destroy Reactor
+    destroy reactor
+end
+```
+
 ## Bidirectional streaming RPC client
 
 gRPC API keywords: ClientBidiReactor, ClientCallbackReaderWriter
@@ -1955,8 +2160,9 @@ Inherit from `grpc::ClientBidiReactor`, this class implements the Method Request
 It combines the two directions already described: its read side behaves as `ActiveReadReactor`'s, and its write
 side as `ActiveWriteReactor`'s, except for the hold that covers the writes.
 
-The two directions are independent. The application drives the write side one request at a time, gRPC drives the
-read side, and neither waits for the other. A bidirectional RPC carries no terminal response, so `OnDoneCallback`
+The two directions are independent. The write side is driven one request at a time, by the application under
+`Submission::kApplicationPushes` or by the reactor under `kReactorPulls`, exactly as on `ActiveWriteReactor`. gRPC
+drives the read side, and neither waits for the other. A bidirectional RPC carries no terminal response, so `OnDoneCallback`
 delivers only the status, unlike the client-streaming case.
 
 The four callbacks are `OnReadDoneOkCallback`, `OnReadDoneNOkCallback`, `OnWriteDoneCallback`, and
@@ -1972,6 +2178,9 @@ using OnReadDoneNOkCallback = std::function<void(grpc::ClientBidiReactor<Request
 using OnWriteDoneCallback = std::function<void(grpc::ClientBidiReactor<RequestT, ResponseT>* reactor, bool ok)>;
 using OnDoneCallback =
     std::function<void(grpc::ClientBidiReactor<RequestT, ResponseT>* reactor, const grpc::Status&)>;
+// Submission::kReactorPulls only, as on ActiveWriteReactor
+using NextRequestCallback =
+    std::function<std::optional<RequestT>(grpc::ClientBidiReactor<RequestT, ResponseT>* reactor)>;
 ````
 
 The read side behaves exactly as on `ActiveReadReactor`, in all six combinations. Under `Delivery::kPull`, each
@@ -1989,9 +2198,9 @@ the RPC itself is ending, because a server closes a bidirectional response strea
 
 Seven public functions can be called by the application side:
 
-- `bool SendRequest(RequestT&&)`
-- `bool SendLastRequest(RequestT&&)`
-- `bool CloseRequestStream()`
+- `bool SendRequest(RequestT&&)`, under `Submission::kApplicationPushes` only
+- `bool SendLastRequest(RequestT&&)`, under `Submission::kApplicationPushes` only
+- `bool CloseRequestStream()`, under `Submission::kApplicationPushes` only
 - `bool GetResponse(ResponseT& response)`, under `Delivery::kPull` with `kPerMessage` or `kTurnByTurn`
 - `bool ResumeRead()`, under `Delivery::kPush` with `kPerMessage` or `kTurnByTurn`
 - `const grpc::Status& Status()`
@@ -2003,6 +2212,11 @@ Seven public functions can be called by the application side:
 [Write-side idle hold](#write-side-idle-hold), which the read side releases when the RPC ends on its own. So, unlike
 the writer, a bidirectional RPC completes without the application ending its write side. The write side is identical
 in all six combinations.
+
+Under `Submission::kReactorPulls` the three write functions do not exist, and neither does the idle hold: the reactor
+pulls each request from `next_request` and writes it from `OnWriteDone`, as `ActiveWriteReactor` does, and closes the
+request stream when the callback has none, while the read side keeps running. It stops pulling once the read stream
+ends, a write fails, or `TryCancel()` is called. The read side, its pacing and its holds are unchanged.
 
 Under `Delivery::kPush`, like the three other reactors, `ActiveBidiReactor` exposes no response accessor: its
 `response_` read target keeps a stable address across every read, and each message is swapped out of it by pointer,
@@ -2043,9 +2257,12 @@ From the PlantUML sequence diagram, the corresponding points are:
 #include "applications/reactor/reactor_client_routeguide.h"
 void RouteChat(std::vector<routeguide::RouteNote> notes) {
   using routeguide::RouteChat::Delivery;
+  using routeguide::RouteChat::Submission;
   using routeguide::RouteChat::ReadPacing;
-  using Callbacks = routeguide::RouteChat::Callbacks<Delivery::kPush, ReadPacing::kContinuous>;
-  using ClientReactor = routeguide::RouteChat::ClientReactor<Delivery::kPush, ReadPacing::kContinuous>;
+  using Callbacks =
+      routeguide::RouteChat::Callbacks<Delivery::kPush, Submission::kApplicationPushes, ReadPacing::kContinuous>;
+  using ClientReactor =
+      routeguide::RouteChat::ClientReactor<Delivery::kPush, Submission::kApplicationPushes, ReadPacing::kContinuous>;
   using routeguide::RouteChat::ResponseT;
   route_chat_pending_ = std::move(notes);
   Callbacks cbs;

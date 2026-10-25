@@ -13,8 +13,10 @@ set(REACTOR_TESTS
     active_read_reactor_push_test
     active_write_reactor_pull_test
     active_write_reactor_push_test
+    active_write_reactor_producer_test
     active_bidi_reactor_pull_test
     active_bidi_reactor_push_test
+    active_bidi_reactor_producer_test
     client_reactor_integration_test
 )
 

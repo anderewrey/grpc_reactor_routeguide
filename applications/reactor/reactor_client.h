@@ -12,8 +12,10 @@
 #include <cstdint>  // uint64_t
 #include <functional>
 #include <memory>
+#include <optional>
 #include <type_traits>  // conditional_t
 #include <utility>  // swap
+#include <variant>  // monostate
 
 /************************
  * gRPC Reactor: Following code belongs to the API implementation
@@ -62,6 +64,25 @@ enum class ReadPacing {
   kTurnByTurn,
 };
 
+/// Selects who starts the transfer of each outgoing message on a writing reactor, which is the push/pull
+/// of the outgoing direction, as Delivery is that of the incoming one. Every writing reactor takes it as a
+/// template parameter, with no default, for the same reason as Delivery. It has no pacing counterpart:
+/// gRPC accepts one write in flight at a time, so nothing is left to choose about when the next one may
+/// start, only about who has the message once the previous one completed. See "The model behind the
+/// reactors' choices" in docs/architecture.md.
+enum class Submission {
+  /// The application starts each transfer, by calling SendRequest(), SendLastRequest() or
+  /// CloseRequestStream() from any thread, whenever it has a message ready. The reactor rejects a write
+  /// while another is in flight, so the application keeps its surplus and calls again after write_done.
+  /// Since those calls come from outside a reaction, the reactor holds the RPC while one may still come.
+  kApplicationPushes,
+  /// The reactor starts each transfer, by asking the next_request callback for the next message, once
+  /// when the RPC starts and again each time a write completes, and closes the request stream when the
+  /// callback has none. Every write is then issued by the reactor itself, so it takes no hold, and the
+  /// application has no write call to make.
+  kReactorPulls,
+};
+
 namespace detail {
 /// What a read_ok callback receives: the message lent in place (Delivery::kPull), or given as an owned
 /// object (Delivery::kPush).
@@ -73,6 +94,12 @@ using DeliveredMessage =
 /// since the other pacings are fixed for the whole RPC.
 template <ReadPacing kPacing>
 using ReadOkResult = std::conditional_t<kPacing == ReadPacing::kPerMessage, bool, void>;
+
+/// The next_request slot of a writing reactor's callbacks: a callback under Submission::kReactorPulls, and an
+/// empty placeholder under kApplicationPushes, which has nobody to call it. Binding a callback to the
+/// placeholder does not compile, so the choice cannot be half made.
+template <Submission kSubmission, class CallbackT>
+using NextRequestSlot = std::conditional_t<kSubmission == Submission::kReactorPulls, CallbackT, std::monostate>;
 }  // namespace detail
 
 /// Template callbacks for unary RPC client reactor. It contains all available callbacks slots
@@ -521,7 +548,8 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
 /// @tparam RequestT type of protobuf message the RPC sends
 /// @tparam ResponseT type of protobuf message the RPC receives as final response
 /// @tparam kDelivery how the reactor hands the final response over, which sets the done slot's signature
-template <class RequestT, class ResponseT, Delivery kDelivery>
+/// @tparam kSubmission who starts the transfer of each request
+template <class RequestT, class ResponseT, Delivery kDelivery, Submission kSubmission>
 requires std::derived_from<RequestT, google::protobuf::Message> &&
          std::derived_from<ResponseT, google::protobuf::Message>
 struct ActiveWriteCallbacks {
@@ -530,6 +558,20 @@ struct ActiveWriteCallbacks {
   /// @param ok true if the write was successful, false otherwise
   using OnWriteDoneCallback = std::function<void(grpc::ClientWriteReactor<RequestT>*, bool ok)>;
   OnWriteDoneCallback write_done;  ///< Slot for ClientWriteReactor::OnWriteDone event
+
+  /// Function signature for the reactor pulling the next request, under Submission::kReactorPulls only.
+  /// Called once while the reactor starts the RPC, which is inside its constructor, on the thread that
+  /// constructs it, so before the application holds the reactor. Then called again on a gRPC thread after
+  /// each successful write, right after write_done. Never called twice at once, and never after a write
+  /// failed or the RPC was cancelled. It must answer at once, without blocking, since it runs inside a
+  /// reaction: a request to send it, or std::nullopt to close the request stream. It cannot answer "not
+  /// yet": a source that may have nothing ready while it is not over calls for kApplicationPushes. An
+  /// unbound slot counts as a source with nothing to send.
+  /// @param reactor instance pointer on which the request will be written
+  /// @return the next request, given to the reactor, or std::nullopt when there is none
+  using NextRequestCallback = std::function<std::optional<RequestT>(grpc::ClientWriteReactor<RequestT>*)>;
+  /// Slot for the reactor pulling the next request. Under kApplicationPushes it is an empty placeholder.
+  [[no_unique_address]] detail::NextRequestSlot<kSubmission, NextRequestCallback> next_request;
 
   /// Function signature for ClientWriteReactor::OnDone event. This event function is called by gRPC when the RPC is
   /// done and no more operation is possible with that reactor instance.
@@ -554,16 +596,19 @@ struct ActiveWriteCallbacks {
 /// @tparam RequestT type of protobuf message the RPC sends
 /// @tparam ResponseT type of protobuf message the RPC receives as final response
 /// @tparam kDelivery how the reactor hands the final response over, see Delivery
-template <class RequestT, class ResponseT, Delivery kDelivery>
+/// @tparam kSubmission who starts the transfer of each request, see Submission
+template <class RequestT, class ResponseT, Delivery kDelivery, Submission kSubmission>
 requires std::derived_from<RequestT, google::protobuf::Message> &&
          std::derived_from<ResponseT, google::protobuf::Message>
 class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
+  static constexpr bool kPushes = kSubmission == Submission::kApplicationPushes;
+
  public:
   /// Constructor of the reactor class. It moves the received objects as members.
   /// @param context given to this reactor about the ongoing RPC method
   /// @param cbs given to this reactor to use as callable functions
   ActiveWriteReactor(std::unique_ptr<grpc::ClientContext> context,
-                     ActiveWriteCallbacks<RequestT, ResponseT, kDelivery>&& cbs)
+                     ActiveWriteCallbacks<RequestT, ResponseT, kDelivery, kSubmission>&& cbs)
       : context_(std::move(context)),
         cbs_(std::move(cbs)) {}
 
@@ -582,22 +627,30 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// This class cannot be moved.
   ActiveWriteReactor& operator=(ActiveWriteReactor&&) = delete;
 
-  /// Activates the RPC, and takes the hold that covers the whole write flow. gRPC destroys a call as soon
-  /// as nothing is pending on it, before it even calls OnDone(), so a write issued from outside a reaction
-  /// needs a hold, or it can reach a call that is already gone. This is the pattern gRPC documents for
-  /// such operations (see AddHold() in grpcpp/support/client_callback.h): a hold taken before StartCall(),
-  /// and released once no more writes will be issued. Shadows grpc::ClientWriteReactor::StartCall(),
-  /// which the specialized reactor calls last in its constructor, so a new specialization cannot forget
-  /// to take the hold. gRPC accepts a hold only before StartCall() or from inside a reaction, which is why
-  /// it is taken here. The flow is published as open before StartCall(), so a reaction arriving right
-  /// after it finds the hold claimable.
+  /// Activates the RPC. Shadows grpc::ClientWriteReactor::StartCall(), which the specialized reactor calls
+  /// last in its constructor, so a new specialization cannot forget what this adds, which follows the
+  /// Submission.
+  /// Submission::kApplicationPushes: takes the hold that covers the whole write flow. gRPC destroys a call
+  /// as soon as nothing is pending on it, before it even calls OnDone(), so a write issued from outside a
+  /// reaction needs a hold, or it can reach a call that is already gone. This is the pattern gRPC
+  /// documents for such operations (see AddHold() in grpcpp/support/client_callback.h): a hold taken
+  /// before StartCall(), and released once no more writes will be issued. gRPC accepts a hold only before
+  /// StartCall() or from inside a reaction, which is why it is taken here. The flow is published as open
+  /// before StartCall(), so a reaction arriving right after it finds the hold claimable.
   /// Unlike ActiveBidiReactor's idle hold, this one cannot be released when the RPC ends on its own: a
   /// client-streaming RPC has no read stream, so no reaction reports a deadline or a server error while no
   /// write is in flight. The application must therefore end the write flow itself, with SendLastRequest(),
   /// CloseRequestStream() or TryCancel(), or by a write that fails. Until then, OnDone() cannot fire.
+  /// Submission::kReactorPulls: pulls the first request, and issues its write, or the close when there is
+  /// none, before the RPC starts, which gRPC allows. Every later operation is issued from OnWriteDone(),
+  /// inside a reaction, so no hold is needed, and the RPC ends on its own.
   void StartCall() {
-    this->AddHold();
-    write_flow_ = kFlowOpen;
+    if constexpr (kPushes) {
+      this->AddHold();
+      write_flow_ = kFlowOpen;
+    } else {
+      PullNextRequest();
+    }
     grpc::ClientWriteReactor<RequestT>::StartCall();
   }
 
@@ -610,10 +663,11 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// std::move()'d, since the reactor takes ownership and the caller must not keep using it.
   /// When the write flow is known to be over, because a write failed or TryCancel() was called, this
   /// call ends it and returns false, which releases the write-flow hold and lets OnDone() follow.
+  /// Submission::kApplicationPushes only: under kReactorPulls the reactor issues every write itself.
   /// @param request message to send, moved into the reactor
   /// @return true if the write was initiated, false if rejected (write pending, write side closed, or
   ///         the RPC is over or cancelled)
-  bool SendRequest(RequestT&& request) {
+  bool SendRequest(RequestT&& request) requires(kPushes) {
     // Winning the claim is what makes the StartWrite() below safe from any thread: the write-flow hold
     // stays outstanding while the claim is held, so the call cannot be destroyed under it. A lost claim
     // means the write side is already ended, or another call is using it at this very moment.
@@ -638,11 +692,11 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// Sends the final request message and signals the end of the client request stream in a
   /// single operation, avoiding the race between a separate SendRequest()/CloseRequestStream()
   /// pair. The caller gives up the request the same way SendRequest() requires. It ends the write
-  /// flow, so no further write call is accepted.
+  /// flow, so no further write call is accepted. Submission::kApplicationPushes only.
   /// @param request last message to send, moved into the reactor
   /// @return true if the write was initiated, false if rejected (write pending, write side closed, or
   ///         the RPC is over or cancelled, in which case the write flow ends anyway)
-  bool SendLastRequest(RequestT&& request) {
+  bool SendLastRequest(RequestT&& request) requires(kPushes) {
     if (!ClaimWriteFlow()) return false;  // Same claim, same reasoning, as SendRequest()
     if (write_pending_) {
       ReturnWriteFlow();
@@ -662,11 +716,12 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   }
 
   /// Signals the end of the client request stream, and ends the write flow.
-  /// After this call, no more SendRequest() calls are allowed.
+  /// After this call, no more SendRequest() calls are allowed. Submission::kApplicationPushes only: under
+  /// kReactorPulls the reactor closes the stream when next_request has nothing more.
   /// @return true if the close was initiated. false if rejected: a write is pending (wait for
   ///         OnWriteDone() and retry), the write side is already closed, or the RPC is over or
   ///         cancelled, in which case the write flow ends anyway and OnDone() follows.
-  bool CloseRequestStream() {
+  bool CloseRequestStream() requires(kPushes) {
     if (!ClaimWriteFlow()) return false;  // Already closed, or another call is using the write side
     if (write_pending_) {  // Wait for the in-flight write to complete first
       ReturnWriteFlow();
@@ -684,14 +739,15 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   }
 
   /// Sends a best-effort out-of-band cancel to the RPC, to provoke the `OnDone` event. Safe from any
-  /// thread. It also ends the write flow, since no write can succeed once the RPC is cancelled: an idle
-  /// write side would otherwise keep the write-flow hold, and OnDone() would never come. A write call
-  /// running on another thread at that moment ends the flow itself when it returns.
+  /// thread. Under Submission::kApplicationPushes, it also ends the write flow, since no write can succeed
+  /// once the RPC is cancelled: an idle write side would otherwise keep the write-flow hold, and OnDone()
+  /// would never come. A write call running on another thread at that moment ends the flow itself when it
+  /// returns. Under kReactorPulls, it stops the reactor from pulling any further request.
   void TryCancel() {
     context_->TryCancel();
     // Published before the attempt to end the flow, for the reason given at ReturnWriteFlow().
     stream_no_more_ = true;
-    EndOpenWriteFlow();
+    if constexpr (kPushes) EndOpenWriteFlow();
   }
 
   /// Delivery::kPull only. Swaps the underlying data storage of the response object.
@@ -721,11 +777,18 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
     // Published before write_pending_ is cleared, so a write call that sees no write pending also sees
     // the failure, and ends the write flow rather than issuing a write that cannot succeed.
     if (!ok) stream_no_more_ = true;
-    write_pending_ = false;
-    // A failed write ends the write flow, since no write can succeed anymore. Ending it from inside the
-    // reaction is safe: gRPC counts this write as pending until the reaction returns.
-    if (!ok) EndOpenWriteFlow();
-    if (cbs_.write_done) cbs_.write_done(this, ok);
+    if constexpr (kPushes) {
+      write_pending_ = false;
+      // A failed write ends the write flow, since no write can succeed anymore. Ending it from inside the
+      // reaction is safe: gRPC counts this write as pending until the reaction returns.
+      if (!ok) EndOpenWriteFlow();
+      if (cbs_.write_done) cbs_.write_done(this, ok);
+    } else {
+      if (cbs_.write_done) cbs_.write_done(this, ok);
+      // After write_done, so the application has seen this write complete before it is asked for the
+      // next one. Issued from inside this reaction, which is what makes it safe without a hold.
+      if (ok) PullNextRequest();
+    }
   }
 
   /// This event function is called by gRPC when an explicit StartWritesDone() operation (i.e.
@@ -763,21 +826,38 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
 
  private:
   grpc::Status status_;
-  ActiveWriteCallbacks<RequestT, ResponseT, kDelivery> cbs_;
+  ActiveWriteCallbacks<RequestT, ResponseT, kDelivery, kSubmission> cbs_;
 
   // Storage for the request currently being written. SendRequest() moves the caller's argument
   // here so StartWrite() has a stable pointer that survives past the caller's own statement -
-  // the application gives up the request once SendRequest() accepts it.
+  // the application gives up the request once SendRequest() accepts it. Under Submission::kReactorPulls,
+  // the request next_request returned is moved here instead.
   RequestT pending_request_;
 
   // Delivery::kPull only: flag indicating the response is ready to be read via GetResponse()
   // Set by gRPC thread, read by application thread.
   std::atomic_bool response_ready_{false};
 
-  // Flag indicating a write operation is in progress.
+  // Submission::kApplicationPushes only: flag indicating a write operation is in progress.
   // gRPC requires that only one write be in flight at a time.
   // Set by the thread that claimed the write flow, cleared by gRPC thread via OnWriteDone.
   std::atomic_bool write_pending_{false};
+
+  /// Submission::kReactorPulls: asks next_request for the next request, and writes it, or closes the request
+  /// stream when there is none. Runs before the RPC starts, then only inside OnWriteDone(), so one write at
+  /// a time, and never outside a reaction once the RPC runs. Pulls nothing once the RPC is cancelled: its
+  /// end no longer depends on the request stream being closed.
+  void PullNextRequest() requires(!kPushes) {
+    if (stream_no_more_) return;
+    std::optional<RequestT> next;
+    if (cbs_.next_request) next = cbs_.next_request(this);
+    if (next) {
+      pending_request_ = std::move(*next);
+      this->StartWrite(&pending_request_);
+    } else {
+      this->StartWritesDone();
+    }
+  }
 
   /// Claims the open write flow for one write call, so nothing can end it, and release the hold,
   /// until that call returns it.
@@ -808,10 +888,10 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
     if (write_flow_.compare_exchange_strong(open, kFlowEnded)) this->RemoveHold();
   }
 
-  // The write flow, and with it the hold StartCall() took for it. Open while writes may still be
-  // issued, busy while one write call holds the claim, ended once the hold is released. Only the
-  // transition to ended releases the hold, so it is released exactly once. Ended until StartCall()
-  // opens it, since there is no hold to release before.
+  // Submission::kApplicationPushes only: the write flow, and with it the hold StartCall() took for it.
+  // Open while writes may still be issued, busy while one write call holds the claim, ended once the hold
+  // is released. Only the transition to ended releases the hold, so it is released exactly once. Ended
+  // until StartCall() opens it, since there is no hold to release before.
   static constexpr int kFlowEnded = 0;
   static constexpr int kFlowOpen = 1;
   static constexpr int kFlowBusy = 2;
@@ -819,8 +899,8 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
 
   // Once a write failed, TryCancel() was called, the close completed, or OnDone() fired, no more
   // StartWrite() must be called. A request to end the write flow: whoever sees it with the flow open,
-  // or returns the flow while it is set, ends it.
-  // Set by any thread, read by whichever thread claims the write flow.
+  // or returns the flow while it is set, ends it. Under Submission::kReactorPulls, what stops the pulls.
+  // Set by any thread, read by whichever thread claims the write flow, or pulls the next request.
   std::atomic_bool stream_no_more_{false};
 };
 /// Template callbacks for bidirectional streaming RPC client reactor. It contains all available
@@ -828,8 +908,10 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
 /// @tparam RequestT type of protobuf message the RPC sends
 /// @tparam ResponseT type of protobuf message the RPC receives
 /// @tparam kDelivery how the reactor hands each message over, which sets the read_ok slot's parameter
+/// @tparam kSubmission who starts the transfer of each request
 /// @tparam kPacing who arms the next read, which sets the read_ok slot's return type
-template <class RequestT, class ResponseT, Delivery kDelivery, ReadPacing kPacing = ReadPacing::kPerMessage>
+template <class RequestT, class ResponseT, Delivery kDelivery, Submission kSubmission,
+          ReadPacing kPacing = ReadPacing::kPerMessage>
 requires std::derived_from<RequestT, google::protobuf::Message> &&
          std::derived_from<ResponseT, google::protobuf::Message>
 struct ActiveBidiCallbacks {
@@ -855,6 +937,16 @@ struct ActiveBidiCallbacks {
   using OnWriteDoneCallback = std::function<void(grpc::ClientBidiReactor<RequestT, ResponseT>*, bool ok)>;
   OnWriteDoneCallback write_done;  ///< Slot for ClientBidiReactor::OnWriteDone event
 
+  /// Function signature for the reactor pulling the next request, under Submission::kReactorPulls only,
+  /// with the same contract as ActiveWriteCallbacks::NextRequestCallback. The read side keeps running
+  /// meanwhile, and the request stream closes once this has nothing more, while the server may still send.
+  /// @param reactor instance pointer on which the request will be written
+  /// @return the next request, given to the reactor, or std::nullopt when there is none
+  using NextRequestCallback =
+      std::function<std::optional<RequestT>(grpc::ClientBidiReactor<RequestT, ResponseT>*)>;
+  /// Slot for the reactor pulling the next request. Under kApplicationPushes it is an empty placeholder.
+  [[no_unique_address]] detail::NextRequestSlot<kSubmission, NextRequestCallback> next_request;
+
   /// Function signature for ClientBidiReactor::OnDone event. This event function is called by gRPC when the RPC is
   /// done and no more operation is possible with that reactor instance.
   /// @param reactor instance pointer on which the event is received
@@ -870,11 +962,15 @@ struct ActiveBidiCallbacks {
 /// @tparam RequestT type of protobuf message the RPC sends
 /// @tparam ResponseT type of protobuf message the RPC receives
 /// @tparam kDelivery how the reactor hands each message over, see Delivery
+/// @tparam kSubmission who starts the transfer of each request, see Submission
 /// @tparam kPacing who arms the read that follows a delivered message, see ReadPacing
-template <class RequestT, class ResponseT, Delivery kDelivery, ReadPacing kPacing = ReadPacing::kPerMessage>
+template <class RequestT, class ResponseT, Delivery kDelivery, Submission kSubmission,
+          ReadPacing kPacing = ReadPacing::kPerMessage>
 requires std::derived_from<RequestT, google::protobuf::Message> &&
          std::derived_from<ResponseT, google::protobuf::Message>
 class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
+  static constexpr bool kPushes = kSubmission == Submission::kApplicationPushes;
+
  public:
   /// Constructor of the reactor class. It moves the received objects as members.
   /// The derived, specialized reactor must call StartRead() after binding this reactor
@@ -883,7 +979,7 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// @param context given to this reactor about the ongoing RPC method
   /// @param cbs given to this reactor to use as callable functions
   ActiveBidiReactor(std::unique_ptr<grpc::ClientContext> context,
-                    ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kPacing>&& cbs)
+                    ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kSubmission, kPacing>&& cbs)
       : context_(std::move(context)),
         cbs_(std::move(cbs)) {}
 
@@ -902,17 +998,23 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// This class cannot be moved.
   ActiveBidiReactor& operator=(ActiveBidiReactor&&) = delete;
 
-  /// Activates the RPC, and reserves the hold that covers the write operations the application
-  /// issues from its own thread. Shadows grpc::ClientBidiReactor::StartCall(), which the
-  /// specialized reactor already calls last in its constructor, so a new specialization cannot
-  /// forget to arm the hold the way it could forget a second required call.
-  /// gRPC accepts a hold only before StartCall() or from inside a reaction, which is why the first
-  /// one is taken here and every later one is taken in OnWriteDone().
+  /// Activates the RPC. Shadows grpc::ClientBidiReactor::StartCall(), which the specialized reactor
+  /// already calls last in its constructor, so a new specialization cannot forget what this adds, which
+  /// follows the Submission.
+  /// Submission::kApplicationPushes: reserves the hold that covers the write operations the application
+  /// issues from its own thread. gRPC accepts a hold only before StartCall() or from inside a reaction,
+  /// which is why the first one is taken here and every later one is taken in OnWriteDone().
   /// The flag is published before StartCall(), so a reaction arriving immediately after it finds a
   /// claimable hold rather than one that is outstanding but still invisible.
+  /// Submission::kReactorPulls: pulls the first request, as ActiveWriteReactor::StartCall() does. Every
+  /// later write is issued from OnWriteDone(), so the write side takes no hold.
   void StartCall() {
-    this->AddHold();
-    write_idle_ = true;
+    if constexpr (kPushes) {
+      this->AddHold();
+      write_idle_ = true;
+    } else {
+      PullNextRequest();
+    }
     grpc::ClientBidiReactor<RequestT, ResponseT>::StartCall();
   }
 
@@ -923,10 +1025,11 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// OnWriteDone() before calling SendRequest() again.
   /// The caller gives up the request to the reactor: it must be a temporary or explicitly
   /// std::move()'d, since the reactor takes ownership and the caller must not keep using it.
+  /// Submission::kApplicationPushes only: under kReactorPulls the reactor issues every write itself.
   /// @param request message to send, moved into the reactor
   /// @return true if the write was initiated, false if rejected (stream closed, write pending,
   ///         or the RPC has already finished/is finishing)
-  bool SendRequest(RequestT&& request) {
+  bool SendRequest(RequestT&& request) requires(kPushes) {
     if (writes_done_) return false;  // Stream already closed, by this same thread
     // Winning the claim is what makes the StartWrite() below safe from the application thread: the
     // idle-window hold is outstanding across it, so OnDone() cannot be tearing down the state the
@@ -955,11 +1058,11 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// Sends the final request message and signals the end of the client request stream in a
   /// single operation, avoiding the race between a separate SendRequest()/CloseRequestStream()
   /// pair. The caller gives up the request the same way SendRequest() requires. The server may
-  /// continue sending responses.
+  /// continue sending responses. Submission::kApplicationPushes only.
   /// @param request last message to send, moved into the reactor
   /// @return true if the write was initiated, false if rejected (stream closed, write pending,
   ///         or the RPC has already finished/is finishing)
-  bool SendLastRequest(RequestT&& request) {
+  bool SendLastRequest(RequestT&& request) requires(kPushes) {
     if (writes_done_) return false;  // Stream already closed, by this same thread
     bool idle = true;                // Same claim, same reasoning, as SendRequest()
     if (!write_idle_.compare_exchange_strong(idle, false)) return false;
@@ -979,11 +1082,12 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
 
   /// Signals the end of the client request stream.
   /// After this call, no more SendRequest() calls are allowed.
-  /// The server may continue sending responses.
+  /// The server may continue sending responses. Submission::kApplicationPushes only: under
+  /// kReactorPulls the reactor closes the stream when next_request has nothing more.
   /// @return true if the close was initiated, false if rejected (already closed, write pending,
   ///         or the RPC has already finished/is finishing). Callers should wait for OnWriteDone()
   ///         and retry.
-  bool CloseRequestStream() {
+  bool CloseRequestStream() requires(kPushes) {
     if (writes_done_) return false;  // Already closed
     // StartWritesDone() is an application-thread call like the writes, so it needs the same claim.
     bool idle = true;
@@ -1000,9 +1104,13 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
 
   /// Sends a best-effort out-of-band cancel to the RPC. That signal is thread-safe
   /// and can be sent anytime from any thread. The goal of that signal is to provoke
-  /// the `OnDone` event from the RPC.
-  void TryCancel() const {
+  /// the `OnDone` event from the RPC. Under Submission::kReactorPulls, it also stops the reactor from
+  /// pulling any further request.
+  void TryCancel() {
     context_->TryCancel();
+    // Not under kApplicationPushes: a ResumeRead() or GetResponse() that then armed no read would leave
+    // the idle-window hold with nothing to release it, since only OnReadDone(false) does once idle.
+    if constexpr (!kPushes) stream_no_more_ = true;
   }
 
   /// Delivery::kPull only, under ReadPacing::kPerMessage or kTurnByTurn. Swaps the underlying data storage of the
@@ -1084,7 +1192,8 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
       // The only trigger that frees a write side left idle. gRPC's contract makes a read failure a
       // reliable end-of-RPC signal for either direction, so this covers the passive terminations
       // (a deadline, or the server closing) that no application write action would ever report.
-      ReleaseWriteIdleHold();
+      // Under Submission::kReactorPulls there is no such hold to free.
+      if constexpr (kPushes) ReleaseWriteIdleHold();
       if (cbs_.read_nok) cbs_.read_nok(this);
       return;
     }
@@ -1096,6 +1205,12 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// @param ok true if the write was successful
   void OnWriteDone(bool ok) override {
     if (!ok) stream_no_more_ = true;
+    if constexpr (!kPushes) {
+      if (cbs_.write_done) cbs_.write_done(this, ok);
+      // As in ActiveWriteReactor::OnWriteDone(): after write_done, and inside this reaction.
+      if (ok) PullNextRequest();
+      return;
+    }
     // Re-arms the idle-window hold for the next application-thread write, from inside this reaction
     // where taking a hold is free of the race the application thread has. Skipped once the write
     // side is conclusively over, so a closed or failed stream never suppresses OnDone().
@@ -1221,6 +1336,22 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
     this->RemoveHold();
   }
 
+  /// Submission::kReactorPulls: asks next_request for the next request, and writes it, or closes the request
+  /// stream when there is none, as ActiveWriteReactor::PullNextRequest() does. Closing the request stream
+  /// leaves the read side running, so the RPC still ends when the server finishes.
+  void PullNextRequest() requires(!kPushes) {
+    if (stream_no_more_) return;
+    std::optional<RequestT> next;
+    if (cbs_.next_request) next = cbs_.next_request(this);
+    if (next) {
+      pending_request_ = std::move(*next);
+      this->StartWrite(&pending_request_);
+    } else {
+      writes_done_ = true;
+      this->StartWritesDone();
+    }
+  }
+
   /// Releases the idle-window hold, but only for the caller that claims it, so the count cannot
   /// underflow into an early OnDone() when both reaction sides try at once.
   void ReleaseWriteIdleHold() {
@@ -1229,7 +1360,7 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   }
 
   grpc::Status status_;
-  ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kPacing> cbs_;
+  ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kSubmission, kPacing> cbs_;
 
   // Under ReadPacing::kPerMessage or kTurnByTurn: the number of messages held so far, as in
   // ActiveReadReactor. Only touched by OnReadDone().

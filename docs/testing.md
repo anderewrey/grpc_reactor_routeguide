@@ -24,8 +24,9 @@ The reactor client tests use two complementary approaches, matching the reactor 
 
 ### Synchronous unit tests
 
-Eight test binaries validate reactor callback logic directly, one per reactor type and `Delivery` approach, using
-`std::promise`/`std::future` for synchronization instead of an EventLoop:
+Ten test binaries validate reactor callback logic directly, one per reactor type and `Delivery` approach, plus one per
+writing reactor under `Submission::kReactorPulls`, using `std::promise`/`std::future` for synchronization instead of an
+EventLoop:
 
 - [active_unary_reactor_pull_test.cpp][unary-pull-test], [active_unary_reactor_push_test.cpp][unary-push-test]:
   `ActiveUnaryReactor` via `GetFeature`
@@ -35,9 +36,14 @@ Eight test binaries validate reactor callback logic directly, one per reactor ty
   `ActiveWriteReactor` via `RecordRoute`
 - [active_bidi_reactor_pull_test.cpp][bidi-pull-test], [active_bidi_reactor_push_test.cpp][bidi-push-test]:
   `ActiveBidiReactor` via `RouteChat`
+- [active_write_reactor_producer_test.cpp][write-producer-test],
+  [active_bidi_reactor_producer_test.cpp][bidi-producer-test]: both writing reactors under `Submission::kReactorPulls`,
+  as described in [request submission coverage](#request-submission-coverage)
 
 Each file pins its approach in a single `kDelivery` constant and instantiates every reactor with it, so a pull file
-and its push counterpart read side by side as the same scenarios written against each approach.
+and its push counterpart read side by side as the same scenarios written against each approach. The writing reactors'
+files also pin their `Submission` in a `kSubmission` constant: `kApplicationPushes` in the pull and push files,
+`kReactorPulls` in the producer files.
 The four files of the reading reactors also cover every `ReadPacing` of their approach, as described in
 [read pacing mode coverage](#read-pacing-mode-coverage).
 
@@ -250,6 +256,31 @@ write's acknowledgement instead of sleeping, which a slow run under ThreadSaniti
 `RecordRoute_NoDoneCallbackBound_RpcStillCompletes` binds no `done` slot, so it has no way to know when the reactor may
 be destroyed, and ThreadSanitizer caught it destroying the reactor while a reaction still ran. It now runs a test-only
 subclass of `ActiveWriteReactor` that signals once `OnDone()` has run, and destroys the reactor only then.
+
+### Request submission coverage
+
+Under `Submission::kReactorPulls` the writing reactors pull each request from the `next_request` callback and take no
+write-side hold, so most tests check that the RPC ends on its own however it ends. The submission is independent of the
+`Delivery` and of the `ReadPacing`, which the other files cover, so
+[active_write_reactor_producer_test.cpp][write-producer-test] runs under `kPush` only, and
+[active_bidi_reactor_producer_test.cpp][bidi-producer-test] under `kPull` with the default `kPerMessage` only. Both
+start with compile-time checks: the write methods do not exist under `kReactorPulls`, and the `next_request` slot is a
+`std::monostate` placeholder under `kApplicationPushes`.
+
+| Test | Reactor | Asserts |
+| ------ | --------- | --------- |
+| `PullsEveryRequest_ThenClosesStream` | Both | One pull per request plus the `std::nullopt` one, all sent, OK status |
+| `EmptySource_ClosesBeforeAnyWrite` | Both | A single pull, no write, OK status |
+| `UnboundSlot_ClosesAtOnce` | Writer | An unbound slot closes the stream at once |
+| `ServerEndsEarly_CompletesWithoutApplicationAction` | Writer | `OnDone` follows the server's error with no |
+| | | application call, and no pull follows the failed write |
+| `ServerFinishesFirst_CompletesWithoutApplicationAction` | Bidi | The same when the server finishes mid-stream |
+| `TryCancelFromWriteDone_StopsPulling` | Both | No pull follows a `TryCancel()` from `write_done` |
+| `TryCancelFromApplication_Completes` | Writer | `TryCancel()` ends an RPC whose source never runs dry |
+| `HeldRead_DoesNotStallPulls` | Bidi | The source runs dry while the first answer is still held |
+
+The writer's first test also checks that each pull follows the `write_done` of the write before it, and that the first
+pull runs on the thread that constructs the reactor.
 
 ### Naming convention
 
@@ -486,6 +517,8 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [write-push-test]: /applications/reactor/tests/active_write_reactor_push_test.cpp
 [bidi-pull-test]: /applications/reactor/tests/active_bidi_reactor_pull_test.cpp
 [bidi-push-test]: /applications/reactor/tests/active_bidi_reactor_push_test.cpp
+[write-producer-test]: /applications/reactor/tests/active_write_reactor_producer_test.cpp
+[bidi-producer-test]: /applications/reactor/tests/active_bidi_reactor_producer_test.cpp
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp
 [callback-smoke-test]: /applications/callback/tests/callback_smoke_test.sh
 [test-fixture]: /applications/reactor/tests/route_guide_test_fixture.h

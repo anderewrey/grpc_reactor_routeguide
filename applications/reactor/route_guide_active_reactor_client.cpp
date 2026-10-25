@@ -24,9 +24,11 @@
 #include "applications/reactor/scenarios/list_features_push_per_message.h"
 #include "applications/reactor/scenarios/list_features_push_turn_by_turn.h"
 #include "applications/reactor/scenarios/record_route_pull.h"
+#include "applications/reactor/scenarios/record_route_pull_producer.h"
 #include "applications/reactor/scenarios/record_route_push.h"
 #include "applications/reactor/scenarios/route_chat_pull_continuous.h"
 #include "applications/reactor/scenarios/route_chat_pull_per_message.h"
+#include "applications/reactor/scenarios/route_chat_pull_per_message_producer.h"
 #include "applications/reactor/scenarios/route_chat_pull_turn_by_turn.h"
 #include "applications/reactor/scenarios/route_chat_push_continuous.h"
 #include "applications/reactor/scenarios/route_chat_push_per_message.h"
@@ -60,7 +62,9 @@
  * RPC's file. The flavour of a variant is named by the filename and by the enclosing namespace,
  * never by the class, so a class is named after the RPC method it drives. A reading reactor has two
  * independent axes, the Delivery (kPull, kPush) and the ReadPacing (kContinuous, kPerMessage,
- * kTurnByTurn), so its namespace names both, delivery first:
+ * kTurnByTurn), so its namespace names both, delivery first. A writing reactor also has the Submission
+ * (kApplicationPushes, kReactorPulls): its kReactorPulls scenarios add `producer` to the namespace, and
+ * the others, which push, name nothing:
  *
  * - rg_demo::pull::GetFeature                  unary, Delivery::kPull
  * - rg_demo::push::GetFeature                  unary, Delivery::kPush
@@ -75,9 +79,12 @@
  * - rg_demo::push::turn_by_turn::ListFeatures  read, every message queued and held until ResumeRead()
  * - rg_demo::pull::RecordRoute                 write, Delivery::kPull
  * - rg_demo::push::RecordRoute                 write, Delivery::kPush
+ * - rg_demo::pull::producer::RecordRoute       write, Delivery::kPull, the reactor pulls each point
  * - rg_demo::pull::continuous::RouteChat       bidi, as its ListFeatures namesake on the read side
  * - rg_demo::pull::per_message::RouteChat      bidi, a filter: read_ok keeps a note the first time it
  *                                              is seen, to be pulled, and declines the server's repeats
+ * - rg_demo::pull::per_message::producer::RouteChat
+ *                                              bidi, the same filter, and the reactor pulls each note
  * - rg_demo::pull::turn_by_turn::RouteChat     bidi, as its ListFeatures namesake on the read side
  * - rg_demo::push::continuous::RouteChat       bidi, as its ListFeatures namesake on the read side
  * - rg_demo::push::per_message::RouteChat      bidi, as its ListFeatures namesake on the read side
@@ -88,7 +95,10 @@
  * they commit to. The read side of ActiveBidiReactor behaves exactly as ActiveReadReactor does, so each
  * RouteChat cell mirrors its ListFeatures namesake, except for the kPull filter, which declines the
  * server's repeated notes rather than unnamed features. RouteChat's own lesson is the write side, an
- * identical pump in every cell, running next to each delivery and each pacing of the read side.
+ * identical pump in every cell, running next to each delivery and each pacing of the read side. One
+ * producer scenario per writing RPC shows the other Submission, each a clone of the pushing scenario
+ * it names, so `diff record_route_pull.cpp record_route_pull_producer.cpp` is what the outgoing axis
+ * changes, and the same for route_chat_pull_per_message.cpp.
  *
  * A flavoured family is cloned rather than parameterised, which is the teaching device: its members
  * are files with identical structure, each cloned from its nearest sibling, so a diff between two
@@ -124,6 +134,10 @@
  *   "held" or "not held". Only a held message gets a "resumed  | #k" line, from its own handler once
  *   the messages before it are handled, and the ordering rule above applies to it.
  *
+ * - A producer scenario logs each request the reactor pulls as "next     | #k", from the application
+ *   thread for the first one, during the reactor's construction, and from a gRPC thread for the others,
+ *   each after the previous write's OnWriteDone, and a last "next     | none left" line.
+ *
  * Note: This demo uses simple logging as Servant logic. Production applications would implement
  * actual business logic in the event handlers.
  *
@@ -154,8 +168,10 @@ int main(int argc, char** argv) {
   rg_demo::push::turn_by_turn::ListFeatures list_features_push_turn_by_turn{*stub};
   rg_demo::pull::RecordRoute record_route_pull{*stub};
   rg_demo::push::RecordRoute record_route_push{*stub};
+  rg_demo::pull::producer::RecordRoute record_route_pull_producer{*stub};
   rg_demo::pull::continuous::RouteChat route_chat_pull_continuous{*stub};
   rg_demo::pull::per_message::RouteChat route_chat_pull_per_message{*stub};
+  rg_demo::pull::per_message::producer::RouteChat route_chat_pull_per_message_producer{*stub};
   rg_demo::pull::turn_by_turn::RouteChat route_chat_pull_turn_by_turn{*stub};
   rg_demo::push::continuous::RouteChat route_chat_push_continuous{*stub};
   rg_demo::push::per_message::RouteChat route_chat_push_per_message{*stub};
@@ -202,10 +218,14 @@ int main(int argc, char** argv) {
   record_route_pull.Start(route);
   spdlog::info("-------------- RecordRoute kPush --------------");
   record_route_push.Start(route);
+  spdlog::info("-------------- RecordRoute kPull kReactorPulls --------------");
+  record_route_pull_producer.Start(route);
   spdlog::info("-------------- RouteChat kPull kContinuous --------------");
   route_chat_pull_continuous.Start(notes);
   spdlog::info("-------------- RouteChat kPull kPerMessage --------------");
   route_chat_pull_per_message.Start(notes);
+  spdlog::info("-------------- RouteChat kPull kPerMessage kReactorPulls --------------");
+  route_chat_pull_per_message_producer.Start(notes);
   spdlog::info("-------------- RouteChat kPull kTurnByTurn --------------");
   route_chat_pull_turn_by_turn.Start(notes);
   spdlog::info("-------------- RouteChat kPush kContinuous --------------");

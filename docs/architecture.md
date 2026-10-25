@@ -47,6 +47,9 @@ application, and `kPerMessage`, in the middle, is the default:
 | `kTurnByTurn` | The application, through `GetResponse()` or            | One per message, which keeps the RPC alive |
 |               | `ResumeRead()`, from outside any reaction              | across that gap                            |
 
+Why these two choices, and why only these, follows from one model, described under
+[The model behind the reactors' choices](#the-model-behind-the-reactors-choices).
+
 The implementation follows this component structure:
 
 ```text
@@ -193,6 +196,72 @@ EventLoop::RegisterEvent(kGetFeatureOnDone, [&app_state](const Event* event) {
 1. **Simple API**: `TriggerEvent()` / `RegisterEvent()` / `Run()`
 2. **Thread-safe**: Safe cross-thread event dispatching
 3. **Replaceable**: Interface allows swapping with other event systems
+
+### The model behind the reactors' choices
+
+Every reactor moves messages in up to two directions, incoming and outgoing, and each direction carries either a
+single message or a stream. Three rules decide which choices apply to a direction:
+
+1. **Push or pull applies to every direction that carries a message.** It answers who starts each transfer between
+   the reactor and the application. Incoming, that is `Delivery`: the reactor pushes the message into the callback
+   (`kPush`), or the application pulls it with `GetResponse()` (`kPull`). Outgoing, that is `Submission`: the
+   application pushes each request with `SendRequest()` (`kApplicationPushes`), or the reactor pulls the next one from
+   the application's `next_request` callback (`kReactorPulls`).
+2. **Pacing applies only to an incoming stream.** Only there does the peer decide when messages arrive, so only there
+   does the reactor have to decide whether the stream waits for the application. That decision is `ReadPacing`. An
+   outgoing stream needs none: its messages exist only when the application produces them, so the producer already
+   sets the pace, whichever side starts each transfer.
+3. **A single message gets push or pull only.** A final response arrives once, together with `OnDone()`, so there is
+   no next read to arm and nothing that could wait for the application.
+
+| Reactor              | Incoming                                       | Outgoing                          |
+|----------------------|------------------------------------------------|-----------------------------------|
+| `ActiveUnaryReactor` | Final response: `Delivery`                     | None                              |
+| `ActiveReadReactor`  | Stream of messages: `Delivery`, `ReadPacing`   | None                              |
+| `ActiveWriteReactor` | Final response: `Delivery`                     | Stream of requests: `Submission`  |
+| `ActiveBidiReactor`  | Stream of messages: `Delivery`, `ReadPacing`   | Stream of requests: `Submission`  |
+
+The two directions name their values after who starts the transfer, and the words come out reversed. Incoming, the
+application starts the transfer by pulling; outgoing, it starts it by pushing. So the outgoing axis cannot reuse
+`kPull` and `kPush`, which would make one word mean opposite things in one reactor, and its values name the side that
+acts instead: `kApplicationPushes` and `kReactorPulls`. The difference between them is argued in
+[Why the writing reactors also let the reactor pull](#why-the-writing-reactors-also-let-the-reactor-pull).
+
+#### Where backpressure goes
+
+gRPC carries backpressure from the reader to the writer by itself. A stream allows one write in flight, and HTTP/2
+gives it a flow-control window. A reader that stops arming reads stops granting window, the writer's `OnWriteDone`
+waits, and the writer cannot start another write. gRPC buffers about a window's worth per stream, never an unbounded
+amount, and one slow stream stalls itself rather than its whole channel. The two choices then decide where the backlog
+sits:
+
+- **The reader's pacing decides whether backpressure reaches the writer at all.** Under `kContinuous` the reader keeps
+  reading as fast as the network allows, so the writer feels nothing, and the backlog moves into the reader's own event
+  queue. Under `kTurnByTurn`, or `kPerMessage` while a message is held, the reader stops reading, and the writer waits.
+- **The writer's push or pull decides where its surplus waits.** When the application pushes, whatever it produces
+  between two `OnWriteDone` waits in its own queue, which grows without limit if production outpaces the reader. When
+  the reactor pulls (`kReactorPulls`), it asks the producer for the next message only once the previous one was
+  accepted, so the backpressure reaches the production itself.
+
+That is why no stream needs a write pacing: an outgoing stream's pace is set by its peer's reads.
+
+#### The server side mirrors it
+
+On the server, the incoming direction carries requests and the outgoing one carries responses, so the same three rules
+give the mirror image of the client table. The single incoming message becomes an initial request, which arrives with
+the call rather than with its end.
+
+| Server reactor | Incoming                                     | Outgoing                             |
+|----------------|----------------------------------------------|--------------------------------------|
+| Unary          | Initial request: push or pull                | Final response, sent with `Finish()` |
+| Read           | Stream of requests: push or pull, and pacing | Final response, sent with `Finish()` |
+| Write          | Initial request: push or pull                | Stream of responses: push or pull    |
+| Bidi           | Stream of requests: push or pull, and pacing | Stream of responses: push or pull    |
+
+One difference makes the server simpler. gRPC's server reactors have no `AddHold()`: a server RPC cannot complete
+before the server calls `Finish()`, and `OnDone()` comes only after it. An operation started from the application
+thread is therefore safe until `Finish()`, with no hold, and the obligation the client writer carries, ending its write
+side, is built into every server RPC as the obligation to finish it.
 
 ### Why the reactors offer two delivery approaches
 
@@ -481,8 +550,9 @@ duplicate call from releasing a hold twice.
 
 ### Why the bidi write side holds while idle
 
-`SendRequest()`, `SendLastRequest()`, and `CloseRequestStream()` run on the application thread and reach gRPC from
-outside any reaction, which is precisely the case gRPC's [hold mechanism][grpc-hold-pr] exists for.
+Under `Submission::kApplicationPushes`, `SendRequest()`, `SendLastRequest()`, and `CloseRequestStream()` run on the
+application thread and reach gRPC from outside any reaction, which is precisely the case gRPC's
+[hold mechanism][grpc-hold-pr] exists for. Under `kReactorPulls` they do not exist, and neither does this hold.
 `ActiveBidiReactor` keeps one hold outstanding for exactly the window where the write stream is idle, and makes
 claiming that hold the permission to write. Every write therefore happens with a hold provably outstanding, and
 the flag test that used to guard it disappears rather than being reinforced.
@@ -555,12 +625,40 @@ timeouts. For a bidirectional RPC the cost buys nothing, since its read side rep
 For a client-streaming RPC nothing else can report it, so the cost is what correctness takes. It becomes an obligation
 of the same kind as releasing a held message: the RPC completes only once the application ends its write side.
 
-Issuing every write from inside a reaction would need no hold at all, which is why gRPC calls out-of-reaction
-operations the uncommon case. It works when the requests are known upfront: the first one can be written before
-`StartCall()`, and each next one from the `write_done` callback, on the gRPC thread. It cannot serve an application
-that produces requests later, on its own thread, while the stream is idle, since no reaction exists then to write
-from. The write-flow hold covers both cases, and a `write_done` callback that writes the next request still works
-under it, because the claim makes a write call safe from any thread.
+All of this is the price of `Submission::kApplicationPushes`, where writes come from outside the reactions. Issuing
+every write from inside a reaction needs no hold at all, which is why gRPC calls out-of-reaction operations the
+uncommon case, and it is what `Submission::kReactorPulls` does, as the next section argues. The write-flow hold stays
+for the application that pushes, and a `write_done` callback that writes the next request still works under it,
+because the claim makes a write call safe from any thread.
+
+### Why the writing reactors also let the reactor pull
+
+Under `Submission::kReactorPulls`, the reactor asks the application's `next_request` callback for each request. It
+asks once in its shadowed `StartCall()`, before the RPC starts, and writes the answer there, which gRPC allows. It asks
+again from `OnWriteDone()`, after each successful write, and right after `write_done`, so the application has seen a
+write complete before it is asked for the next one. A `std::nullopt` closes the request stream. Every write then starts
+before the RPC or inside a reaction, which is the case gRPC's hold rule exempts, so the write side takes no hold at
+all:
+
+- **The RPC ends on its own.** Nothing on the write side suppresses `OnDone()`, so a deadline, a server error, or the
+  server ending the RPC is reported at once, while the writer is idle or not. The obligation the pushing writer
+  carries, ending its write side, disappears, and so do the claim states that guard it.
+- **The write calls disappear.** `SendRequest()`, `SendLastRequest()` and `CloseRequestStream()` are compiled out, and
+  the `next_request` slot is an empty placeholder under `kApplicationPushes`, so neither half of one choice can be
+  used with the other.
+- **Backpressure reaches the producer.** The reactor asks for a request only once the previous one was accepted, so
+  no queue builds up between the application and the reactor.
+
+The price is the callback's contract. It runs inside a reaction, on a gRPC thread, except for the first call, which
+runs inside the reactor's constructor, on the thread that constructs it, before the application even holds the
+reactor. It must answer at once, without blocking, and it cannot answer "not yet": its only answers are a request or
+the end of the stream. A source that may have nothing ready while it is not over, such as requests produced later on
+the application's own thread, needs a write issued from outside any reaction, so it needs `kApplicationPushes` and its
+hold. A source that can always answer at once, such as a prepared list, a generator, or a file, fits `kReactorPulls`.
+
+Neither value contains the other, unlike the pacings, where `kPerMessage` reaches both ends at runtime. A pulling
+reactor cannot accept a pushed request, and a pushing one cannot ask for the next. So `Submission`, like `Delivery`,
+has no default, and every writing instantiation names it.
 
 ## Component structure
 
@@ -608,13 +706,15 @@ project-specific settings:
 | ------- | ------------- | --------------------- |
 | `ActiveUnaryReactor<ResponseT, kDelivery>` | Unary | Response type, `Delivery` |
 | `ActiveReadReactor<ResponseT, kDelivery, kPacing>` | Server-streaming | Response type, `Delivery`, `ReadPacing` |
-| `ActiveWriteReactor<RequestT, ResponseT, kDelivery>` | Client-streaming | Request and response types, `Delivery` |
-| `ActiveBidiReactor<RequestT, ResponseT, kDelivery, kPacing>` | Bidirectional | Request and response types, |
-| | | `Delivery`, `ReadPacing` |
+| `ActiveWriteReactor<RequestT, ResponseT, kDelivery, kSubmission>` | Client-streaming | Request and response |
+| | | types, `Delivery`, `Submission` |
+| `ActiveBidiReactor<RequestT, ResponseT, kDelivery, kSubmission, kPacing>` | Bidirectional | Request and response |
+| | | types, `Delivery`, `Submission`, `ReadPacing` |
 
-`Delivery` has no default, so every instantiation names its approach. The two reading reactors also take
-`ReadPacing` as a template parameter, which defaults to `kPerMessage`, so an instantiation names it only to fix the
-pacing to `kContinuous` or `kTurnByTurn`. No constructor takes a pacing argument.
+`Delivery` has no default, so every instantiation names its approach, and neither has `Submission`, which the two
+writing reactors take for their outgoing direction. The two reading reactors also take `ReadPacing` as a template
+parameter, which defaults to `kPerMessage`, so an instantiation names it only to fix the pacing to `kContinuous` or
+`kTurnByTurn`. No constructor takes a pacing argument.
 
 **Service-Specific Adapters** (`applications/reactor/reactor_client_routeguide.h`):
 
@@ -622,18 +722,18 @@ pacing to `kContinuous` or `kTurnByTurn`. No constructor takes a pacing argument
 | --------------- | ------------------- | ------------ |
 | `ActiveUnaryReactor<Feature, D>` | `routeguide::GetFeature::ClientReactor<D>` | `GetFeature` |
 | `ActiveReadReactor<Feature, D, P>` | `routeguide::ListFeatures::ClientReactor<D, P>` | `ListFeatures` |
-| `ActiveWriteReactor<Point, RouteSummary, D>` | `routeguide::RecordRoute::ClientReactor<D>` | `RecordRoute` |
-| `ActiveBidiReactor<RouteNote, RouteNote, D, P>` | `routeguide::RouteChat::ClientReactor<D, P>` | `RouteChat` |
+| `ActiveWriteReactor<Point, RouteSummary, D, S>` | `routeguide::RecordRoute::ClientReactor<D, S>` | `RecordRoute` |
+| `ActiveBidiReactor<RouteNote, RouteNote, D, S, P>` | `routeguide::RouteChat::ClientReactor<D, S, P>` | `RouteChat` |
 
-Here `D` is the `Delivery` and `P` the `ReadPacing` the application chose for that RPC. The adapters forward both
-untouched, for the reason given under
+Here `D` is the `Delivery`, `S` the `Submission` and `P` the `ReadPacing` the application chose for that RPC. The
+adapters forward them untouched, for the reason given under
 [Why the generic layer offers every combination](#why-the-generic-layer-offers-every-combination).
 
 ### Callback struct patterns
 
-Each reactor type has a corresponding callback struct, templated on the same `Delivery` as its reactor, and on the
-same `ReadPacing` for the two reading reactors. The slot names are the same in every combination; only the slot
-that carries a message changes signature:
+Each reactor type has a corresponding callback struct, templated on the same `Delivery` as its reactor, on the same
+`Submission` for the two writing reactors, and on the same `ReadPacing` for the two reading reactors. The slot names
+are the same in every combination; only the slot that carries a message changes signature:
 
 **Unary** (`ActiveUnaryCallbacks<ResponseT, kDelivery>`):
 
@@ -649,16 +749,19 @@ that carries a message changes signature:
 - `read_nok`: called when stream ends (no more reads)
 - `done`: called on RPC completion
 
-**Client-streaming** (`ActiveWriteCallbacks<RequestT, ResponseT, kDelivery>`):
+**Client-streaming** (`ActiveWriteCallbacks<RequestT, ResponseT, kDelivery, kSubmission>`):
 
 - `write_done`: called after each write completes
+- `next_request`: under `Submission::kReactorPulls` only, called by the reactor for each request, which it returns as a
+  `std::optional<RequestT>`, `std::nullopt` closing the request stream. An empty placeholder under `kApplicationPushes`
 - `done`: called on RPC completion, receives the status and the terminal response, as for the unary `done`
 
-**Bidirectional** (`ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kPacing>`):
+**Bidirectional** (`ActiveBidiCallbacks<RequestT, ResponseT, kDelivery, kSubmission, kPacing>`):
 
 - `read_ok`: called on successful read, as for the server-streaming `read_ok`
 - `read_nok`: called when read stream ends
 - `write_done`: called after each write completes
+- `next_request`: as for the client-streaming `next_request`
 - `done`: called on RPC completion
 
 ### File organization
@@ -672,10 +775,12 @@ that carries a message changes signature:
 | Unit tests | `applications/reactor/tests/` | `{reactor_name}_{pull,push}_test.cpp` |
 
 **Test file naming:** one file per reactor and `Delivery` approach, each pinning its approach in a single
-`kDelivery` constant.
+`kDelivery` constant, plus one `_producer` file per writing reactor under `Submission::kReactorPulls`.
 
-- `active_write_reactor_pull_test.cpp`, `active_write_reactor_push_test.cpp`: client-streaming reactor tests
-- `active_bidi_reactor_pull_test.cpp`, `active_bidi_reactor_push_test.cpp`: bidirectional reactor tests
+- `active_write_reactor_pull_test.cpp`, `active_write_reactor_push_test.cpp`,
+  `active_write_reactor_producer_test.cpp`: client-streaming reactor tests
+- `active_bidi_reactor_pull_test.cpp`, `active_bidi_reactor_push_test.cpp`, `active_bidi_reactor_producer_test.cpp`:
+  bidirectional reactor tests
 - `read_pacing_test_support.h`: the `ReadPacing` tags and type lists the two reading reactors' typed tests run over
 
 ### Error handling pattern
@@ -728,6 +833,8 @@ for the reason given under [Why kPerMessage takes one for every message](#why-kp
 `write_idle_` exists in `ActiveBidiReactor` only, under both approaches, where winning it by compare-exchange is the
 permission to write, which is why that class needs no write-pending flag. `write_flow_` is its counterpart in
 `ActiveWriteReactor`: open, claimed by one write call, or ended, and only the transition to ended releases the hold.
+Both serve `Submission::kApplicationPushes` only, and stay untouched under `kReactorPulls`, where the reactor writes
+from its own reactions; `stream_no_more_` is then what stops it pulling once the RPC can no longer go on.
 `stream_no_more_` reports that no further read or write can succeed: on both write paths it is re-read after the claim
 is won rather than before, so a stale read cannot let a doomed operation through, and on the reading side it decides
 whether `GetResponse()` or `ResumeRead()` re-arms. `ActiveUnaryReactor` has only
@@ -754,7 +861,8 @@ if (token.compare_exchange_strong(held, 0)) {  // lost: this message's hold was 
 }
 ```
 
-**Hold mechanism, write flow (`ActiveWriteReactor`, under either `Delivery`):**
+**Hold mechanism, write flow (`ActiveWriteReactor` under `Submission::kApplicationPushes`, under either
+`Delivery`):**
 
 ```cpp
 // In StartCall(), before the RPC is activated
@@ -772,7 +880,8 @@ stream_no_more_ = true;                    // published before trying to end the
 EndOpenWriteFlow();                        // ends it only if open; a claimer ends it when it returns it
 ```
 
-`ReadPacing::kContinuous` needs no equivalent, and neither does `ActiveUnaryReactor`. See
+`ReadPacing::kContinuous` needs no equivalent, and neither do `ActiveUnaryReactor` and the write side under
+`Submission::kReactorPulls`. See
 [Why one rule decides every hold](#why-one-rule-decides-every-hold) above for why each of them is safe without.
 
 ### Feature to component mapping

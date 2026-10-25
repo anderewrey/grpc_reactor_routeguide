@@ -42,8 +42,9 @@ class RouteChat {
   // The reactor flavour this scenario exhibits: its Delivery approach only. Its ReadPacing is the
   // default, ReadPacing::kPerMessage, which its fixed-pacing siblings name explicitly instead.
   using Delivery = routeguide::RouteChat::Delivery;
-  using Callbacks = routeguide::RouteChat::Callbacks<Delivery::kPull>;
-  using ClientReactor = routeguide::RouteChat::ClientReactor<Delivery::kPull>;
+  using Submission = routeguide::RouteChat::Submission;
+  using Callbacks = routeguide::RouteChat::Callbacks<Delivery::kPull, Submission::kApplicationPushes>;
+  using ClientReactor = routeguide::RouteChat::ClientReactor<Delivery::kPull, Submission::kApplicationPushes>;
 
  public:
   /// Registers the event handlers this scenario needs, for its own lifetime.
