@@ -41,6 +41,16 @@
 
 namespace {
 
+/// Each case below names its Delivery explicitly: this fixture holds both approaches side by side.
+using RpcReactor::Client::Delivery;
+/// The ListFeatures cases also name their ReadPacing, since the reading reactors take it as a second axis.
+using RpcReactor::Client::ReadPacing;
+
+/// The ListFeatures reactors of the cases below, one per Delivery and ReadPacing combination exercised.
+using PullPerMessageReactor = routeguide::ListFeatures::ClientReactor<Delivery::kPull, ReadPacing::kPerMessage>;
+using PushContinuousReactor = routeguide::ListFeatures::ClientReactor<Delivery::kPush, ReadPacing::kContinuous>;
+using PushPerMessageReactor = routeguide::ListFeatures::ClientReactor<Delivery::kPush, ReadPacing::kPerMessage>;
+
 /// Global test environment to manage EventLoop lifecycle.
 /// EventLoop doesn't support restart after Halt(), so we start it once for all tests.
 class EventLoopEnvironment : public ::testing::Environment {
@@ -158,7 +168,11 @@ class ClientReactorIntegrationTest : public RouteGuideTestFixtureBase<TestRouteG
   }
 };
 
-/// @test Validates unary RPC with EventLoop dispatch.
+// =============================================================================
+// Delivery::kPull: the event carries the reactor, and the handler pulls the response out of it
+// =============================================================================
+
+/// @test Delivery::kPull: validates unary RPC with EventLoop dispatch.
 ///
 /// Verifies the full production flow:
 /// 1. gRPC callback (OnDone) executes on gRPC thread pool
@@ -167,7 +181,7 @@ class ClientReactorIntegrationTest : public RouteGuideTestFixtureBase<TestRouteG
 /// 4. Response data is correctly extracted via GetResponse()
 ///
 /// Thread assertions confirm callbacks do NOT run on the main thread.
-TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop) {
+TEST_F(ClientReactorIntegrationTest, GetFeature_Pull_ValidPoint_DispatchesToEventLoop) {
   // Configure expected response
   routeguide::Feature expected_feature;
   expected_feature.set_name("Test Feature");
@@ -179,17 +193,17 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop
   std::atomic<bool> done{false};
   routeguide::Feature received_feature;
   grpc::Status received_status;
-  routeguide::GetFeature::ClientReactor* dispatched_reactor = nullptr;
-  std::unique_ptr<routeguide::GetFeature::ClientReactor> reactor;
+  routeguide::GetFeature::ClientReactor<Delivery::kPull>* dispatched_reactor = nullptr;
+  std::unique_ptr<routeguide::GetFeature::ClientReactor<Delivery::kPull>> reactor;
 
   // Register event handler (Servant role in Active Object pattern)
   // In NON_BLOCK mode, EventLoop runs in a background thread
-  static constexpr auto kTestOnDone = "TestGetFeatureOnDone";
+  static constexpr auto kTestOnDone = "TestPullGetFeatureOnDone";
   RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
     // In NON_BLOCK mode, this runs on EventLoop's background thread (not main thread)
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
 
-    auto* r = static_cast<routeguide::GetFeature::ClientReactor*>(event->getData());
+    auto* r = static_cast<routeguide::GetFeature::ClientReactor<Delivery::kPull>*>(event->getData());
     // Compared on the main thread once done is set: the reactor's constructor already starts the
     // RPC, so this handler can run while the main thread is still assigning reactor.
     dispatched_reactor = r;
@@ -205,7 +219,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop
   const routeguide::Point request = rg_utils::MakePoint(123456789, -987654321);
 
   // Create callbacks (triggered on gRPC thread)
-  routeguide::GetFeature::Callbacks cbs;
+  routeguide::GetFeature::Callbacks<Delivery::kPull> cbs;
   cbs.done = [&main_thread_id = main_thread_id_](grpc::ClientUnaryReactor* r, const grpc::Status&,
                                                   const routeguide::Feature&) {
     // Verify we're on gRPC thread (NOT main thread)
@@ -214,7 +228,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop
   };
 
   // Create reactor (Method Request in Active Object pattern)
-  reactor = std::make_unique<routeguide::GetFeature::ClientReactor>(
+  reactor = std::make_unique<routeguide::GetFeature::ClientReactor<Delivery::kPull>>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   // Wait for completion - EventLoop runs in background thread (NON_BLOCK mode)
@@ -232,9 +246,10 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop
 // ListFeatures Streaming Tests with EventLoop
 // =============================================================================
 
-/// @test Validates server streaming RPC with EventLoop dispatch.
+/// @test Delivery::kPull: validates server streaming RPC with EventLoop dispatch.
 ///
-/// Tests the hold/resume pattern for streaming responses:
+/// Tests the hold/resume pattern for streaming responses, under ReadPacing::kPerMessage with read_ok
+/// returning true, which is the pull contract from before the ReadPacing axis:
 /// 1. Server sends multiple features via stream
 /// 2. Each `OnReadDone(true)` callback fires on gRPC thread
 /// 3. Callback triggers EventLoop event (holds reactor for deferred processing)
@@ -245,7 +260,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_ValidPoint_DispatchesToEventLoop
 /// - All streamed responses are received and dispatched correctly
 /// - Thread assertions confirm gRPC → EventLoop thread transition
 /// - Response data integrity across thread boundaries
-TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesToEventLoop) {
+TEST_F(ClientReactorIntegrationTest, ListFeatures_Pull_MultipleResponses_DispatchesToEventLoop) {
   // Configure server to return multiple features
   std::vector<routeguide::Feature> expected_features;
   expected_features.reserve(3);
@@ -262,17 +277,17 @@ TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesTo
   std::atomic<bool> done{false};
   std::vector<routeguide::Feature> received_features;
   grpc::Status received_status;
-  std::unique_ptr<routeguide::ListFeatures::ClientReactor> reactor;
+  std::unique_ptr<PullPerMessageReactor> reactor;
 
   // Register event handlers for streaming
-  static constexpr auto kTestOnReadOk = "TestListFeaturesOnReadOk";
-  static constexpr auto kTestOnDone = "TestListFeaturesOnDone";
+  static constexpr auto kTestOnReadOk = "TestPullListFeaturesOnReadOk";
+  static constexpr auto kTestOnDone = "TestPullListFeaturesOnDone";
 
   const RpcReactor::EventConnection on_read_ok_guard(kTestOnReadOk, [&](const EventLoop::Event* event) {
     // Verify we're on EventLoop thread (not main thread)
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
 
-    auto* r = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
+    auto* r = static_cast<PullPerMessageReactor*>(event->getData());
     routeguide::Feature feature;
     r->GetResponse(feature);
     received_features.push_back(feature);
@@ -281,7 +296,7 @@ TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesTo
   const RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
 
-    auto* r = static_cast<routeguide::ListFeatures::ClientReactor*>(event->getData());
+    auto* r = static_cast<PullPerMessageReactor*>(event->getData());
     received_status = r->Status();
     done = true;
   });
@@ -290,14 +305,14 @@ TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesTo
   const routeguide::Rectangle request;
 
   // Create callbacks
-  routeguide::ListFeatures::Callbacks cbs;
-  cbs.ok = [&main_thread_id = main_thread_id_](grpc::ClientReadReactor<routeguide::Feature>* r,
+  routeguide::ListFeatures::Callbacks<Delivery::kPull, ReadPacing::kPerMessage> cbs;
+  cbs.read_ok = [&main_thread_id = main_thread_id_](grpc::ClientReadReactor<routeguide::Feature>* r,
                                                 const routeguide::Feature&) {
     EXPECT_NE(std::this_thread::get_id(), main_thread_id);
     EventLoop::TriggerEvent(kTestOnReadOk, r);
     return true;  // Hold for GetResponse via EventLoop
   };
-  cbs.nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
+  cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
   cbs.done = [&main_thread_id = main_thread_id_](grpc::ClientReadReactor<routeguide::Feature>* r,
                                                   const grpc::Status&) {
     EXPECT_NE(std::this_thread::get_id(), main_thread_id);
@@ -305,7 +320,7 @@ TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesTo
   };
 
   // Create reactor
-  reactor = std::make_unique<routeguide::ListFeatures::ClientReactor>(
+  reactor = std::make_unique<PullPerMessageReactor>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   // Wait for completion
@@ -319,7 +334,7 @@ TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesTo
   }
 }
 
-/// @test Validates cancellation triggers EventLoop dispatch.
+/// @test Delivery::kPull: validates cancellation triggers EventLoop dispatch.
 ///
 /// Verifies that `TryCancel()` correctly terminates an RPC and still dispatches
 /// the final status through the EventLoop:
@@ -334,31 +349,31 @@ TEST_F(ClientReactorIntegrationTest, ListFeatures_MultipleResponses_DispatchesTo
 /// - OK: Server response arrived before cancel signal took effect
 ///
 /// Thread assertions confirm the EventLoop dispatch path is exercised.
-TEST_F(ClientReactorIntegrationTest, GetFeature_TryCancel_DispatchesToEventLoop) {
+TEST_F(ClientReactorIntegrationTest, GetFeature_Pull_TryCancel_DispatchesToEventLoop) {
   routeguide::Feature feature;
   feature.set_name("Should not receive");
   test_service_.SetGetFeatureResponse(feature);
 
   std::atomic<bool> done{false};
   grpc::Status received_status;
-  std::unique_ptr<routeguide::GetFeature::ClientReactor> reactor;
+  std::unique_ptr<routeguide::GetFeature::ClientReactor<Delivery::kPull>> reactor;
 
-  static constexpr auto kTestOnDone = "TestCancelOnDone";
+  static constexpr auto kTestOnDone = "TestPullCancelOnDone";
   RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
-    auto* r = static_cast<routeguide::GetFeature::ClientReactor*>(event->getData());
+    auto* r = static_cast<routeguide::GetFeature::ClientReactor<Delivery::kPull>*>(event->getData());
     received_status = r->Status();
     done = true;
   });
 
   const routeguide::Point request = rg_utils::MakePoint(123, 0);
 
-  routeguide::GetFeature::Callbacks cbs;
+  routeguide::GetFeature::Callbacks<Delivery::kPull> cbs;
   cbs.done = [](grpc::ClientUnaryReactor* r, const grpc::Status&, const routeguide::Feature&) {
     EventLoop::TriggerEvent(kTestOnDone, r);
   };
 
-  reactor = std::make_unique<routeguide::GetFeature::ClientReactor>(
+  reactor = std::make_unique<routeguide::GetFeature::ClientReactor<Delivery::kPull>>(
       *stub_, CreateClientContext(), request, std::move(cbs));
 
   // Cancel immediately
@@ -367,6 +382,318 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_TryCancel_DispatchesToEventLoop)
   ASSERT_TRUE(WaitForDone(done, *reactor, "cancel completion"));
 
   // Cancel or OK are both valid (depending on timing)
+  EXPECT_TRUE(received_status.error_code() == grpc::StatusCode::CANCELLED ||
+              received_status.error_code() == grpc::StatusCode::OK);
+}
+
+// =============================================================================
+// Delivery::kPush: the event carries the owned message, and the handler reclaims it
+// =============================================================================
+
+/// @test Delivery::kPush: validates unary RPC with EventLoop dispatch.
+///
+/// Verifies the full production flow:
+/// 1. gRPC callback (OnDone) executes on gRPC thread pool
+/// 2. Callback triggers EventLoop::TriggerEvent()
+/// 3. EventLoop handler executes on EventLoop background thread
+/// 4. The handler reclaims the response ownership the callback released into the queue
+///
+/// Thread assertions confirm callbacks do NOT run on the main thread.
+TEST_F(ClientReactorIntegrationTest, GetFeature_Push_ValidPoint_DispatchesToEventLoop) {
+  // Configure expected response
+  routeguide::Feature expected_feature;
+  expected_feature.set_name("Test Feature");
+  expected_feature.mutable_location()->set_latitude(123456789);
+  expected_feature.mutable_location()->set_longitude(-987654321);
+  test_service_.SetGetFeatureResponse(expected_feature);
+
+  // Test state
+  std::atomic<bool> done{false};
+  routeguide::Feature received_feature;
+  grpc::Status received_status;
+  std::unique_ptr<routeguide::GetFeature::ClientReactor<Delivery::kPush>> reactor;
+
+  // Register event handler (Servant role in Active Object pattern)
+  // In NON_BLOCK mode, EventLoop runs in a background thread
+  static constexpr auto kTestOnDone = "TestPushGetFeatureOnDone";
+  RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
+    // Reclaim first, so no assertion below can leak the response
+    const std::unique_ptr<routeguide::Feature> feature{static_cast<routeguide::Feature*>(event->getData())};
+
+    // In NON_BLOCK mode, this runs on EventLoop's background thread (not main thread)
+    EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
+
+    // Status() is read by the main thread after `done`, not here: this handler can run before the
+    // constructing statement below has assigned `reactor`, since StartCall() happens inside it.
+    received_feature = std::move(*feature);
+    done = true;
+  });
+
+  // Create request
+  const routeguide::Point request = rg_utils::MakePoint(123456789, -987654321);
+
+  // Create callbacks (triggered on gRPC thread)
+  routeguide::GetFeature::Callbacks<Delivery::kPush> cbs;
+  cbs.done = [&main_thread_id = main_thread_id_](grpc::ClientUnaryReactor*, const grpc::Status&,
+                                                 std::unique_ptr<routeguide::Feature> response) {
+    // Verify we're on gRPC thread (NOT main thread)
+    EXPECT_NE(std::this_thread::get_id(), main_thread_id);
+    EventLoop::TriggerEvent(kTestOnDone, response.release());
+  };
+
+  // Create reactor (Method Request in Active Object pattern)
+  reactor = std::make_unique<routeguide::GetFeature::ClientReactor<Delivery::kPush>>(
+      *stub_, CreateClientContext(), request, std::move(cbs));
+
+  // Wait for completion - EventLoop runs in background thread (NON_BLOCK mode)
+  ASSERT_TRUE(WaitForDone(done, *reactor, "RPC completion"));
+
+  // Verify results. `done` orders this read after the handler, and the reactor is assigned by now.
+  received_status = reactor->Status();
+  EXPECT_TRUE(received_status.ok()) << "Status: " << received_status.error_message();
+  EXPECT_EQ(received_feature.name(), expected_feature.name());
+  EXPECT_EQ(received_feature.location().latitude(), expected_feature.location().latitude());
+  EXPECT_EQ(received_feature.location().longitude(), expected_feature.location().longitude());
+}
+
+// =============================================================================
+// ListFeatures Streaming Tests with EventLoop
+// =============================================================================
+
+/// @test Delivery::kPush: validates server streaming RPC with EventLoop dispatch.
+///
+/// Tests the ownership-transfer pattern for streaming responses, under ReadPacing::kContinuous:
+/// 1. Server sends multiple features via stream
+/// 2. Each `OnReadDone(true)` callback releases its owned message into the EventLoop queue
+/// 3. The `EventLoop` handler reclaims that pointer and owns the message for its own scope
+/// 4. After stream ends, `OnDone` dispatches final status via EventLoop
+///
+/// The test validates:
+/// - All streamed responses are received and dispatched correctly
+/// - Thread assertions confirm gRPC → EventLoop thread transition
+/// - Response data integrity across thread boundaries
+/// - Network-order delivery, and `OnDone` handled behind every message, since both ride one queue
+TEST_F(ClientReactorIntegrationTest, ListFeatures_Push_MultipleResponses_DispatchesToEventLoop) {
+  // Configure server to return multiple features
+  std::vector<routeguide::Feature> expected_features;
+  expected_features.reserve(3);
+  for (int i = 0; i < 3; ++i) {
+    routeguide::Feature feature;
+    feature.set_name("Feature " + std::to_string(i));
+    feature.mutable_location()->set_latitude(i * 100);
+    feature.mutable_location()->set_longitude(i * -100);
+    expected_features.push_back(feature);
+  }
+  test_service_.SetListFeaturesResponse(expected_features);
+
+  // Test state
+  std::atomic<bool> done{false};
+  std::vector<routeguide::Feature> received_features;
+  size_t features_at_done = 0;
+  grpc::Status received_status;
+  std::unique_ptr<PushContinuousReactor> reactor;
+
+  // Register event handlers for streaming
+  static constexpr auto kTestOnReadOk = "TestPushListFeaturesOnReadOk";
+  static constexpr auto kTestOnDone = "TestPushListFeaturesOnDone";
+
+  const RpcReactor::EventConnection on_read_ok_guard(kTestOnReadOk, [&](const EventLoop::Event* event) {
+    // Verify we're on EventLoop thread (not main thread)
+    EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
+
+    // Reclaim before the assertions below, so a failure cannot leak the message
+    const std::unique_ptr<routeguide::Feature> feature{static_cast<routeguide::Feature*>(event->getData())};
+    received_features.push_back(*feature);
+  });
+
+  const RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
+    EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
+
+    auto* r = static_cast<PushContinuousReactor*>(event->getData());
+    received_status = r->Status();
+    // Every message event was enqueued before this one, so all of them are already handled.
+    features_at_done = received_features.size();
+    done = true;
+  });
+
+  // Create request
+  const routeguide::Rectangle request;
+
+  // Create callbacks
+  routeguide::ListFeatures::Callbacks<Delivery::kPush, ReadPacing::kContinuous> cbs;
+  cbs.read_ok = [&main_thread_id = main_thread_id_](grpc::ClientReadReactor<routeguide::Feature>*,
+                                               std::unique_ptr<routeguide::Feature> response) {
+    EXPECT_NE(std::this_thread::get_id(), main_thread_id);
+    // Hand the message ownership to the queue; the reactor re-arms its read right after this.
+    EventLoop::TriggerEvent(kTestOnReadOk, response.release());
+  };
+  cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
+  cbs.done = [&main_thread_id = main_thread_id_](grpc::ClientReadReactor<routeguide::Feature>* r,
+                                                  const grpc::Status&) {
+    EXPECT_NE(std::this_thread::get_id(), main_thread_id);
+    EventLoop::TriggerEvent(kTestOnDone, r);
+  };
+
+  // Create reactor
+  reactor = std::make_unique<PushContinuousReactor>(
+      *stub_, CreateClientContext(), request, std::move(cbs));
+
+  // Wait for completion
+  ASSERT_TRUE(WaitForDone(done, *reactor, "stream completion"));
+
+  // Verify results
+  EXPECT_TRUE(received_status.ok()) << "Status: " << received_status.error_message();
+  ASSERT_EQ(received_features.size(), expected_features.size());
+  // In network order: the queue is FIFO and the reactor enqueues one message per reaction.
+  for (size_t i = 0; i < expected_features.size(); ++i) {
+    EXPECT_EQ(received_features[i].name(), expected_features[i].name()) << "Message " << i << " arrived out of order";
+  }
+  // The done event rode the same queue behind every message, so none was still pending when it ran.
+  EXPECT_EQ(features_at_done, expected_features.size())
+      << "OnDone was handled before all messages had been dispatched";
+}
+
+/// @test Delivery::kPush: validates a held stream, released from the EventLoop handler.
+///
+/// Tests the backpressured ownership-transfer pattern, under ReadPacing::kPerMessage with read_ok
+/// returning true:
+/// 1. Server sends multiple features via stream
+/// 2. Each `OnReadDone(true)` callback releases its owned message and the reactor into the EventLoop
+///    queue, and keeps the stream held
+/// 3. The `EventLoop` handler reclaims the message, then calls `ResumeRead()` to let the next one in
+/// 4. After stream ends, `OnDone` dispatches final status via EventLoop
+///
+/// The test validates:
+/// - All streamed responses are received in order and dispatched correctly
+/// - Thread assertions confirm gRPC → EventLoop thread transition
+/// - No message arrives while the previous one is still waiting for its handler
+TEST_F(ClientReactorIntegrationTest, ListFeatures_Push_HeldUntilHandled_DispatchesToEventLoop) {
+  // Configure server to return multiple features
+  std::vector<routeguide::Feature> expected_features;
+  expected_features.reserve(3);
+  for (int i = 0; i < 3; ++i) {
+    routeguide::Feature feature;
+    feature.set_name("Feature " + std::to_string(i));
+    expected_features.push_back(feature);
+  }
+  test_service_.SetListFeaturesResponse(expected_features);
+
+  /// What one read_ok event carries: the message, and the reactor its handler must resume. The handler
+  /// cannot reach the reactor through `reactor` below, since the first event can be handled before the
+  /// constructing statement has assigned it.
+  struct HeldFeature {
+    PushPerMessageReactor* reactor;
+    std::unique_ptr<routeguide::Feature> feature;
+  };
+
+  // Test state
+  std::atomic<bool> done{false};
+  std::atomic<int> in_flight{0};
+  std::atomic<bool> overlapped{false};
+  std::vector<routeguide::Feature> received_features;
+  grpc::Status received_status;
+  std::unique_ptr<PushPerMessageReactor> reactor;
+
+  static constexpr auto kTestOnReadOk = "TestPushHeldListFeaturesOnReadOk";
+  static constexpr auto kTestOnDone = "TestPushHeldListFeaturesOnDone";
+
+  const RpcReactor::EventConnection on_read_ok_guard(kTestOnReadOk, [&](const EventLoop::Event* event) {
+    // Reclaim before the assertions below, so a failure cannot leak the message
+    const std::unique_ptr<HeldFeature> held{static_cast<HeldFeature*>(event->getData())};
+    EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
+    received_features.push_back(*held->feature);
+    --in_flight;
+    // The stream stays held until this call, which is what bounds it to one message in flight.
+    EXPECT_TRUE(held->reactor->ResumeRead());
+  });
+
+  const RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
+    EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
+    auto* r = static_cast<PushPerMessageReactor*>(event->getData());
+    received_status = r->Status();
+    done = true;
+  });
+
+  const routeguide::Rectangle request;
+
+  routeguide::ListFeatures::Callbacks<Delivery::kPush, ReadPacing::kPerMessage> cbs;
+  cbs.read_ok = [&main_thread_id = main_thread_id_, &in_flight, &overlapped](
+                    grpc::ClientReadReactor<routeguide::Feature>* r, std::unique_ptr<routeguide::Feature> response) {
+    EXPECT_NE(std::this_thread::get_id(), main_thread_id);
+    if (++in_flight > 1) overlapped = true;
+    EventLoop::TriggerEvent(kTestOnReadOk,
+                            new HeldFeature{static_cast<PushPerMessageReactor*>(r), std::move(response)});
+    return true;  // Held until the handler calls ResumeRead()
+  };
+  cbs.read_nok = [](grpc::ClientReadReactor<routeguide::Feature>*) {};
+  cbs.done = [&main_thread_id = main_thread_id_](grpc::ClientReadReactor<routeguide::Feature>* r,
+                                                  const grpc::Status&) {
+    EXPECT_NE(std::this_thread::get_id(), main_thread_id);
+    EventLoop::TriggerEvent(kTestOnDone, r);
+  };
+
+  reactor = std::make_unique<PushPerMessageReactor>(*stub_, CreateClientContext(), request, std::move(cbs));
+
+  ASSERT_TRUE(WaitForDone(done, *reactor, "stream completion"));
+
+  EXPECT_TRUE(received_status.ok()) << "Status: " << received_status.error_message();
+  EXPECT_FALSE(overlapped) << "A message arrived before the previous one was handled";
+  ASSERT_EQ(received_features.size(), expected_features.size());
+  for (size_t i = 0; i < expected_features.size(); ++i) {
+    EXPECT_EQ(received_features[i].name(), expected_features[i].name()) << "Message " << i << " arrived out of order";
+  }
+}
+
+/// @test Delivery::kPush: validates cancellation triggers EventLoop dispatch.
+///
+/// Verifies that `TryCancel()` correctly terminates an RPC and still dispatches
+/// the final status through the EventLoop:
+/// 1. RPC is initiated normally
+/// 2. `TryCancel()` is called immediately (before response arrives)
+/// 3. gRPC signals cancellation via `OnDone` callback on gRPC thread
+/// 4. Callback triggers EventLoop event for final status processing
+/// 5. EventLoop handler receives CANCELLED or OK status
+///
+/// The test accepts both CANCELLED and OK as valid outcomes because:
+/// - CANCELLED: Cancel signal arrived before server processed request
+/// - OK: Server response arrived before cancel signal took effect
+///
+/// Thread assertions confirm the EventLoop dispatch path is exercised.
+TEST_F(ClientReactorIntegrationTest, GetFeature_Push_TryCancel_DispatchesToEventLoop) {
+  routeguide::Feature feature;
+  feature.set_name("Should not receive");
+  test_service_.SetGetFeatureResponse(feature);
+
+  std::atomic<bool> done{false};
+  grpc::Status received_status;
+  std::unique_ptr<routeguide::GetFeature::ClientReactor<Delivery::kPush>> reactor;
+
+  static constexpr auto kTestOnDone = "TestPushCancelOnDone";
+  RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
+    // Reclaim the response even on the cancelled path, where its content is not used
+    const std::unique_ptr<routeguide::Feature> discarded{static_cast<routeguide::Feature*>(event->getData())};
+    EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
+    // Status() is read by the main thread after `done`, for the reason given in the test above
+    done = true;
+  });
+
+  const routeguide::Point request = rg_utils::MakePoint(123, 0);
+
+  routeguide::GetFeature::Callbacks<Delivery::kPush> cbs;
+  cbs.done = [](grpc::ClientUnaryReactor*, const grpc::Status&, std::unique_ptr<routeguide::Feature> response) {
+    EventLoop::TriggerEvent(kTestOnDone, response.release());
+  };
+
+  reactor = std::make_unique<routeguide::GetFeature::ClientReactor<Delivery::kPush>>(
+      *stub_, CreateClientContext(), request, std::move(cbs));
+
+  // Cancel immediately
+  reactor->TryCancel();
+
+  ASSERT_TRUE(WaitForDone(done, *reactor, "cancel completion"));
+
+  // Cancel or OK are both valid (depending on timing)
+  received_status = reactor->Status();
   EXPECT_TRUE(received_status.error_code() == grpc::StatusCode::CANCELLED ||
               received_status.error_code() == grpc::StatusCode::OK);
 }
