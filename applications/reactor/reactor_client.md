@@ -242,8 +242,8 @@ void OnReport(const EventLoop::Event* event) {                              // a
 The price is the backlog: the records queued but not yet stored. Nothing bounds it but the length of the stream, so
 storage slower than the server for long enough runs out of memory. The RPC also ends before storage has caught up, so
 the end of the RPC is not the end of the work. A consumer that must bound its backlog keeps `kPush` but chooses
-`kPerMessage`, whose `read_ok` holds the stream once the backlog passes a threshold, as `list_features_push_per_message`
-does. The `trip_recorder` use case runs the pattern, with storage that takes 1 ms per position report, and
+`kPerMessage`, whose `read_ok` holds the stream once the backlog passes a threshold, as the `offline_map_download` use
+case does. The `trip_recorder` use case runs the pattern, with storage that takes 1 ms per position report, and
 [continuous_journal_test.cpp](/applications/reactor/tests/continuous_journal_test.cpp) tests it.
 
 ### Where each variant runs

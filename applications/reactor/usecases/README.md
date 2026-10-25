@@ -47,9 +47,12 @@ Each existing use case is a clone of its variant along the use only, so a `diff`
 cd applications/reactor
 diff variants/list_features_pull_continuous.cpp usecases/live_vehicle_position.cpp  # keeps only the newest fix
 diff variants/list_features_push_continuous.cpp usecases/trip_recorder.cpp          # reports the backlog it accepts
+diff variants/list_features_pull_continuous.cpp usecases/unnamed_places_audit.cpp   # counts the unnamed places
+diff variants/list_features_pull_per_message.cpp usecases/place_search.cpp          # keeps the named places
+diff variants/list_features_push_per_message.cpp usecases/offline_map_download.cpp  # holds once 3 places wait
 ```
 
-Both are described in the reference, under
+The first two are described in the reference, under
 [Keeping only the newest message](/applications/reactor/reactor_client.md#keeping-only-the-newest-message) and
 [Handling every message without slowing the stream](/applications/reactor/reactor_client.md#handling-every-message-without-slowing-the-stream),
 and the walkthrough runs both in its part for the stream reader.

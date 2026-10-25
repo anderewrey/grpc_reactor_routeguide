@@ -16,7 +16,10 @@
 
 #include "applications/reactor/demo_support.h"
 #include "applications/reactor/usecases/live_vehicle_position.h"
+#include "applications/reactor/usecases/offline_map_download.h"
+#include "applications/reactor/usecases/place_search.h"
 #include "applications/reactor/usecases/trip_recorder.h"
+#include "applications/reactor/usecases/unnamed_places_audit.h"
 #include "rg_service/rg_utils.h"
 #include "rg_service/route_guide_service.h"
 
@@ -38,6 +41,14 @@
  *   every position report, and the feed must never wait for storage. `diff
  *   variants/list_features_push_continuous.cpp usecases/trip_recorder.cpp` is what an application adds to
  *   see the backlog it accepted.
+ * - rg_demo::usecase::UnnamedPlacesAudit, ListFeatures under kPull and kContinuous: a map-quality tool
+ *   counts the places with no name in a region. Each place is counted inside read_ok and forgotten.
+ * - rg_demo::usecase::PlaceSearch, ListFeatures under kPull and kPerMessage: a search shows only the named
+ *   places of the visible area. read_ok declines an unnamed place at no cost, and keeps a named one for
+ *   the results to pull without a copy.
+ * - rg_demo::usecase::OfflineMapDownload, ListFeatures under kPush and kPerMessage: a region's places are
+ *   saved for offline use by a disk writer slower than the network. read_ok holds the stream once a few
+ *   places wait for the writer, and the handler of the held place resumes it.
  *
  * Reading the output: each logger is named after its use case, and every message is numbered per use
  * case, from the gRPC-thread callback ("read_ok  | #k") and, when it reaches the application thread, from
@@ -48,6 +59,15 @@
  * - TripRecorder ends each read_ok line with the backlog, logs a "done     |" line from the gRPC thread
  *   with the reports still queued when the RPC ends, and a "totals   |" line once the trip log has
  *   stored every one of them.
+ * - UnnamedPlacesAudit logs only read_ok lines, from the gRPC thread, then a "totals   |" line with the
+ *   places audited, unnamed and named.
+ * - PlaceSearch logs an unnamed place as "skipped  | #j", numbered on its own, from the gRPC thread; its
+ *   read_ok, pulled and RESPONSE lines count named places only, and a pulled #k line always comes before
+ *   read_ok #k+1. It ends with a "totals   |" line of places shown and left out.
+ * - OfflineMapDownload ends each read_ok line with the places waiting for the writer and "held" or "not
+ *   held". Only a held place gets a "resumed  | #k" line, once the writer has saved it and every place
+ *   before it, and read_ok #k+1 never comes before it. It ends with a "totals   |" line of places saved
+ *   and of the times the download paused.
  *
  * See reactor_client.md for detailed pattern documentation, and usecases/README.md for the situation
  * behind each use case.
@@ -68,9 +88,12 @@ int main(int argc, char** argv) {
   // destroyed, so the stub above must outlive every one of them.
   rg_demo::usecase::LiveVehiclePosition live_vehicle_position{*stub};
   rg_demo::usecase::TripRecorder trip_recorder{*stub};
+  rg_demo::usecase::UnnamedPlacesAudit unnamed_places_audit{*stub};
+  rg_demo::usecase::PlaceSearch place_search{*stub};
+  rg_demo::usecase::OfflineMapDownload offline_map_download{*stub};
 
-  // The feeds stand in for live vehicles: ListFeatures streams the 100 features of this rectangle, and
-  // each use case reads them as successive positions.
+  // ListFeatures streams the 100 features of this rectangle, 36 of them unnamed. The vehicle use cases
+  // read them as successive positions, and the map use cases as the places of a region.
   const auto rect = rg_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000);
 
   // Every use case is started before the loop runs, so all of the RPCs are in flight together and their
@@ -79,6 +102,12 @@ int main(int argc, char** argv) {
   live_vehicle_position.Start(rect);
   spdlog::info("-------------- Use case: trip recorder (ListFeatures kPush kContinuous) --------------");
   trip_recorder.Start(rect);
+  spdlog::info("-------------- Use case: unnamed places audit (ListFeatures kPull kContinuous) --------------");
+  unnamed_places_audit.Start(rect);
+  spdlog::info("-------------- Use case: place search (ListFeatures kPull kPerMessage) --------------");
+  place_search.Start(rect);
+  spdlog::info("-------------- Use case: offline map download (ListFeatures kPush kPerMessage) --------------");
+  offline_map_download.Start(rect);
   EventLoop::Run();  // Scheduler component: Continuously processes queued events on main application thread
   spdlog::info("-------------- LEAVING APPLICATION --------------");
   return 0;

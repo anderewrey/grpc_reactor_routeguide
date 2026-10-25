@@ -20,9 +20,10 @@ namespace rg_demo::push::per_message {
 
 /// Exhibits ActiveReadReactor under Delivery::kPush and ReadPacing::kPerMessage, via the ListFeatures
 /// RPC. Each message is handed out as an owned object, and the read_ok callback decides for each one
-/// whether the reactor holds the RPC until ResumeRead(), or reads on at once. This scenario uses that
-/// decision for adaptive backpressure: the stream runs freely while few messages wait for the
-/// application, and is held once a small bound is reached, until the application has drained them.
+/// whether the reactor holds the RPC until ResumeRead(), or reads on at once. The decision here follows
+/// an arbitrary rule, holding every second message, which stands for whatever an application decides
+/// from the message or from its own state. Every message reaches the application thread either way. The
+/// offline_map_download use case decides it for a reason.
 ///
 /// Clone of its siblings, deliberately, so each cell reads whole. The clone is not free: a bug found in
 /// one must be fixed in the others. It is kept because one class instantiated twice would register the
@@ -30,7 +31,7 @@ namespace rg_demo::push::per_message {
 /// message. Each sibling differs from this file along one axis only:
 /// - list_features_push_turn_by_turn.h, the pacing: every message is held until ResumeRead()
 /// - list_features_pull_per_message.h, the delivery: the message is pulled with GetResponse(), and the
-///   per-message decision serves a filter there rather than backpressure
+///   same rule decides which messages are kept, the others being declined
 class ListFeatures {
   // The reactor flavour this scenario exhibits: its Delivery approach only. Its ReadPacing is the
   // default, ReadPacing::kPerMessage, which its fixed-pacing siblings name explicitly instead.
@@ -58,8 +59,8 @@ class ListFeatures {
 
  private:
   /// Application-thread handler for OnReadDoneOk.
-  /// Delta against the turn-by-turn counterpart: this handler frees the message's in-flight slot, and
-  /// ends with ResumeRead() only for a message read_ok held. No read is armed between a holding
+  /// Delta against the turn-by-turn counterpart: this handler ends with ResumeRead() only for a message
+  /// read_ok held. No read is armed between a holding
   /// callback and that call, so read_ok #k+1 cannot appear before the resumed #k line.
   void OnReadOk(const EventLoop::Event* event);
   /// Application-thread handler for OnReadDoneNOk.
@@ -76,9 +77,10 @@ class ListFeatures {
   unsigned read_seq_{0};
   unsigned handled_seq_{0};
 
-  // Messages read but not yet handled: incremented by read_ok on the gRPC thread, decremented by the
-  // handler on the application thread, so it is shared, and atomic rather than locked.
-  std::atomic<unsigned> in_flight_{0};
+  // The arbitrary rule: true when read_ok holds the next message. Only read_ok reads and flips it, before
+  // its hand-off, and the next read_ok can only start after a read armed later, so the reactions never
+  // share it at once.
+  bool hold_next_{false};
   // The sequence number of the message read_ok held, or 0 when none is: set on the gRPC thread, and
   // claimed by that message's own handler on the application thread.
   std::atomic<unsigned> held_seq_{0};

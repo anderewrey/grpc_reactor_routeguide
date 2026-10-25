@@ -20,17 +20,18 @@ namespace rg_demo::pull::per_message {
 
 /// Exhibits ActiveReadReactor under Delivery::kPull and ReadPacing::kPerMessage, via the ListFeatures
 /// RPC. Each message stays in the reactor, and the read_ok callback decides for each one whether the
-/// reactor holds the RPC until the application pulls it with GetResponse(), or reads on at once. This
-/// scenario uses that decision as a filter: named features are kept and pulled, unnamed ones are
-/// declined inside the callback and never reach the application thread.
+/// reactor holds the RPC until the application pulls it with GetResponse(), or reads on at once. The
+/// decision here follows an arbitrary rule, keeping every second message, which stands for whatever an
+/// application decides from the message: a kept message is pulled, a declined one is consumed inside the
+/// callback and never reaches the application thread. The place_search use case decides it for a reason.
 ///
 /// Clone of its siblings, deliberately, so each cell reads whole. The clone is not free: a bug found in
 /// one must be fixed in the others. It is kept because one class instantiated twice would register the
 /// same event names twice, and EventLoop appends handlers per name while a read event carries an owned
 /// message. Each sibling differs from this file along one axis only:
 /// - list_features_pull_turn_by_turn.h, the pacing: every message is held until GetResponse()
-/// - list_features_push_per_message.h, the delivery: the message is pushed, and the per-message
-///   decision serves backpressure there rather than a filter
+/// - list_features_push_per_message.h, the delivery: the message is pushed, and the same rule decides
+///   which messages hold the stream until ResumeRead()
 class ListFeatures {
   // The reactor flavour this scenario exhibits: its Delivery approach only. Its ReadPacing is the
   // default, ReadPacing::kPerMessage, which its fixed-pacing siblings name explicitly instead.
@@ -64,7 +65,8 @@ class ListFeatures {
   void OnReadOk(const EventLoop::Event* event);
   /// Application-thread handler for OnReadDoneNOk.
   void OnReadNOk(const EventLoop::Event* event);
-  /// Application-thread handler for OnDone, which reports the filter's totals and destroys the reactor.
+  /// Application-thread handler for OnDone, which reports the kept and declined totals and destroys the
+  /// reactor.
   void OnDone(const EventLoop::Event* event);
 
   routeguide::RouteGuide::Stub& stub_;
@@ -79,6 +81,11 @@ class ListFeatures {
   // Declined messages: incremented by read_ok on the gRPC thread, read by the OnDone handler on the
   // application thread, so it is shared, and atomic rather than locked.
   std::atomic<unsigned> skipped_seq_{0};
+
+  // The arbitrary rule: true when read_ok keeps the next message. Only read_ok reads and flips it, before
+  // its hand-off, and the next read_ok can only start after a read armed later, so the reactions never
+  // share it at once.
+  bool keep_next_{false};
 
   spdlog::logger& logger_{VariantLogger("ListFeatures.pull.msg")};
 

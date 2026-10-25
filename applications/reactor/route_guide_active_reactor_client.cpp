@@ -69,13 +69,13 @@
  * - rg_demo::pull::GetFeature                  unary, Delivery::kPull
  * - rg_demo::push::GetFeature                  unary, Delivery::kPush
  * - rg_demo::pull::continuous::ListFeatures    read, consumes each lent message inside read_ok, into
- *                                              an aggregate reported at OnDone
- * - rg_demo::pull::per_message::ListFeatures   read, a filter: read_ok keeps named features, to be
- *                                              pulled, and declines unnamed ones
+ *                                              a count reported at OnDone
+ * - rg_demo::pull::per_message::ListFeatures   read, read_ok keeps every second message, to be pulled,
+ *                                              and declines the others
  * - rg_demo::pull::turn_by_turn::ListFeatures  read, every message held, then pulled by GetResponse()
  * - rg_demo::push::continuous::ListFeatures    read, every message queued, the reactor reads on
- * - rg_demo::push::per_message::ListFeatures   read, backpressure: read_ok holds once a few messages
- *                                              wait for the application
+ * - rg_demo::push::per_message::ListFeatures   read, every message queued, and read_ok holds every
+ *                                              second one until ResumeRead()
  * - rg_demo::push::turn_by_turn::ListFeatures  read, every message queued and held until ResumeRead()
  * - rg_demo::pull::RecordRoute                 write, Delivery::kPull
  * - rg_demo::push::RecordRoute                 write, Delivery::kPush
@@ -93,8 +93,9 @@
  * ListFeatures and RouteChat each cover all six cells of the two axes. Their kPerMessage scenarios
  * name only their Delivery, since kPerMessage is the default pacing; the others name the fixed pacing
  * they commit to. The read side of ActiveBidiReactor behaves exactly as ActiveReadReactor does, so each
- * RouteChat cell mirrors its ListFeatures namesake, except for the kPull filter, which declines the
- * server's repeated notes rather than unnamed features. RouteChat's own lesson is the write side, an
+ * RouteChat cell mirrors its ListFeatures namesake, except for the kPerMessage cells, whose kPull
+ * filter declines the server's repeated notes, and whose kPush bound holds the read side once a few
+ * notes wait. RouteChat's own lesson is the write side, an
  * identical pump in every cell, running next to each delivery and each pacing of the read side. One
  * producer scenario per writing RPC shows the other Submission, each a clone of the pushing scenario
  * it names, so `diff record_route_pull.cpp record_route_pull_producer.cpp` is what the outgoing axis
@@ -114,7 +115,9 @@
  *   and the same pairs among the route_chat_*.cpp files
  * The delivery diffs at kContinuous and kPerMessage are also legible, but each carries a change of
  * use along with the change of delivery: a lent message that is not held must be consumed in the
- * callback, and the per-message decision serves a filter under kPull but backpressure under kPush.
+ * callback. The kPerMessage decision follows one arbitrary rule, keeping every second message, applied
+ * the same way under both deliveries: it stands for whatever an application decides from a message,
+ * and the use cases decide it for a reason.
  * The members of a family are given identical input data, so the difference between their
  * transcripts is line order, plus what each cell deliberately does with the messages.
  *
@@ -128,13 +131,12 @@
  * - A kContinuous kPush scenario emits its read_ok lines in a burst ahead of the matching
  *   application-thread lines, and never emits a resumed or pulled line.
  * - A kContinuous kPull scenario emits only read_ok lines, each carrying the message it consumed on
- *   the gRPC thread, and no RESPONSE line; its OnDone handler then logs a "totals   |" line with the
- *   aggregate.
+ *   the gRPC thread, and no RESPONSE line; its OnDone handler then logs a "totals   |" line with what
+ *   the reactions counted.
  * - A kPull kPerMessage scenario logs a declined message as "skipped  | #j", numbered on its own,
  *   from the gRPC thread, with no application-thread line after it; its read_ok, pulled and RESPONSE
  *   lines count kept messages only. It ends with a "totals   |" line of kept and skipped messages.
- * - A kPush kPerMessage scenario ends each read_ok line with the number of messages in flight and
- *   "held" or "not held". Only a held message gets a "resumed  | #k" line, from its own handler once
+ * - A kPush kPerMessage scenario ends each read_ok line with "held" or "not held". Only a held message gets a "resumed  | #k" line, from its own handler once
  *   the messages before it are handled, and the ordering rule above applies to it.
  *
  * - A producer scenario logs each request the reactor pulls as "next     | #k", from the application
@@ -182,8 +184,6 @@ int main(int argc, char** argv) {
 
   // A flavoured family receives the same input, so its transcripts differ in the order their lines
   // interleave, and in what each cell deliberately does with the messages, not in what it is sent.
-  // The rectangle holds 100 features, 36 of them unnamed, which is what the kPull kPerMessage filter
-  // and the kPull kContinuous aggregate report on.
   const auto rect = rg_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000);
   // The second note reuses the first note's location so the server echoes it back. The RouteChat
   // scenarios receive the same notes, but their response counts still diverge: the reference server

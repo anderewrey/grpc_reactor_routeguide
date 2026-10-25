@@ -73,8 +73,14 @@ add_executable(route_guide_reactor_usecases
     demo_support.cpp
     usecases/live_vehicle_position.h
     usecases/live_vehicle_position.cpp
+    usecases/offline_map_download.h
+    usecases/offline_map_download.cpp
+    usecases/place_search.h
+    usecases/place_search.cpp
     usecases/trip_recorder.h
     usecases/trip_recorder.cpp
+    usecases/unnamed_places_audit.h
+    usecases/unnamed_places_audit.cpp
 )
 
 target_include_directories(route_guide_reactor_usecases

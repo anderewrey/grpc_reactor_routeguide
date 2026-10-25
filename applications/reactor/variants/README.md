@@ -48,9 +48,9 @@ reactor does not take. A planned use case does not exist yet: a follow-up adds i
 | `route_chat_pull_per_message_producer` | variant  | RouteChat    | `kPull`  | `kReactorPulls`      | `kPerMessage` |
 | `live_vehicle_position`                | use case | ListFeatures | `kPull`  | —                    | `kContinuous` |
 | `trip_recorder`                        | use case | ListFeatures | `kPush`  | —                    | `kContinuous` |
-| `unnamed_places_audit`                 | planned  | ListFeatures | `kPull`  | —                    | `kContinuous` |
-| `place_search`                         | planned  | ListFeatures | `kPull`  | —                    | `kPerMessage` |
-| `offline_map_download`                 | planned  | ListFeatures | `kPush`  | —                    | `kPerMessage` |
+| `unnamed_places_audit`                 | use case | ListFeatures | `kPull`  | —                    | `kContinuous` |
+| `place_search`                         | use case | ListFeatures | `kPull`  | —                    | `kPerMessage` |
+| `offline_map_download`                 | use case | ListFeatures | `kPush`  | —                    | `kPerMessage` |
 | `turn_by_turn_guidance`                | planned  | ListFeatures | either   | —                    | `kTurnByTurn` |
 | `gpx_track_upload`                     | planned  | RecordRoute  | either   | `kReactorPulls`      | —             |
 | `live_route_recording`                 | planned  | RecordRoute  | either   | `kApplicationPushes` | —             |
@@ -64,10 +64,10 @@ The six variants left out all use `kReactorPulls`, which combines with every `De
 
 ## What each variant does
 
-Each one shows its variant, and a few apply it to a small use so that a per-message decision has something to decide:
-a filter under `kPull` with `kPerMessage`, backpressure under `kPush` with `kPerMessage`. A file differs from the one
-in its last column along one parameter only, so `diff` between the two shows exactly what that parameter changes. A
-name starting with `...` abbreviates the same RPC's prefix.
+Each one shows its variant and nothing else. Under `kPerMessage`, the per-message decision follows one arbitrary rule,
+keeping every second message, the same under both deliveries; the use cases decide it for a reason. A file differs from
+the one in its last column along one parameter only, so `diff` between the two shows exactly what that parameter
+changes. A name starting with `...` abbreviates the same RPC's prefix.
 
 | Scenario                               | What it does with each message                 | Diff against            |
 |----------------------------------------|------------------------------------------------|-------------------------|
@@ -75,17 +75,17 @@ name starting with `...` abbreviates the same RPC's prefix.
 |                                        | reactor with `GetResponse()`                   |                         |
 | `get_feature_push`                     | The done callback hands the answer out owned,  | `get_feature_pull`      |
 |                                        | and the handler reclaims it                    |                         |
-| `list_features_pull_continuous`        | `read_ok` counts named and unnamed features    | `..._pull_turn_by_turn` |
-|                                        | inside the reaction; the done handler reports  |                         |
-|                                        | the totals                                     |                         |
-| `list_features_pull_per_message`       | A filter: `read_ok` keeps a named feature, for | `..._pull_turn_by_turn` |
-|                                        | the handler to pull, and skips an unnamed one  |                         |
+| `list_features_pull_continuous`        | `read_ok` logs and counts each message inside  | `..._pull_turn_by_turn` |
+|                                        | the reaction; the done handler reports the     |                         |
+|                                        | count                                          |                         |
+| `list_features_pull_per_message`       | `read_ok` keeps every second message, for the  | `..._pull_turn_by_turn` |
+|                                        | handler to pull, and skips the others          |                         |
 | `list_features_pull_turn_by_turn`      | Every feature is held until the handler pulls  | `..._push_turn_by_turn` |
 |                                        | it, so one is in flight at a time              |                         |
 | `list_features_push_continuous`        | Every feature is queued owned, and the reactor | `..._push_turn_by_turn` |
 |                                        | reads on at once                               |                         |
-| `list_features_push_per_message`       | Backpressure: `read_ok` holds the stream once  | `..._push_turn_by_turn` |
-|                                        | 3 features wait for the handler                |                         |
+| `list_features_push_per_message`       | Every message is queued owned, and `read_ok`   | `..._push_turn_by_turn` |
+|                                        | holds every second one until `ResumeRead()`    |                         |
 | `list_features_push_turn_by_turn`      | Every feature is queued owned, and held until  | `..._pull_turn_by_turn` |
 |                                        | the handler calls `ResumeRead()`               |                         |
 | `record_route_pull`                    | The application sends each point, the last one | `record_route_push`     |
