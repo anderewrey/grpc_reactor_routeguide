@@ -67,8 +67,9 @@ event queued before them.
 
 ### The task type: written here, not taken from a library
 
-C++20 has coroutines in the language, but no library types: no `task`, and `std::generator` only arrives in C++23. The
-project builds with C++20. The layer therefore defines a small `Task<T>`:
+C++20 has coroutines in the language, but no library types: no `task`, and no `generator`. C++23 adds `std::generator`
+but still no task type, so the layer's core is written here whatever the standard. The layer therefore defines a small
+`Task<T>`:
 
 | Property               | Choice                                                                          |
 |------------------------|---------------------------------------------------------------------------------|
@@ -136,15 +137,16 @@ says so in its signature.
 | `kApplicationPushes` | `co_await writer.Write(point)`, then                        | Points that appear over time,    |
 |                      | `co_await writer.Close()`; each write resumes on            | such as `live_route_recording`   |
 |                      | `write_done`                                                |                                  |
-| `kReactorPulls`      | The writer is given a range or a generator, and the reactor | A source ready at once, such as  |
-|                      | pulls from it                                               | `gpx_track_upload`               |
+| `kReactorPulls`      | The writer is given a range, and the reactor pulls from it  | A source ready at once, such as  |
+|                      |                                                             | `gpx_track_upload`               |
 
 The shape of the code enforces one write in flight: a coroutine cannot start a second `Write()` before the first one
 resumes it. A coroutine that must wait for its next request, for a GPS fix or a typed note, needs
 `kApplicationPushes`. `next_request` cannot answer "not yet", as
 [Why the writing reactors also let the reactor pull](/docs/architecture.md#why-the-writing-reactors-also-let-the-reactor-pull)
-explains, so a `kReactorPulls` source must be synchronous: a range, or a `std::generator` once the project moves to
-C++23.
+explains, so a `kReactorPulls` source must be synchronous. The layer takes any range, such as the prepared `std::vector`
+`gpx_track_upload` sends today. That covers every source the use cases need, and a lazy one would need only a small
+generator type beside `Task<T>`.
 
 ### The end of an RPC: `Finish()` is awaited exactly once
 
@@ -211,6 +213,15 @@ diffs show what one parameter changes.
 6. The bidirectional join, ported on `convoy_chat`.
 7. Teardown and cancellation tests.
 
+## The language standard: C++20
+
+The layer stays on C++20, the project's standard. C++23 would add little to it: `std::generator` only serves
+`kReactorPulls` sources, which a range already covers, and C++23 still has no task type. It would also cost the
+project its GCC 13 presets, `vcpkg-gcc13-debug` and `vcpkg-gcc13-release`, since GCC 13's standard library has no
+`std::generator`, and a check of every CI compiler's C++23 library support. A move to C++23 is a separate change,
+proven by CI on its own. If it happens, `std::move_only_function` is the feature worth adopting first: the reactor
+callbacks are `std::function`, which cannot hold a callback that owns a move-only value.
+
 ## Open questions
 
 - **Exceptions.** Does `unhandled_exception()` call `std::terminate()`, or store the exception for the awaiter? The
@@ -219,5 +230,3 @@ diffs show what one parameter changes.
   directory and an application of their own.
 - **Whether the filter reader belongs in the layer.** It is the one place user code runs on a gRPC thread. Keeping
   `place_search` on the callback reactor may be clearer.
-- **C++23.** `std::generator` would give `kReactorPulls` writers a standard source type. Moving the project's standard
-  is a separate decision.
