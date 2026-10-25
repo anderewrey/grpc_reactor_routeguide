@@ -21,10 +21,9 @@ namespace rg_demo::push::per_message {
 
 /// Exhibits ActiveBidiReactor under Delivery::kPush and ReadPacing::kPerMessage, via the RouteChat RPC.
 /// Each message is handed out as an owned object, and the read_ok callback decides for each one whether
-/// the reactor holds the read side until ResumeRead(), or reads on at once. This scenario uses that
-/// decision for adaptive backpressure, as its ListFeatures namesake does: the read side runs freely
-/// while few notes wait for the application, and is held once a small bound is reached, until the
-/// application has drained them. The write side keeps running meanwhile, since a read hold stalls only
+/// the reactor holds the read side until ResumeRead(), or reads on at once. The decision follows the
+/// arbitrary rule of list_features_push_per_message.h, holding every second note. Every note reaches the
+/// application thread either way. The write side keeps running meanwhile, since a read hold stalls only
 /// the reads.
 ///
 /// The notes are sent one at a time, under the same one-write-in-flight constraint as RecordRoute,
@@ -35,7 +34,7 @@ namespace rg_demo::push::per_message {
 /// twice would register the same event names twice. Each sibling differs from this file along one axis:
 /// - route_chat_push_turn_by_turn.h, the pacing: every message is held until ResumeRead()
 /// - route_chat_pull_per_message.h, the delivery: the message is pulled with GetResponse(), and the
-///   per-message decision serves a filter there rather than backpressure
+///   same rule decides which notes are kept, the others being declined
 class RouteChat {
   // The reactor flavour this scenario exhibits: its Delivery approach only. Its ReadPacing is the
   // default, ReadPacing::kPerMessage, which its fixed-pacing siblings name explicitly instead.
@@ -64,8 +63,8 @@ class RouteChat {
 
  private:
   /// Application-thread handler for OnReadDoneOk.
-  /// Delta against the turn-by-turn counterpart: this handler frees the note's in-flight slot, and ends
-  /// with ResumeRead() only for a note read_ok held. The write side is unaffected by that hold.
+  /// Delta against the turn-by-turn counterpart: this handler ends with ResumeRead() only for a note
+  /// read_ok held. The write side is unaffected by that hold.
   void OnReadOk(const EventLoop::Event* event);
   /// Application-thread handler for OnReadDoneNOk.
   void OnReadNOk(const EventLoop::Event* event);
@@ -91,9 +90,10 @@ class RouteChat {
   unsigned read_seq_{0};
   unsigned handled_seq_{0};
 
-  // Notes read but not yet handled: incremented by read_ok on the gRPC thread, decremented by the
-  // handler on the application thread, so it is shared, and atomic rather than locked.
-  std::atomic<unsigned> in_flight_{0};
+  // The arbitrary rule: true when read_ok holds the next note. Only read_ok reads and flips it, before
+  // its hand-off, and the next read_ok can only start after a read armed later, so the reactions never
+  // share it at once.
+  bool hold_next_{false};
   // The sequence number of the note read_ok held, or 0 when none is: set on the gRPC thread, and
   // claimed by that note's own handler on the application thread.
   std::atomic<unsigned> held_seq_{0};

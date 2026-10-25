@@ -21,8 +21,9 @@ namespace rg_demo::pull::continuous {
 /// Exhibits ActiveReadReactor under Delivery::kPull and ReadPacing::kContinuous, via the ListFeatures
 /// RPC. Each message is only lent to the read_ok callback, and the reactor re-arms the next read into
 /// the same storage as soon as the callback returns, so the stream never waits for the application and
-/// the message never reaches it. The callback consumes each message inside the reaction instead, into
-/// an aggregate the application reads once the RPC is done.
+/// the message never reaches it. The callback consumes each message inside the reaction instead, here by
+/// logging it and counting it, and the application reads the count once the RPC is done. The
+/// unnamed_places_audit use case consumes it into an aggregate.
 ///
 /// Clone of its siblings, deliberately, so each cell reads whole. The clone is not free: a bug found in
 /// one must be fixed in the others. It is kept because one class instantiated twice would register the
@@ -58,7 +59,7 @@ class ListFeatures {
  private:
   /// Application-thread handler for OnReadDoneNOk.
   void OnReadNOk(const EventLoop::Event* event);
-  /// Application-thread handler for OnDone, which reports the aggregate and destroys the reactor.
+  /// Application-thread handler for OnDone, which reports the count and destroys the reactor.
   /// Delta against the turn-by-turn counterpart: there is no handler for OnReadDoneOk, since no
   /// message is queued.
   void OnDone(const EventLoop::Event* event);
@@ -66,11 +67,10 @@ class ListFeatures {
   routeguide::RouteGuide::Stub& stub_;
   std::unique_ptr<ClientReactor> reactor_;
 
-  // The aggregate. Incremented only on the gRPC thread, in read_ok, but read by the OnDone handler on
-  // the application thread, so both are shared, and atomic rather than locked: the reaction must never
-  // wait on the application.
+  // Incremented only on the gRPC thread, in read_ok, but read by the OnDone handler on the application
+  // thread, so it is shared, and atomic rather than locked: the reaction must never wait on the
+  // application.
   std::atomic<unsigned> read_seq_{0};
-  std::atomic<unsigned> named_count_{0};
 
   spdlog::logger& logger_{VariantLogger("ListFeatures.pull.cont")};
 

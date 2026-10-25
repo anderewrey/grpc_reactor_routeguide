@@ -46,16 +46,18 @@ void ListFeatures::Start(routeguide::Rectangle rect) {
 
   Callbacks cbs;
   // (Point 2.6) TriggerEvent: OnReadDoneOk, for kept messages only. Delta against the turn-by-turn
-  // counterpart: the return value is the hold decision, taken for this message only, which makes the
-  // callback a filter. Returning true keeps the message: the reactor holds the RPC until GetResponse(),
-  // exactly as under kTurnByTurn, and the event carries the reactor itself. Returning false declines it:
-  // the reactor reads on at once into the same storage, so the lent message is gone when this returns,
-  // and no event may refer to it.
+  // counterpart: the return value is the hold decision, taken for this message only, here by the
+  // arbitrary rule of keeping every second message. Returning true keeps the message: the reactor holds
+  // the RPC until GetResponse(), exactly as under kTurnByTurn, and the event carries the reactor itself.
+  // Returning false declines it: the reactor reads on at once into the same storage, so the lent message
+  // is gone when this returns, and no event may refer to it.
   cbs.read_ok = [this](auto* reactor, const ResponseT& response) -> bool {
     assert(!OnApplicationThread());  // gRPC thread
-    if (response.name().empty()) {
-      // (Point 2.18, 2.19, 2.20) Declined: the reactor itself arms the next read and releases the hold.
-      logger_.info("skipped  | #{} unnamed feature: {}", ++skipped_seq_, protobuf_utils::ToString(response));
+    if (!std::exchange(keep_next_, !keep_next_)) {
+      // (Point 2.18, 2.19, 2.20) Declined, so consumed here: the reactor itself arms the next read and
+      // releases the hold.
+      logger_.info("skipped  | #{} {}: {}", ++skipped_seq_, response.GetTypeName(),
+                   protobuf_utils::ToString(response));
       return false;
     }
     logger_.info("read_ok  | #{} {}", ++read_seq_, response.GetTypeName());

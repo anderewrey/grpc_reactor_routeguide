@@ -17,7 +17,6 @@
 
 #include "applications/reactor/variants/get_feature_pull.h"
 #include "applications/reactor/variants/get_feature_push.h"
-#include "applications/reactor/usecases/live_vehicle_position.h"
 #include "applications/reactor/variants/list_features_pull_continuous.h"
 #include "applications/reactor/variants/list_features_pull_per_message.h"
 #include "applications/reactor/variants/list_features_pull_turn_by_turn.h"
@@ -35,7 +34,6 @@
 #include "applications/reactor/variants/route_chat_push_per_message.h"
 #include "applications/reactor/variants/route_chat_push_turn_by_turn.h"
 #include "applications/reactor/demo_support.h"
-#include "applications/reactor/usecases/trip_recorder.h"
 #include "rg_service/rg_db.h"
 #include "rg_service/rg_utils.h"
 #include "rg_service/route_guide_service.h"
@@ -71,22 +69,21 @@
  * - rg_demo::pull::GetFeature                  unary, Delivery::kPull
  * - rg_demo::push::GetFeature                  unary, Delivery::kPush
  * - rg_demo::pull::continuous::ListFeatures    read, consumes each lent message inside read_ok, into
- *                                              an aggregate reported at OnDone
- * - rg_demo::pull::per_message::ListFeatures   read, a filter: read_ok keeps named features, to be
- *                                              pulled, and declines unnamed ones
+ *                                              a count reported at OnDone
+ * - rg_demo::pull::per_message::ListFeatures   read, read_ok keeps every second message, to be pulled,
+ *                                              and declines the others
  * - rg_demo::pull::turn_by_turn::ListFeatures  read, every message held, then pulled by GetResponse()
  * - rg_demo::push::continuous::ListFeatures    read, every message queued, the reactor reads on
- * - rg_demo::push::per_message::ListFeatures   read, backpressure: read_ok holds once a few messages
- *                                              wait for the application
+ * - rg_demo::push::per_message::ListFeatures   read, every message queued, and read_ok holds every
+ *                                              second one until ResumeRead()
  * - rg_demo::push::turn_by_turn::ListFeatures  read, every message queued and held until ResumeRead()
  * - rg_demo::pull::RecordRoute                 write, Delivery::kPull
  * - rg_demo::push::RecordRoute                 write, Delivery::kPush
  * - rg_demo::pull::producer::RecordRoute       write, Delivery::kPull, the reactor pulls each point
  * - rg_demo::pull::continuous::RouteChat       bidi, as its ListFeatures namesake on the read side
- * - rg_demo::pull::per_message::RouteChat      bidi, a filter: read_ok keeps a note the first time it
- *                                              is seen, to be pulled, and declines the server's repeats
+ * - rg_demo::pull::per_message::RouteChat      bidi, as its ListFeatures namesake on the read side
  * - rg_demo::pull::per_message::producer::RouteChat
- *                                              bidi, the same filter, and the reactor pulls each note
+ *                                              bidi, the same read side, and the reactor pulls each note
  * - rg_demo::pull::turn_by_turn::RouteChat     bidi, as its ListFeatures namesake on the read side
  * - rg_demo::push::continuous::RouteChat       bidi, as its ListFeatures namesake on the read side
  * - rg_demo::push::per_message::RouteChat      bidi, as its ListFeatures namesake on the read side
@@ -95,24 +92,14 @@
  * ListFeatures and RouteChat each cover all six cells of the two axes. Their kPerMessage scenarios
  * name only their Delivery, since kPerMessage is the default pacing; the others name the fixed pacing
  * they commit to. The read side of ActiveBidiReactor behaves exactly as ActiveReadReactor does, so each
- * RouteChat cell mirrors its ListFeatures namesake, except for the kPull filter, which declines the
- * server's repeated notes rather than unnamed features. RouteChat's own lesson is the write side, an
+ * RouteChat cell mirrors its ListFeatures namesake. RouteChat's own lesson is the write side, an
  * identical pump in every cell, running next to each delivery and each pacing of the read side. One
  * producer scenario per writing RPC shows the other Submission, each a clone of the pushing scenario
  * it names, so `diff record_route_pull.cpp record_route_pull_producer.cpp` is what the outgoing axis
  * changes, and the same for route_chat_pull_per_message.cpp.
  *
- * Two use cases follow the variants, under usecases/ and in rg_demo::usecase, named after a real-life
- * situation rather than a variant. Each runs one kContinuous cell for what it is best at, and is a clone
- * of that cell along the use only:
- * - rg_demo::usecase::LiveVehiclePosition, ListFeatures under kPull and kContinuous: a map draws a vehicle's
- *   position from a live feed, and only the newest fix matters. read_ok keeps it in a LatestSlot, which
- *   the slow map takes. `diff variants/list_features_pull_continuous.cpp usecases/live_vehicle_position.cpp`
- *   is what an application adds to drop the stale fixes.
- * - rg_demo::usecase::TripRecorder, ListFeatures under kPush and kContinuous: a vehicle's black box stores
- *   every position report, and the feed must never wait for storage. `diff
- *   variants/list_features_push_continuous.cpp usecases/trip_recorder.cpp` is what an application adds to
- *   see the backlog it accepted.
+ * The use cases, under usecases/ and named after a real-life situation rather than a variant, run in a
+ * separate application, route_guide_reactor_usecases, whose header comment lists them.
  *
  * A flavoured family is cloned rather than parameterised, which is the teaching device: its members
  * are files with identical structure, each cloned from its nearest sibling, so a diff between two
@@ -125,7 +112,9 @@
  *   and the same pairs among the route_chat_*.cpp files
  * The delivery diffs at kContinuous and kPerMessage are also legible, but each carries a change of
  * use along with the change of delivery: a lent message that is not held must be consumed in the
- * callback, and the per-message decision serves a filter under kPull but backpressure under kPush.
+ * callback. The kPerMessage decision follows one arbitrary rule, keeping every second message, applied
+ * the same way under both deliveries: it stands for whatever an application decides from a message,
+ * and the use cases decide it for a reason.
  * The members of a family are given identical input data, so the difference between their
  * transcripts is line order, plus what each cell deliberately does with the messages.
  *
@@ -137,20 +126,14 @@
  *   "pulled   | #k" line at its GetResponse() call site (kPull), and never emits read_ok #k+1 before
  *   it. The kPerMessage scenarios follow the same rule for the messages they hold.
  * - A kContinuous kPush scenario emits its read_ok lines in a burst ahead of the matching
- *   application-thread lines, and never emits a resumed or pulled line. TripRecorder ends each read_ok
- *   line with the backlog, logs a "done     |" line from the gRPC thread with the reports still queued
- *   when the RPC ends, and a "totals   |" line once the trip log has stored every one of them.
+ *   application-thread lines, and never emits a resumed or pulled line.
  * - A kContinuous kPull scenario emits only read_ok lines, each carrying the message it consumed on
- *   the gRPC thread, and no RESPONSE line; its OnDone handler then logs a "totals   |" line with the
- *   aggregate. LiveVehiclePosition does log RESPONSE lines, but only for the fixes its slow map drew,
- *   each the newest at the time, so their numbers skip; its "totals   |" line counts the fixes drawn
- *   and replaced, which add up to the fixes received, and the last one drawn is always the last one
- *   received.
+ *   the gRPC thread, and no RESPONSE line; its OnDone handler then logs a "totals   |" line with what
+ *   the reactions counted.
  * - A kPull kPerMessage scenario logs a declined message as "skipped  | #j", numbered on its own,
  *   from the gRPC thread, with no application-thread line after it; its read_ok, pulled and RESPONSE
  *   lines count kept messages only. It ends with a "totals   |" line of kept and skipped messages.
- * - A kPush kPerMessage scenario ends each read_ok line with the number of messages in flight and
- *   "held" or "not held". Only a held message gets a "resumed  | #k" line, from its own handler once
+ * - A kPush kPerMessage scenario ends each read_ok line with "held" or "not held". Only a held message gets a "resumed  | #k" line, from its own handler once
  *   the messages before it are handled, and the ordering rule above applies to it.
  *
  * - A producer scenario logs each request the reactor pulls as "next     | #k", from the application
@@ -195,13 +178,9 @@ int main(int argc, char** argv) {
   rg_demo::push::continuous::RouteChat route_chat_push_continuous{*stub};
   rg_demo::push::per_message::RouteChat route_chat_push_per_message{*stub};
   rg_demo::push::turn_by_turn::RouteChat route_chat_push_turn_by_turn{*stub};
-  rg_demo::usecase::LiveVehiclePosition live_vehicle_position{*stub};
-  rg_demo::usecase::TripRecorder trip_recorder{*stub};
 
   // A flavoured family receives the same input, so its transcripts differ in the order their lines
   // interleave, and in what each cell deliberately does with the messages, not in what it is sent.
-  // The rectangle holds 100 features, 36 of them unnamed, which is what the kPull kPerMessage filter
-  // and the kPull kContinuous aggregate report on.
   const auto rect = rg_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000);
   // The second note reuses the first note's location so the server echoes it back. The RouteChat
   // scenarios receive the same notes, but their response counts still diverge: the reference server
@@ -255,10 +234,6 @@ int main(int argc, char** argv) {
   route_chat_push_per_message.Start(notes);
   spdlog::info("-------------- RouteChat kPush kTurnByTurn --------------");
   route_chat_push_turn_by_turn.Start(notes);
-  spdlog::info("-------------- Use case: live vehicle position (ListFeatures kPull kContinuous) --------------");
-  live_vehicle_position.Start(rect);
-  spdlog::info("-------------- Use case: trip recorder (ListFeatures kPush kContinuous) --------------");
-  trip_recorder.Start(rect);
   EventLoop::Run();  // Scheduler component: Continuously processes queued events on main application thread
   spdlog::info("-------------- LEAVING APPLICATION --------------");
   return 0;

@@ -47,11 +47,10 @@ void ListFeatures::Start(routeguide::Rectangle rect) {
   // event is queued per message, since the reactor re-arms the read into the same storage as soon as
   // this returns, and the lent message is overwritten before the application thread could look at it.
   // Whatever the application needs from a message is therefore taken here, on the gRPC thread, without
-  // waiting on anything; here it is an aggregate, kept in atomic counters. Keeping a whole message
+  // waiting on anything; here it is logged and counted. Keeping a whole message
   // instead would need a deep copy, which is what Delivery::kPush avoids by handing it out owned.
   cbs.read_ok = [this](auto*, const ResponseT& response) {
     assert(!OnApplicationThread());  // gRPC thread
-    if (!response.name().empty()) ++named_count_;
     logger_.info("read_ok  | #{} {}: {}", ++read_seq_, response.GetTypeName(), protobuf_utils::ToString(response));
   };
   // (Point 4.3) TriggerEvent: OnReadDoneNOk
@@ -84,12 +83,10 @@ void ListFeatures::OnDone(const EventLoop::Event* event) {
   assert(OnApplicationThread());
   const auto* reactor = static_cast<ClientReactor*>(event->getData());
   assert(reactor == reactor_.get());
-  // (Point 4.10) update application with status, and with the aggregate the reactions built. Every
-  // reaction has returned before OnDone() fires, so the counters are final.
+  // (Point 4.10) update application with status, and with the count the reactions kept. Every reaction
+  // has returned before OnDone() fires, so the counter is final.
   logger_.info("         | {} reactor: {}", event->getName(), fmt::ptr(reactor));
-  const unsigned read = read_seq_;
-  const unsigned named = named_count_;
-  logger_.info("totals   | {} features read, {} named, {} unnamed", read, named, read - named);
+  logger_.info("totals   | {} features read", read_seq_.load());
   logger_.info("         | reactor[{}] ended", fmt::ptr(reactor));
   // (Point 4.11) Destroy reactor
   reactor_.reset();

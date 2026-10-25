@@ -698,7 +698,15 @@ route_guide_active_reactor_client
     │   ├── gflags::gflags
     │   └── spdlog::spdlog
     └── EventLoop::EventLoop
+
+route_guide_reactor_usecases
+    ├── rg_service (as above)
+    └── EventLoop::EventLoop
 ```
+
+The two reactor applications share their sources but not their scenarios: `route_guide_active_reactor_client` runs
+one scenario per variant, from `variants/`, and `route_guide_reactor_usecases` one per use case, from `usecases/`.
+Both compile `demo_support.cpp`, which captures the application thread at static initialization.
 
 ## Extending the reactor library
 

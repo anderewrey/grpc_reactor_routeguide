@@ -1,13 +1,18 @@
 # Demo variants
 
-Each file pair in this directory is one variant scenario: a class that owns one RPC and runs one variant, started by
-the demo client, `route_guide_active_reactor_client`. The demo has two kinds of scenarios, one directory each:
+Each file pair in this directory is one variant scenario: a class that owns one RPC and runs one variant. There are two
+kinds of scenarios, one directory and one application each:
 
-| Kind     | Directory                                       | Named after                                           |
-|----------|-------------------------------------------------|-------------------------------------------------------|
-| Variant  | `variants/`, this one                           | Its RPC and variant: `<rpc>_<delivery>_<pacing>`, and |
-|          |                                                 | `_producer` under `Submission::kReactorPulls`         |
-| Use case | [usecases/](/applications/reactor/usecases/)    | A real-life situation, such as `trip_recorder`        |
+| Kind     | Directory                                    | Application                         | Named after          |
+|----------|----------------------------------------------|-------------------------------------|----------------------|
+| Variant  | `variants/`, this one                        | `route_guide_active_reactor_client` | Its RPC and variant: |
+|          |                                              |                                     | `<rpc>_<delivery>_`  |
+|          |                                              |                                     | `<pacing>`, and      |
+|          |                                              |                                     | `_producer` under    |
+|          |                                              |                                     | `kReactorPulls`      |
+| Use case | [usecases/](/applications/reactor/usecases/) | `route_guide_reactor_usecases`      | A real-life          |
+|          |                                              |                                     | situation, such as   |
+|          |                                              |                                     | `trip_recorder`      |
 
 A variant shows what one choice of parameters changes, against the neighbouring file that differs along that one
 choice. A use case shows why a variant fits a real need, and is a clone of the variant it uses, along the use only. The
@@ -18,8 +23,7 @@ parameters themselves are described in
 
 The RPC sets the reactor: `GetFeature` runs `ActiveUnaryReactor`, `ListFeatures` runs `ActiveReadReactor`,
 `RecordRoute` runs `ActiveWriteReactor`, and `RouteChat` runs `ActiveBidiReactor`. A dash marks a parameter the
-reactor does not take. A planned use case does not exist yet: a follow-up adds it, and decides what "either" and
-"to choose" leave open, since that use does not depend on them.
+reactor does not take.
 
 | Scenario                               | Kind     | RPC          | Delivery | Submission           | ReadPacing    |
 |----------------------------------------|----------|--------------|----------|----------------------|---------------|
@@ -43,25 +47,26 @@ reactor does not take. A planned use case does not exist yet: a follow-up adds i
 | `route_chat_pull_per_message_producer` | variant  | RouteChat    | `kPull`  | `kReactorPulls`      | `kPerMessage` |
 | `live_vehicle_position`                | use case | ListFeatures | `kPull`  | —                    | `kContinuous` |
 | `trip_recorder`                        | use case | ListFeatures | `kPush`  | —                    | `kContinuous` |
-| `unnamed_places_audit`                 | planned  | ListFeatures | `kPull`  | —                    | `kContinuous` |
-| `place_search`                         | planned  | ListFeatures | `kPull`  | —                    | `kPerMessage` |
-| `offline_map_download`                 | planned  | ListFeatures | `kPush`  | —                    | `kPerMessage` |
-| `turn_by_turn_guidance`                | planned  | ListFeatures | either   | —                    | `kTurnByTurn` |
-| `gpx_track_upload`                     | planned  | RecordRoute  | either   | `kReactorPulls`      | —             |
-| `live_route_recording`                 | planned  | RecordRoute  | either   | `kApplicationPushes` | —             |
-| `convoy_chat`                          | planned  | RouteChat    | either   | `kApplicationPushes` | to choose     |
-| `guided_tour_briefing`                 | planned  | RouteChat    | either   | `kReactorPulls`      | to choose     |
-| `whats_here`                           | planned  | GetFeature   | either   | —                    | —             |
+| `unnamed_places_audit`                 | use case | ListFeatures | `kPull`  | —                    | `kContinuous` |
+| `place_search`                         | use case | ListFeatures | `kPull`  | —                    | `kPerMessage` |
+| `offline_map_download`                 | use case | ListFeatures | `kPush`  | —                    | `kPerMessage` |
+| `turn_by_turn_guidance`                | use case | ListFeatures | `kPush`  | —                    | `kTurnByTurn` |
+| `gpx_track_upload`                     | use case | RecordRoute  | `kPull`  | `kReactorPulls`      | —             |
+| `live_route_recording`                 | use case | RecordRoute  | `kPush`  | `kApplicationPushes` | —             |
+| `convoy_chat`                          | use case | RouteChat    | `kPush`  | `kApplicationPushes` | `kContinuous` |
+| `guided_tour_briefing`                 | use case | RouteChat    | `kPull`  | `kReactorPulls`      | `kPerMessage` |
+| `whats_here`                           | use case | GetFeature   | `kPull`  | —                    | —             |
 
-The demo runs the 18 variants and the 2 use cases at once, so 18 of the 24 variants. The six variants left out all use
-`kReactorPulls`, which combines with every `Delivery` and `ReadPacing` exactly as `kApplicationPushes` does.
+The demo client runs the 18 variants at once, so 18 of the 24, and `route_guide_reactor_usecases` runs the use cases.
+The six variants left out all use `kReactorPulls`, which combines with every `Delivery` and `ReadPacing` exactly as
+`kApplicationPushes` does.
 
 ## What each variant does
 
-Each one shows its variant, and a few apply it to a small use so that a per-message decision has something to decide:
-a filter under `kPull` with `kPerMessage`, backpressure under `kPush` with `kPerMessage`. A file differs from the one
-in its last column along one parameter only, so `diff` between the two shows exactly what that parameter changes. A
-name starting with `...` abbreviates the same RPC's prefix.
+Each one shows its variant and nothing else. Under `kPerMessage`, the per-message decision follows one arbitrary rule,
+keeping every second message, the same under both deliveries; the use cases decide it for a reason. A file differs from
+the one in its last column along one parameter only, so `diff` between the two shows exactly what that parameter
+changes. A name starting with `...` abbreviates the same RPC's prefix.
 
 | Scenario                               | What it does with each message                 | Diff against            |
 |----------------------------------------|------------------------------------------------|-------------------------|
@@ -69,17 +74,17 @@ name starting with `...` abbreviates the same RPC's prefix.
 |                                        | reactor with `GetResponse()`                   |                         |
 | `get_feature_push`                     | The done callback hands the answer out owned,  | `get_feature_pull`      |
 |                                        | and the handler reclaims it                    |                         |
-| `list_features_pull_continuous`        | `read_ok` counts named and unnamed features    | `..._pull_turn_by_turn` |
-|                                        | inside the reaction; the done handler reports  |                         |
-|                                        | the totals                                     |                         |
-| `list_features_pull_per_message`       | A filter: `read_ok` keeps a named feature, for | `..._pull_turn_by_turn` |
-|                                        | the handler to pull, and skips an unnamed one  |                         |
+| `list_features_pull_continuous`        | `read_ok` logs and counts each message inside  | `..._pull_turn_by_turn` |
+|                                        | the reaction; the done handler reports the     |                         |
+|                                        | count                                          |                         |
+| `list_features_pull_per_message`       | `read_ok` keeps every second message, for the  | `..._pull_turn_by_turn` |
+|                                        | handler to pull, and skips the others          |                         |
 | `list_features_pull_turn_by_turn`      | Every feature is held until the handler pulls  | `..._push_turn_by_turn` |
 |                                        | it, so one is in flight at a time              |                         |
 | `list_features_push_continuous`        | Every feature is queued owned, and the reactor | `..._push_turn_by_turn` |
 |                                        | reads on at once                               |                         |
-| `list_features_push_per_message`       | Backpressure: `read_ok` holds the stream once  | `..._push_turn_by_turn` |
-|                                        | 3 features wait for the handler                |                         |
+| `list_features_push_per_message`       | Every message is queued owned, and `read_ok`   | `..._push_turn_by_turn` |
+|                                        | holds every second one until `ResumeRead()`    |                         |
 | `list_features_push_turn_by_turn`      | Every feature is queued owned, and held until  | `..._pull_turn_by_turn` |
 |                                        | the handler calls `ResumeRead()`               |                         |
 | `record_route_pull`                    | The application sends each point, the last one | `record_route_push`     |
@@ -90,11 +95,10 @@ name starting with `...` abbreviates the same RPC's prefix.
 |                                        | list, and closes the request stream itself     |                         |
 | `route_chat_<delivery>_<pacing>`       | Six files, the same note pump in each. Each    | its `list_features_`    |
 |                                        | read side behaves as its `ListFeatures`        | namesake                |
-|                                        | namesake, except the `kPull` filter skips the  |                         |
-|                                        | server's repeated notes, and the `kPush` bound |                         |
-|                                        | is 2 notes                                     |                         |
-| `route_chat_pull_per_message_producer` | The same filter, with the reactor pulling each | `..._pull_per_message`  |
-|                                        | note                                           |                         |
+|                                        | namesake, with the same rule under             |                         |
+|                                        | `kPerMessage`                                  |                         |
+| `route_chat_pull_per_message_producer` | The same read side, with the reactor pulling   | `..._pull_per_message`  |
+|                                        | each note                                      |                         |
 
 The situation behind each use case, and why its variant fits, are in the
 [use cases' README](/applications/reactor/usecases/README.md).

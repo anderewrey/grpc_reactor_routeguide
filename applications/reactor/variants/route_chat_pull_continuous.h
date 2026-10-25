@@ -10,7 +10,6 @@
 #include <spdlog/logger.h>
 
 #include <atomic>
-#include <cstddef>
 #include <memory>
 #include <vector>
 
@@ -23,8 +22,8 @@ namespace rg_demo::pull::continuous {
 /// Exhibits ActiveBidiReactor under Delivery::kPull and ReadPacing::kContinuous, via the RouteChat RPC.
 /// Each message is only lent to the read_ok callback, and the reactor re-arms the read side into the
 /// same storage as soon as the callback returns, so the message never reaches the application. The
-/// callback consumes each message inside the reaction instead, into an aggregate the application reads
-/// once the RPC is done.
+/// callback consumes each message inside the reaction instead, here by logging it and counting it, and
+/// the application reads the count once the RPC is done.
 ///
 /// The notes are sent one at a time, under the same one-write-in-flight constraint as RecordRoute,
 /// while responses arrive on the independent read side at any time. The write pump is identical in
@@ -67,7 +66,7 @@ class RouteChat {
   void OnReadNOk(const EventLoop::Event* event);
   /// Application-thread handler for OnWriteDone, which paces the next write.
   void OnWriteDone(const EventLoop::Event* event);
-  /// Application-thread handler for OnDone, which reports the aggregate and destroys the reactor.
+  /// Application-thread handler for OnDone, which reports the count and destroys the reactor.
   /// Delta against the turn-by-turn counterpart: there is no handler for OnReadDoneOk, since no
   /// message is queued.
   void OnDone(const EventLoop::Event* event);
@@ -83,11 +82,10 @@ class RouteChat {
   // one shared queue would let any of them drain another's.
   std::vector<routeguide::RouteNote> pending_;
 
-  // The aggregate. Incremented only on the gRPC thread, in read_ok, but read by the OnDone handler on
-  // the application thread, so both are shared, and atomic rather than locked: the reaction must never
-  // wait on the application.
+  // Incremented only on the gRPC thread, in read_ok, but read by the OnDone handler on the application
+  // thread, so it is shared, and atomic rather than locked: the reaction must never wait on the
+  // application.
   std::atomic<unsigned> read_seq_{0};
-  std::atomic<std::size_t> message_chars_{0};
 
   spdlog::logger& logger_{VariantLogger("RouteChat.pull.cont")};
 

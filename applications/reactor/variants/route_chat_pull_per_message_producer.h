@@ -12,8 +12,6 @@
 #include <atomic>
 #include <memory>
 #include <optional>
-#include <set>
-#include <string>
 #include <vector>
 
 #include "applications/reactor/reactor_client_routeguide.h"
@@ -23,11 +21,11 @@
 namespace rg_demo::pull::per_message::producer {
 
 /// Exhibits ActiveBidiReactor under Delivery::kPull, ReadPacing::kPerMessage and Submission::kReactorPulls,
-/// via the RouteChat RPC. The read side is the filter of route_chat_pull_per_message.h, unchanged. The
+/// via the RouteChat RPC. The read side is that of route_chat_pull_per_message.h, unchanged. The
 /// write side is pulled: the reactor asks the next_request callback for each note, once while it starts
 /// the RPC and again after each write completes, and closes the request stream itself once the queue is
-/// empty. The application makes no write call, and the write side takes no hold, so the read holds the
-/// filter takes are the only ones.
+/// empty. The application makes no write call, and the write side takes no hold, so the read holds
+/// read_ok takes are the only ones.
 ///
 /// Clone of route_chat_pull_per_message.h, which differs from it along the outgoing axis only: there,
 /// the application pushes each note from its OnWriteDone handler. The OnWriteDone event remains, for the
@@ -67,7 +65,8 @@ class RouteChat {
   void OnReadNOk(const EventLoop::Event* event);
   /// Application-thread handler for OnWriteDone, which only logs: the reactor pulls the next note.
   void OnWriteDone(const EventLoop::Event* event);
-  /// Application-thread handler for OnDone, which reports the filter's totals and destroys the reactor.
+  /// Application-thread handler for OnDone, which reports the kept and declined totals and destroys the
+  /// reactor.
   void OnDone(const EventLoop::Event* event);
 
   /// The next_request callback's body: the next queued note, or std::nullopt once the queue is empty, which
@@ -89,12 +88,14 @@ class RouteChat {
   unsigned read_seq_{0};
   unsigned handled_seq_{0};
 
-  // The notes seen so far, keyed by their text form. Only read_ok touches it, before its hand-off, and
-  // the next read_ok can only start after a read armed later, so the reactions never share it at once.
-  std::set<std::string> seen_;
   // Declined notes: counted by read_ok on the gRPC thread, and read by OnDone on the application
   // thread, so it is shared, and atomic rather than locked.
   std::atomic<unsigned> skipped_seq_{0};
+
+  // The arbitrary rule: true when read_ok keeps the next note. Only read_ok reads and flips it, before
+  // its hand-off, and the next read_ok can only start after a read armed later, so the reactions never
+  // share it at once.
+  bool keep_next_{false};
 
   spdlog::logger& logger_{VariantLogger("RouteChat.pull.msg.producer")};
 

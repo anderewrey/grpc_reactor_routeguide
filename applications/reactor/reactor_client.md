@@ -242,14 +242,14 @@ void OnReport(const EventLoop::Event* event) {                              // a
 The price is the backlog: the records queued but not yet stored. Nothing bounds it but the length of the stream, so
 storage slower than the server for long enough runs out of memory. The RPC also ends before storage has caught up, so
 the end of the RPC is not the end of the work. A consumer that must bound its backlog keeps `kPush` but chooses
-`kPerMessage`, whose `read_ok` holds the stream once the backlog passes a threshold, as `list_features_push_per_message`
-does. The `trip_recorder` use case runs the pattern, with storage that takes 1 ms per position report, and
+`kPerMessage`, whose `read_ok` holds the stream once the backlog passes a threshold, as the `offline_map_download` use
+case does. The `trip_recorder` use case runs the pattern, with storage that takes 1 ms per position report, and
 [continuous_journal_test.cpp](/applications/reactor/tests/continuous_journal_test.cpp) tests it.
 
 ### Where each variant runs
 
-The demo client, `route_guide_active_reactor_client`, runs 18 of the 24 variants at once, from 20 scenario files under
-`applications/reactor/`:
+The demo client, `route_guide_active_reactor_client`, runs 18 of the 24 variants at once, from 18 scenario files under
+`applications/reactor/variants/`. Each file shows its variant's mechanics and nothing else:
 
 | Reactor              | Scenario files                                                            |
 |----------------------|---------------------------------------------------------------------------|
@@ -260,22 +260,35 @@ The demo client, `route_guide_active_reactor_client`, runs 18 of the 24 variants
 |                      | `variants/record_route_pull_producer`                                     |
 | `ActiveBidiReactor`  | `variants/route_chat_<delivery>_<pacing>`, for each of the six pairs, and |
 |                      | `variants/route_chat_pull_per_message_producer`                           |
-| Use cases            | `usecases/live_vehicle_position` and `usecases/trip_recorder`, on         |
-|                      | `ActiveReadReactor`                                                       |
 
 A file name gives the RPC, then the `Delivery`, then the `ReadPacing` for a reading reactor. A `_producer` file runs
 `Submission::kReactorPulls`, and every other writing scenario `kApplicationPushes`. Neighbouring files differ along one
-parameter only, so a `diff` between two of them shows exactly what that parameter changes. The six variants left out
-all use `kReactorPulls`, which combines with every `Delivery` and `ReadPacing` exactly as `kApplicationPushes` does, so
-one producer scenario per writing reactor shows it. The two use cases are named after a real-life situation instead,
-and each runs a `kContinuous` variant for what it is best at: `live_vehicle_position` uses `kPull` for a realtime
-reading, as described under [Keeping only the newest message](#keeping-only-the-newest-message), and
-`trip_recorder` uses `kPush` for ingestion, as described under
+parameter only, so a `diff` between two of them shows exactly what that parameter changes. Under `kPerMessage`, the
+decision follows one arbitrary rule, keeping or holding every second message, the same under both deliveries and both
+RPCs. The six variants left out all use `kReactorPulls`, which combines with every `Delivery` and `ReadPacing` exactly
+as `kApplicationPushes` does, so one producer scenario per writing reactor shows it.
+
+The use cases run in their own application, `route_guide_reactor_usecases`, from 11 files under
+`applications/reactor/usecases/`. Each is named after a real-life situation, and is a clone of the variant it uses,
+along the use only:
+
+| Reactor              | Use cases                                                                 |
+|----------------------|---------------------------------------------------------------------------|
+| `ActiveUnaryReactor` | `whats_here`                                                              |
+| `ActiveReadReactor`  | `live_vehicle_position`, `trip_recorder`, `unnamed_places_audit`,         |
+|                      | `place_search`, `offline_map_download`, `turn_by_turn_guidance`           |
+| `ActiveWriteReactor` | `gpx_track_upload`, `live_route_recording`                                |
+| `ActiveBidiReactor`  | `convoy_chat`, `guided_tour_briefing`                                     |
+
+Two of them run a `kContinuous` variant for what it is best at: `live_vehicle_position` uses `kPull` for a realtime
+reading, as described under [Keeping only the newest message](#keeping-only-the-newest-message), and `trip_recorder`
+uses `kPush` for ingestion, as described under
 [Handling every message without slowing the stream](#handling-every-message-without-slowing-the-stream).
+`turn_by_turn_guidance` shows why `kTurnByTurn` with a release from a later event needs `kPush`: under `kPull`,
+`GetResponse()` takes the message and arms the next read in one call.
 [The variants' README](/applications/reactor/variants/README.md) lists every scenario with its variant, what it does
 with each message and the file to diff it against, and
-[the use cases' README](/applications/reactor/usecases/README.md) the situation behind each use case, including the
-ones still planned.
+[the use cases' README](/applications/reactor/usecases/README.md) the situation behind each use case.
 
 ## API naming conventions
 

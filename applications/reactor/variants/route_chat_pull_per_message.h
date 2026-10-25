@@ -11,8 +11,6 @@
 
 #include <atomic>
 #include <memory>
-#include <set>
-#include <string>
 #include <vector>
 
 #include "applications/reactor/reactor_client_routeguide.h"
@@ -23,11 +21,10 @@ namespace rg_demo::pull::per_message {
 
 /// Exhibits ActiveBidiReactor under Delivery::kPull and ReadPacing::kPerMessage, via the RouteChat RPC.
 /// Each message stays in the reactor, and the read_ok callback decides for each one whether the reactor
-/// holds the read side until GetResponse(), or reads on at once. This scenario uses that decision as a
-/// filter: the reference server echoes the whole note history of a location each time a note arrives
-/// there, so the same note comes back again and again. read_ok keeps a note the first time it is seen,
-/// to be pulled, and declines the repeats. The write side keeps running meanwhile, since a read hold
-/// stalls only the reads.
+/// holds the read side until GetResponse(), or reads on at once. The decision follows the arbitrary rule
+/// of list_features_pull_per_message.h, keeping every second note: a kept note is pulled, a declined one
+/// is consumed inside the callback. The write side keeps running meanwhile, since a read hold stalls only
+/// the reads.
 ///
 /// The notes are sent one at a time, under the same one-write-in-flight constraint as RecordRoute,
 /// while responses arrive on the independent read side at any time. The write pump is identical in
@@ -36,8 +33,8 @@ namespace rg_demo::pull::per_message {
 /// Clone of its siblings, for the reason recorded on the ListFeatures scenarios: one class instantiated
 /// twice would register the same event names twice. Each sibling differs from this file along one axis:
 /// - route_chat_pull_turn_by_turn.h, the pacing: every message is held until GetResponse()
-/// - route_chat_push_per_message.h, the delivery: the message is pushed, and the per-message decision
-///   serves backpressure there rather than a filter
+/// - route_chat_push_per_message.h, the delivery: the message is pushed, and the same rule decides which
+///   notes hold the read side until ResumeRead()
 class RouteChat {
   // The reactor flavour this scenario exhibits: its Delivery approach only. Its ReadPacing is the
   // default, ReadPacing::kPerMessage, which its fixed-pacing siblings name explicitly instead.
@@ -73,7 +70,8 @@ class RouteChat {
   void OnReadNOk(const EventLoop::Event* event);
   /// Application-thread handler for OnWriteDone, which paces the next write.
   void OnWriteDone(const EventLoop::Event* event);
-  /// Application-thread handler for OnDone, which reports the filter's totals and destroys the reactor.
+  /// Application-thread handler for OnDone, which reports the kept and declined totals and destroys the
+  /// reactor.
   void OnDone(const EventLoop::Event* event);
 
   /// Sends the next queued note. The last note goes through SendLastRequest(), which closes the
@@ -92,12 +90,14 @@ class RouteChat {
   unsigned read_seq_{0};
   unsigned handled_seq_{0};
 
-  // The notes seen so far, keyed by their text form. Only read_ok touches it, before its hand-off, and
-  // the next read_ok can only start after a read armed later, so the reactions never share it at once.
-  std::set<std::string> seen_;
   // Declined notes: counted by read_ok on the gRPC thread, and read by OnDone on the application
   // thread, so it is shared, and atomic rather than locked.
   std::atomic<unsigned> skipped_seq_{0};
+
+  // The arbitrary rule: true when read_ok keeps the next note. Only read_ok reads and flips it, before
+  // its hand-off, and the next read_ok can only start after a read armed later, so the reactions never
+  // share it at once.
+  bool keep_next_{false};
 
   spdlog::logger& logger_{VariantLogger("RouteChat.pull.msg")};
 
