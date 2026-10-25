@@ -71,6 +71,14 @@ add_executable(route_guide_reactor_usecases
     latest_slot.h
     demo_support.h
     demo_support.cpp
+    usecases/convoy_chat.h
+    usecases/convoy_chat.cpp
+    usecases/gpx_track_upload.h
+    usecases/gpx_track_upload.cpp
+    usecases/guided_tour_briefing.h
+    usecases/guided_tour_briefing.cpp
+    usecases/live_route_recording.h
+    usecases/live_route_recording.cpp
     usecases/live_vehicle_position.h
     usecases/live_vehicle_position.cpp
     usecases/offline_map_download.h
@@ -79,8 +87,12 @@ add_executable(route_guide_reactor_usecases
     usecases/place_search.cpp
     usecases/trip_recorder.h
     usecases/trip_recorder.cpp
+    usecases/turn_by_turn_guidance.h
+    usecases/turn_by_turn_guidance.cpp
     usecases/unnamed_places_audit.h
     usecases/unnamed_places_audit.cpp
+    usecases/whats_here.h
+    usecases/whats_here.cpp
 )
 
 target_include_directories(route_guide_reactor_usecases

@@ -93,7 +93,7 @@ jobs:
   # clang-tidy and cppcheck as two entries of one matrix, instead of two hand-duplicated jobs -
   # each still installs its own analysis tool and its own EventLoop (needed for header resolution,
   # but fast enough not to be worth sharing - only the whole-project compile above was).
-  # The timeout is sized for clang-tidy, whose step takes about 15 minutes over the 36 sources under
+  # The timeout is sized for clang-tidy, whose step takes about 16 minutes over the 50 sources under
   # applications/ (the typed reactor test suites take most of it): 30 leaves room to grow.
   analysis:
     name: static-analysis (${{ matrix.tool }})

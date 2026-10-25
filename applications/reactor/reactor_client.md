@@ -275,8 +275,7 @@ reading, as described under [Keeping only the newest message](#keeping-only-the-
 [Handling every message without slowing the stream](#handling-every-message-without-slowing-the-stream).
 [The variants' README](/applications/reactor/variants/README.md) lists every scenario with its variant, what it does
 with each message and the file to diff it against, and
-[the use cases' README](/applications/reactor/usecases/README.md) the situation behind each use case, including the
-ones still planned.
+[the use cases' README](/applications/reactor/usecases/README.md) the situation behind each use case.
 
 ## API naming conventions
 

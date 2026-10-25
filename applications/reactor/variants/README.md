@@ -23,8 +23,7 @@ parameters themselves are described in
 
 The RPC sets the reactor: `GetFeature` runs `ActiveUnaryReactor`, `ListFeatures` runs `ActiveReadReactor`,
 `RecordRoute` runs `ActiveWriteReactor`, and `RouteChat` runs `ActiveBidiReactor`. A dash marks a parameter the
-reactor does not take. A planned use case does not exist yet: a follow-up adds it, and decides what "either" and
-"to choose" leave open, since that use does not depend on them.
+reactor does not take.
 
 | Scenario                               | Kind     | RPC          | Delivery | Submission           | ReadPacing    |
 |----------------------------------------|----------|--------------|----------|----------------------|---------------|
@@ -51,12 +50,12 @@ reactor does not take. A planned use case does not exist yet: a follow-up adds i
 | `unnamed_places_audit`                 | use case | ListFeatures | `kPull`  | —                    | `kContinuous` |
 | `place_search`                         | use case | ListFeatures | `kPull`  | —                    | `kPerMessage` |
 | `offline_map_download`                 | use case | ListFeatures | `kPush`  | —                    | `kPerMessage` |
-| `turn_by_turn_guidance`                | planned  | ListFeatures | either   | —                    | `kTurnByTurn` |
-| `gpx_track_upload`                     | planned  | RecordRoute  | either   | `kReactorPulls`      | —             |
-| `live_route_recording`                 | planned  | RecordRoute  | either   | `kApplicationPushes` | —             |
-| `convoy_chat`                          | planned  | RouteChat    | either   | `kApplicationPushes` | to choose     |
-| `guided_tour_briefing`                 | planned  | RouteChat    | either   | `kReactorPulls`      | to choose     |
-| `whats_here`                           | planned  | GetFeature   | either   | —                    | —             |
+| `turn_by_turn_guidance`                | use case | ListFeatures | `kPush`  | —                    | `kTurnByTurn` |
+| `gpx_track_upload`                     | use case | RecordRoute  | `kPull`  | `kReactorPulls`      | —             |
+| `live_route_recording`                 | use case | RecordRoute  | `kPush`  | `kApplicationPushes` | —             |
+| `convoy_chat`                          | use case | RouteChat    | `kPush`  | `kApplicationPushes` | `kContinuous` |
+| `guided_tour_briefing`                 | use case | RouteChat    | `kPull`  | `kReactorPulls`      | `kPerMessage` |
+| `whats_here`                           | use case | GetFeature   | `kPull`  | —                    | —             |
 
 The demo client runs the 18 variants at once, so 18 of the 24, and `route_guide_reactor_usecases` runs the use cases.
 The six variants left out all use `kReactorPulls`, which combines with every `Delivery` and `ReadPacing` exactly as
