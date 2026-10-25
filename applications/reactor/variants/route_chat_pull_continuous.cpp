@@ -58,7 +58,6 @@ void RouteChat::Start(std::vector<routeguide::RouteNote> notes) {
   // list_features_pull_continuous.cpp.
   cbs.read_ok = [this](auto*, const ResponseT& response) {
     assert(!OnApplicationThread());  // gRPC thread
-    message_chars_ += response.message().size();
     logger_.info("read_ok  | #{} {}: {}", ++read_seq_, response.GetTypeName(), protobuf_utils::ToString(response));
   };
   // TriggerEvent: OnReadDoneNOk
@@ -107,8 +106,8 @@ void RouteChat::OnDone(const EventLoop::Event* event) {
   const auto status = reactor_->Status();
   logger_.info("         | {} reactor: {} Status: OK: {} msg: {}", event->getName(), fmt::ptr(reactor), status.ok(),
                status.error_message());
-  // Every reaction has returned before OnDone() fires, so the aggregate is final.
-  logger_.info("totals   | {} notes read, {} message chars", read_seq_.load(), message_chars_.load());
+  // Every reaction has returned before OnDone() fires, so the count is final.
+  logger_.info("totals   | {} notes read", read_seq_.load());
   logger_.info("         | reactor[{}] ended", fmt::ptr(reactor));
   reactor_.reset();
 }

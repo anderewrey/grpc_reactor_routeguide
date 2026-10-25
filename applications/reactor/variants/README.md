@@ -96,11 +96,10 @@ changes. A name starting with `...` abbreviates the same RPC's prefix.
 |                                        | list, and closes the request stream itself     |                         |
 | `route_chat_<delivery>_<pacing>`       | Six files, the same note pump in each. Each    | its `list_features_`    |
 |                                        | read side behaves as its `ListFeatures`        | namesake                |
-|                                        | namesake, except the `kPull` filter skips the  |                         |
-|                                        | server's repeated notes, and the `kPush` bound |                         |
-|                                        | is 2 notes                                     |                         |
-| `route_chat_pull_per_message_producer` | The same filter, with the reactor pulling each | `..._pull_per_message`  |
-|                                        | note                                           |                         |
+|                                        | namesake, with the same rule under             |                         |
+|                                        | `kPerMessage`                                  |                         |
+| `route_chat_pull_per_message_producer` | The same read side, with the reactor pulling   | `..._pull_per_message`  |
+|                                        | each note                                      |                         |
 
 The situation behind each use case, and why its variant fits, are in the
 [use cases' README](/applications/reactor/usecases/README.md).

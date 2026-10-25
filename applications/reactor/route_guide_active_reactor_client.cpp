@@ -81,10 +81,9 @@
  * - rg_demo::push::RecordRoute                 write, Delivery::kPush
  * - rg_demo::pull::producer::RecordRoute       write, Delivery::kPull, the reactor pulls each point
  * - rg_demo::pull::continuous::RouteChat       bidi, as its ListFeatures namesake on the read side
- * - rg_demo::pull::per_message::RouteChat      bidi, a filter: read_ok keeps a note the first time it
- *                                              is seen, to be pulled, and declines the server's repeats
+ * - rg_demo::pull::per_message::RouteChat      bidi, as its ListFeatures namesake on the read side
  * - rg_demo::pull::per_message::producer::RouteChat
- *                                              bidi, the same filter, and the reactor pulls each note
+ *                                              bidi, the same read side, and the reactor pulls each note
  * - rg_demo::pull::turn_by_turn::RouteChat     bidi, as its ListFeatures namesake on the read side
  * - rg_demo::push::continuous::RouteChat       bidi, as its ListFeatures namesake on the read side
  * - rg_demo::push::per_message::RouteChat      bidi, as its ListFeatures namesake on the read side
@@ -93,9 +92,7 @@
  * ListFeatures and RouteChat each cover all six cells of the two axes. Their kPerMessage scenarios
  * name only their Delivery, since kPerMessage is the default pacing; the others name the fixed pacing
  * they commit to. The read side of ActiveBidiReactor behaves exactly as ActiveReadReactor does, so each
- * RouteChat cell mirrors its ListFeatures namesake, except for the kPerMessage cells, whose kPull
- * filter declines the server's repeated notes, and whose kPush bound holds the read side once a few
- * notes wait. RouteChat's own lesson is the write side, an
+ * RouteChat cell mirrors its ListFeatures namesake. RouteChat's own lesson is the write side, an
  * identical pump in every cell, running next to each delivery and each pacing of the read side. One
  * producer scenario per writing RPC shows the other Submission, each a clone of the pushing scenario
  * it names, so `diff record_route_pull.cpp record_route_pull_producer.cpp` is what the outgoing axis

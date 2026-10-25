@@ -9,7 +9,6 @@
 
 #include <cassert>
 #include <memory>
-#include <string>
 #include <utility>
 #include <vector>
 
@@ -55,17 +54,17 @@ void RouteChat::Start(std::vector<routeguide::RouteNote> notes) {
 
   Callbacks cbs;
   // TriggerEvent: OnReadDoneOk, for kept notes only. Delta against the turn-by-turn counterpart: the
-  // return value is the hold decision, taken for this note only, which makes the callback a filter.
-  // Returning true keeps the note: the reactor holds the read side until GetResponse(), exactly as under
-  // kTurnByTurn, and the event carries the reactor itself. Returning false declines it: the reactor reads
-  // on at once into the same storage, so the lent note is gone when this returns, and no event may refer
-  // to it.
+  // return value is the hold decision, taken for this note only, here by the arbitrary rule of keeping
+  // every second note, as in list_features_pull_per_message.cpp. Returning true keeps the note: the
+  // reactor holds the read side until GetResponse(), exactly as under kTurnByTurn, and the event carries
+  // the reactor itself. Returning false declines it: the reactor reads on at once into the same storage,
+  // so the lent note is gone when this returns, and no event may refer to it.
   cbs.read_ok = [this](auto* reactor, const ResponseT& response) -> bool {
     assert(!OnApplicationThread());  // gRPC thread
-    auto text = protobuf_utils::ToString(response);
-    if (!seen_.insert(text).second) {
-      // Declined: the reactor itself arms the next read and releases the hold.
-      logger_.info("skipped  | #{} repeated note: {}", ++skipped_seq_, text);
+    if (!std::exchange(keep_next_, !keep_next_)) {
+      // Declined, so consumed here: the reactor itself arms the next read and releases the hold.
+      logger_.info("skipped  | #{} {}: {}", ++skipped_seq_, response.GetTypeName(),
+                   protobuf_utils::ToString(response));
       return false;
     }
     logger_.info("read_ok  | #{} {}", ++read_seq_, response.GetTypeName());

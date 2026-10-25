@@ -25,12 +25,6 @@ constexpr auto kOnReadDoneOk{"RouteChatPushMsgOnReadDoneOk"};
 constexpr auto kOnReadDoneNOk{"RouteChatPushMsgOnReadDoneNOk"};
 constexpr auto kOnWriteDone{"RouteChatPushMsgOnWriteDone"};
 constexpr auto kOnDone{"RouteChatPushMsgOnDone"};
-
-// How many notes may wait for the application before read_ok holds the read side. Smaller than the
-// ListFeatures namesake's bound, since a RouteChat stream carries only a few dozen notes, and the
-// transcript should still show both answers. 1 would hold every note, as the turn-by-turn counterpart
-// does.
-constexpr unsigned kMaxInFlight{2};
 }  // anonymous namespace
 
 RouteChat::RouteChat(routeguide::RouteGuide::Stub& stub)
@@ -60,19 +54,17 @@ void RouteChat::Start(std::vector<routeguide::RouteNote> notes) {
 
   Callbacks cbs;
   // TriggerEvent: OnReadDoneOk, handing the message ownership to the queue. Delta against the
-  // turn-by-turn counterpart: the return value is the hold decision, taken for this note only.
+  // turn-by-turn counterpart: the return value is the hold decision, taken for this note only, here by
+  // the arbitrary rule of holding every second note, as in list_features_push_per_message.cpp.
   // Returning true holds the read side until ResumeRead(); returning false lets the reactor read on at
   // once. The note is queued either way, so its ownership always ends in exactly one OnReadOk(): only
   // the pace of the read side depends on the answer.
   cbs.read_ok = [this](auto*, std::unique_ptr<ResponseT> response) -> bool {
     assert(!OnApplicationThread());  // gRPC thread
-    // Counted before the hand-off, so the handler's decrement for this note can never run first.
-    const auto in_flight = ++in_flight_;
     const auto seq = ++read_seq_;
-    const bool hold = in_flight >= kMaxInFlight;
-    logger_.info("read_ok  | #{} {}, {} in flight, {}", seq, response->GetTypeName(), in_flight,
-                 hold ? "held" : "not held");
-    // Recorded before the hand-off too, so the handler that will release the hold cannot miss it.
+    const bool hold = std::exchange(hold_next_, !hold_next_);
+    logger_.info("read_ok  | #{} {}, {}", seq, response->GetTypeName(), hold ? "held" : "not held");
+    // Recorded before the hand-off, so the handler that will release the hold cannot miss it.
     if (hold) held_seq_ = seq;
     EventLoop::TriggerEvent(kOnReadDoneOk, response.release());
     return hold;
@@ -107,8 +99,6 @@ void RouteChat::OnReadOk(const EventLoop::Event* event) {
       static_cast<routeguide::RouteChat::ResponseT*>(event->getData())};
   const auto seq = ++handled_seq_;
   logger_.info("RESPONSE | #{} {}: {}", seq, response->GetTypeName(), protobuf_utils::ToString(*response));
-  // Done with the note: its in-flight slot is freed.
-  --in_flight_;
   // Delta against the turn-by-turn counterpart: a hold is released only by the handler of the note
   // read_ok held, for the reason given in list_features_push_per_message.cpp: a ResumeRead() for a
   // declined note could claim the hold of the next one while its read_ok is still running. The queue is
