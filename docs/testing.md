@@ -24,9 +24,9 @@ The reactor client tests use two complementary approaches, matching the reactor 
 
 ### Synchronous unit tests
 
-Eleven test binaries validate reactor callback logic directly, one per reactor type and `Delivery` approach, plus one per
-writing reactor under `Submission::kReactorPulls`, and one for tearing reactors down mid-RPC, using
-`std::promise`/`std::future` for synchronization instead of an EventLoop:
+Thirteen test binaries validate reactor callback logic directly, one per reactor type and `Delivery` approach, plus one
+per writing reactor under `Submission::kReactorPulls`, one for tearing reactors down mid-RPC, and one for each use of
+`ReadPacing::kContinuous`, using `std::promise`/`std::future` for synchronization instead of an EventLoop:
 
 - [active_unary_reactor_pull_test.cpp][unary-pull-test], [active_unary_reactor_push_test.cpp][unary-push-test]:
   `ActiveUnaryReactor` via `GetFeature`
@@ -41,6 +41,11 @@ writing reactor under `Submission::kReactorPulls`, and one for tearing reactors 
   as described in [request submission coverage](#request-submission-coverage)
 - [reactor_teardown_test.cpp][teardown-test]: `CancelAndWait()` on all four reactors, as described in
   [teardown coverage](#teardown-coverage)
+- [latest_slot_test.cpp][latest-test]: `LatestSlot`, and the latest-only pattern, as the `live_vehicle_position` usage
+  scenario runs it, on `ActiveReadReactor` under `kPull` and `kContinuous`, as described in
+  [latest-only coverage](#latest-only-coverage)
+- [continuous_journal_test.cpp][journal-test]: the journal pattern, as the `trip_recorder` usage scenario runs it, on
+  `ActiveReadReactor` under `kPush` and `kContinuous`, as described in [journal coverage](#journal-coverage)
 
 Each file pins its approach in a single `kDelivery` constant and instantiates every reactor with it, so a pull file
 and its push counterpart read side by side as the same scenarios written against each approach. The writing reactors'
@@ -309,6 +314,44 @@ Four mutants of `CancelAndWait()` were each caught. Without the held-message rel
 out. With the writer cancelling only its context, the idle-writer test times out. Without the idle-window release, the
 two bidi held-message tests time out. Without the wait, AddressSanitizer reports the use-after-free in the first test.
 
+### Latest-only coverage
+
+[latest_slot_test.cpp][latest-test] tests the realtime-reading pattern: `ActiveReadReactor` under `kPull` and
+`kContinuous`, with a `LatestSlot` keeping only the newest message for a consumer slower than the stream. The slot's
+own contract comes first, then a producer racing a consumer, then the reactor against an in-process server streaming
+200 readings back to back. That server, and the single-threaded task queue standing in for the application's event
+loop, are shared with the journal suite, in [continuous_use_support.h][continuous-support].
+
+| Test | Checks |
+| ------ | --------- |
+| `FirstPut_AsksForANotification` | The first value asks for an event |
+| `PutBeforeTake_ReplacesTheValue_AndAsksForNoNotification` | A value not yet taken is replaced, and counted |
+| `Take_EmptiesTheSlot_SoTheNextPutAsksAgain` | `Take()` empties the slot, and the next value asks again |
+| `MoveOnlyValue_IsMovedThrough` | An owned `kPush` message fits the slot |
+| `ProducerAgainstNotifiedConsumer_KeepsEveryPromise` | 100000 values against a consumer on its own event loop |
+| `BlockedConsumer_StreamRunsOn_AndOnlyTheLastReadingIsLeft` | The stream ends with nothing taken, one event asked for |
+| `SlowConsumer_HandlesOnlyNewerReadings_AndEndsOnTheLast` | A slow consumer on its own event loop, as in the demo |
+
+The racing tests check the same promises: at most one event waits in the queue, the consumer only moves forward, every
+value is either taken or counted as replaced, and the last value is the last one taken. Five mutants of `LatestSlot`
+were each caught by at least three tests: always asking for an event, never asking, not counting a replacement,
+`Take()` leaving the value in place, and `Put()` keeping the oldest value.
+
+### Journal coverage
+
+[continuous_journal_test.cpp][journal-test] tests the ingestion pattern: `ActiveReadReactor` under `kPush` and
+`kContinuous`, each owned message queued as its own task for a journal slower than the stream.
+
+| Test | Checks |
+| ------ | --------- |
+| `BlockedJournal_StreamEndsWithEveryRecordQueued_ThenAllAreWrittenInOrder` | Ends with all queued, then all in order |
+| `SlowJournal_WritesEveryRecordInOrder_AfterTheRpcEnded` | A slow journal on its own event loop, as in the demo |
+
+Two mutants of `ActiveReadReactor` under `kContinuous` were each caught. Without the re-arm, both tests fail: the stream
+stops after its first message. Taking a hold as `kTurnByTurn` does, the first test aborts, since the stream stalls and
+not even a cancel can end it. Delivery in order, and of every message once, follows from the FIFO queue and from gRPC's
+one read at a time, so the tests assert it rather than mutate it.
+
 ### Naming convention
 
 Test names have three underscore-separated segments: `RpcMethod_Scenario_Result`. The first and
@@ -547,6 +590,9 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [write-producer-test]: /applications/reactor/tests/active_write_reactor_producer_test.cpp
 [bidi-producer-test]: /applications/reactor/tests/active_bidi_reactor_producer_test.cpp
 [teardown-test]: /applications/reactor/tests/reactor_teardown_test.cpp
+[latest-test]: /applications/reactor/tests/latest_slot_test.cpp
+[journal-test]: /applications/reactor/tests/continuous_journal_test.cpp
+[continuous-support]: /applications/reactor/tests/continuous_use_support.h
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp
 [callback-smoke-test]: /applications/callback/tests/callback_smoke_test.sh
 [test-fixture]: /applications/reactor/tests/route_guide_test_fixture.h

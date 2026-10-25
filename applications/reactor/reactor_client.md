@@ -186,9 +186,69 @@ The constraints behind each choice are argued in architecture.md, under
 [Choosing for a stream of messages](/docs/architecture.md#choosing-for-a-stream-of-messages) and
 [Why the writing reactors also let the reactor pull](/docs/architecture.md#why-the-writing-reactors-also-let-the-reactor-pull).
 
+### Keeping only the newest message
+
+Some streams are realtime readings: a vehicle's position on a map, a sensor feeding a display, a price. Each message is
+worth handling only until a newer one exists, and a consumer slower than the stream should skip to the newest rather
+than fall behind. No reactor drops a message: they deliver every one, and dropping the stale ones is the application's
+choice. `kPull` with `kContinuous` is the variant for it, with `RpcReactor::LatestSlot`, from `latest_slot.h`, on the
+application side:
+
+```cpp
+cbs.read_ok = [this](auto*, const Feature& response) {                      // gRPC thread
+  if (latest_.Put(Fix{++seq_, response})) EventLoop::TriggerEvent(kOnLatestFix);
+};
+void OnLatestFix(const EventLoop::Event*) {                                 // application thread
+  if (auto fix = latest_.Take()) Draw(*fix);
+}
+```
+
+- `kContinuous` re-arms each read as soon as `read_ok` returns, so the stream never waits for the application.
+- `read_ok` copies the lent message into the slot, replacing one the application has not taken yet. `Put()` only takes
+  a short lock, so the reaction never waits either.
+- `Put()` asks for an event only when the slot was empty, so at most one event waits in the queue, however fast the
+  messages come. The event carries no payload: the message waits in the slot, so no event owns it.
+- Every message is either handled or counted by `Replaced()`, and the newest is never lost: it stays in the slot until
+  taken. Every reaction returns before `OnDone()`, so a done handler that takes once more always ends on the last one.
+
+`kPush` with `kContinuous` serves the same consumer without the copy, by putting the owned message into the slot. The
+`live_vehicle_position` usage scenario runs the pattern, with a map that takes 5 ms to redraw a vehicle's position, and
+[latest_slot_test.cpp](/applications/reactor/tests/latest_slot_test.cpp) tests it.
+
+### Handling every message without slowing the stream
+
+Other streams carry records that all matter, but that the server must be able to send at its own pace: the position
+reports a vehicle's trip recorder stores, telemetry ingested into a journal, audit events, a large result downloaded at
+full speed. `kPush` with `kContinuous`
+is the variant for it, with no helper needed:
+
+```cpp
+cbs.read_ok = [](auto*, std::unique_ptr<Feature> response) {                // gRPC thread
+  EventLoop::TriggerEvent(kOnReport, response.release());
+};
+void OnReport(const EventLoop::Event* event) {                              // application thread
+  const std::unique_ptr<Feature> report{static_cast<Feature*>(event->getData())};
+  trip_log_.Store(*report);
+}
+```
+
+- `kContinuous` re-arms each read as soon as `read_ok` returns, so the stream never waits for the application, however
+  slow storage is.
+- `kPush` moves each message out of the reactor, so the next read cannot overwrite it, and the event queue owns it until
+  the handler reclaims it.
+- The event queue is FIFO and the reactor reads one message at a time, so every record reaches the handler once, in
+  order, and every one of them is ahead of the `OnDone` event.
+
+The price is the backlog: the records queued but not yet stored. Nothing bounds it but the length of the stream, so
+storage slower than the server for long enough runs out of memory. The RPC also ends before storage has caught up, so
+the end of the RPC is not the end of the work. A consumer that must bound its backlog keeps `kPush` but chooses
+`kPerMessage`, whose `read_ok` holds the stream once the backlog passes a threshold, as `list_features_push_per_message`
+does. The `trip_recorder` usage scenario runs the pattern, with storage that takes 1 ms per position report, and
+[continuous_journal_test.cpp](/applications/reactor/tests/continuous_journal_test.cpp) tests it.
+
 ### Where each variant runs
 
-The demo client, `route_guide_active_reactor_client`, runs 18 of the 24 variants at once, one scenario file each:
+The demo client, `route_guide_active_reactor_client`, runs 18 of the 24 variants at once, from 20 scenario files:
 
 | Reactor              | Scenario files, under `applications/reactor/scenarios/`                 |
 |----------------------|-------------------------------------------------------------------------|
@@ -198,12 +258,19 @@ The demo client, `route_guide_active_reactor_client`, runs 18 of the 24 variants
 | `ActiveWriteReactor` | `record_route_pull`, `record_route_push`, `record_route_pull_producer`  |
 | `ActiveBidiReactor`  | `route_chat_<delivery>_<pacing>`, for each of the six pairs, and        |
 |                      | `route_chat_pull_per_message_producer`                                  |
+| Usage scenarios      | `live_vehicle_position` and `trip_recorder`, on `ActiveReadReactor`     |
 
 A file name gives the RPC, then the `Delivery`, then the `ReadPacing` for a reading reactor. A `_producer` file runs
 `Submission::kReactorPulls`, and every other writing scenario `kApplicationPushes`. Neighbouring files differ along one
 parameter only, so a `diff` between two of them shows exactly what that parameter changes. The six variants left out
 all use `kReactorPulls`, which combines with every `Delivery` and `ReadPacing` exactly as `kApplicationPushes` does, so
-one producer scenario per writing reactor shows it.
+one producer scenario per writing reactor shows it. The two usage scenarios are named after a real-life situation
+instead, and each runs a `kContinuous` variant for what it is best at: `live_vehicle_position` uses `kPull` for a
+realtime reading, as described under [Keeping only the newest message](#keeping-only-the-newest-message), and
+`trip_recorder` uses `kPush` for ingestion, as described under
+[Handling every message without slowing the stream](#handling-every-message-without-slowing-the-stream).
+[The scenarios' README](/applications/reactor/scenarios/README.md) lists every scenario with its variant, what it does
+with each message and the file to diff it against, and the usage scenarios still planned.
 
 ## API naming conventions
 

@@ -455,6 +455,21 @@ of consumer:
 Under `kPull` with `kContinuous`, a callback that wants to keep a whole message pays a deep copy for it. Once most
 messages are kept whole, `kPush` serves the same consumer without the copy.
 
+A latest-value-wins consumer may also be slower than the stream: a map drawing a vehicle's live position, which should
+skip to the newest fix rather than fall behind. The reactors still deliver every message, since what is stale is for the
+application to decide. Its `read_ok` keeps the newest copy in a slot for the application thread, replacing one not yet
+taken, and queues an event only when the slot was empty. The stream keeps `kContinuous`'s freedom, the queue holds at
+most one event, and the newest fix is never lost. reactor_client.md describes that slot under
+[Keeping only the newest message](/applications/reactor/reactor_client.md#keeping-only-the-newest-message).
+
+The deferring consumer of `kPush` with `kContinuous` is its opposite: every record matters, a vehicle's trip recorder
+for instance, and the server must still be able to send at its own pace. The reactor hands each message out owned and
+reads on, the event queue keeps every record in order, and storage works through them after the RPC has ended if it
+must. What it accepts is a backlog bounded by nothing but the stream, and a consumer that cannot accept it bounds it with
+`kPerMessage` instead, at the cost of slowing the stream once the backlog passes a threshold. reactor_client.md
+describes it under
+[Handling every message without slowing the stream](/applications/reactor/reactor_client.md#handling-every-message-without-slowing-the-stream).
+
 ### Why the generic layer offers every combination
 
 `reactor_client.h` is the most generic layer of the library, and it offers every sound combination of its choices.

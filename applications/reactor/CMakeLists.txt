@@ -10,6 +10,7 @@ add_executable(route_guide_active_reactor_client
     reactor_client.h
     reactor_client_routeguide.h
     reactor_eventloop.h
+    latest_slot.h
     scenarios/support.h
     scenarios/support.cpp
     scenarios/get_feature_pull.h
@@ -48,6 +49,10 @@ add_executable(route_guide_active_reactor_client
     scenarios/route_chat_push_per_message.cpp
     scenarios/route_chat_push_turn_by_turn.h
     scenarios/route_chat_push_turn_by_turn.cpp
+    scenarios/live_vehicle_position.h
+    scenarios/live_vehicle_position.cpp
+    scenarios/trip_recorder.h
+    scenarios/trip_recorder.cpp
 )
 
 target_include_directories(route_guide_active_reactor_client

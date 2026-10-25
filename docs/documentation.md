@@ -63,6 +63,7 @@ This project's existing docs map onto all four:
 | [walkthrough.md](/docs/walkthrough.md) | Tutorial | Pick your reactor and start: one part per RPC shape, built from a demo scenario |
 | [developing.md](/docs/developing.md), [testing.md](/docs/testing.md) | How-to guide | Build, run, and test steps |
 | [reactor_client.md](/applications/reactor/reactor_client.md) | Reference | Every variant side by side, then the class-by-class API |
+| [scenarios/README.md](/applications/reactor/scenarios/README.md) | Reference | Every demo scenario, its variant, and what it does |
 | [architecture.md](/docs/architecture.md) | Explanation | Design rationale: why this pattern, why these choices |
 
 Before adding to a document, decide which of these four kinds the new content is, and put it in the document

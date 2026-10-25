@@ -54,7 +54,8 @@ DIR=cmake-build-vcpkg-debug-gcc
 The demo starts all of its scenarios at once, one per variant it shows, and keeps its event loop running, so stop it
 with Ctrl+C once the output settles. Each scenario logs under its own name, and each part below gives the `grep` that picks
 it out. The scenario files live in
-[applications/reactor/scenarios/](/applications/reactor/scenarios/), one per variant, and they are what you copy.
+[applications/reactor/scenarios/](/applications/reactor/scenarios/), one per variant, and they are what you copy. Its
+[README](/applications/reactor/scenarios/README.md) lists every scenario with its variant.
 
 Every log line reads `[time][logger][thread id][level] message`. The thread id is how you tell the two threads apart.
 
@@ -452,6 +453,57 @@ diff list_features_pull_turn_by_turn.cpp list_features_pull_continuous.cpp   # n
 diff list_features_pull_turn_by_turn.cpp list_features_push_turn_by_turn.cpp # the delivery, same pacing
 ```
 
+Two usage scenarios, named after the situation they serve, show what each `kContinuous` delivery is for. Each is a
+clone of its `kContinuous` scenario along the use only:
+
+```bash
+diff list_features_pull_continuous.cpp live_vehicle_position.cpp  # only the newest kept
+diff list_features_push_continuous.cpp trip_recorder.cpp          # every one kept, backlog seen
+```
+
+`live_vehicle_position.cpp` is the use `kContinuous` with `kPull` is best at: a map drawing a vehicle's position from a
+live feed of fixes, where only the newest fix matters. `read_ok` copies each fix into a `RpcReactor::LatestSlot`,
+replacing the one your handler has not taken yet, and triggers an event only when the slot was empty. Your handler
+draws the newest fix, so a slow map skips the stale ones while the feed never waits. In the demo run the map takes
+5 ms per redraw, so it draws fix #1, then #33, then #100, and ends:
+
+```text
+[12:57:29.440047][LiveVehiclePosition][673][I] read_ok  | #1 routeguide.Feature: name: "Patriots Path, ..."
+[12:57:29.440077][LiveVehiclePosition][664][I] RESPONSE | #1 routeguide.Feature: name: "Patriots Path, ..."
+[12:57:29.440401][LiveVehiclePosition][673][I] read_ok  | #2 routeguide.Feature: name: "101 New Jersey 10, ..."
+...
+[12:57:29.446209][LiveVehiclePosition][673][I] read_ok  | #33 routeguide.Feature: name: "650-652 Willi Hill ..."
+[12:57:29.446619][LiveVehiclePosition][664][I] RESPONSE | #33 routeguide.Feature: name: "650-652 Willi Hill ..."
+...
+[12:57:29.453778][LiveVehiclePosition][673][I] read_ok  | #100 routeguide.Feature: name: "3 Hasta Way, ..."
+[12:57:29.488403][LiveVehiclePosition][664][I] RESPONSE | #100 routeguide.Feature: name: "3 Hasta Way, ..."
+[12:57:29.573374][LiveVehiclePosition][664][I] totals   | 100 fixes, 3 drawn, 97 replaced before drawing, last ...
+```
+
+The pattern is described under [Keeping only the newest message][latest-only] in the reference.
+
+`trip_recorder.cpp` is the opposite use, the one `kContinuous` with `kPush` is best at: a vehicle's black box storing
+every position report of a trip, where every report matters and the feed must still never wait. `read_ok` queues each
+owned report as its own event and the reactor reads on, so slow storage builds a backlog instead of slowing the server.
+In the demo run storage takes 1 ms per report, so the RPC ends with most reports still queued, and the trip log
+catches up later, in order:
+
+```text
+[12:57:29.440093][TripRecorder][674][I] read_ok  | #1 routeguide.Feature, backlog 1
+[12:57:29.440423][TripRecorder][673][I] read_ok  | #2 routeguide.Feature, backlog 2
+[12:57:29.445186][TripRecorder][664][I] RESPONSE | #1 routeguide.Feature: name: "Patriots Path, ..."
+...
+[12:57:29.453726][TripRecorder][674][I] read_ok  | #100 routeguide.Feature, backlog 98
+[12:57:29.453744][TripRecorder][673][I] done     | RPC ended, 98 reports still queued for the trip log
+...
+[12:57:29.572048][TripRecorder][664][I] RESPONSE | #100 routeguide.Feature: name: "3 Hasta Way, ..."
+[12:57:29.573255][TripRecorder][664][I] totals   | 100 reports read, 100 stored in the trip log, peak backlog 98
+```
+
+Nothing bounds that backlog but the length of the stream. When yours must stay bounded, keep `kPush` and choose
+`kPerMessage`, as `list_features_push_per_message.cpp` does. The trade-off is described under
+[Handling every message without slowing the stream][journal] in the reference.
+
 ### Your checklist
 
 - [ ] Under `kPerMessage`, `read_ok` returns `true` only for a message it queued for your handler.
@@ -754,3 +806,5 @@ The sequence diagrams are under
 | See how the tests cover every variant                | [testing.md](/docs/testing.md)                               |
 
 [variants]: /applications/reactor/reactor_client.md#reactors-and-their-variants
+[latest-only]: /applications/reactor/reactor_client.md#keeping-only-the-newest-message
+[journal]: /applications/reactor/reactor_client.md#handling-every-message-without-slowing-the-stream
