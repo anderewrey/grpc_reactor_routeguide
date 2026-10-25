@@ -7,11 +7,20 @@ find_package(GTest REQUIRED)
 find_package(EventLoop CONFIG REQUIRED)
 
 set(REACTOR_TESTS
-    active_unary_reactor_test
-    active_read_reactor_test
-    active_write_reactor_test
-    active_bidi_reactor_test
+    active_unary_reactor_pull_test
+    active_unary_reactor_push_test
+    active_read_reactor_pull_test
+    active_read_reactor_push_test
+    active_write_reactor_pull_test
+    active_write_reactor_push_test
+    active_write_reactor_producer_test
+    active_bidi_reactor_pull_test
+    active_bidi_reactor_push_test
+    active_bidi_reactor_producer_test
     client_reactor_integration_test
+    reactor_teardown_test
+    latest_slot_test
+    continuous_journal_test
 )
 
 foreach(test_name IN LISTS REACTOR_TESTS)

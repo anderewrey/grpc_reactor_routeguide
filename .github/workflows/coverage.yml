@@ -179,10 +179,19 @@ jobs:
           # showing up as 0%, making the tools look further apart than they actually are.
           object_args=""
           for path in \
-            applications/reactor/tests/active_unary_reactor_test \
-            applications/reactor/tests/active_read_reactor_test \
-            applications/reactor/tests/active_write_reactor_test \
-            applications/reactor/tests/active_bidi_reactor_test \
+            applications/reactor/tests/active_unary_reactor_pull_test \
+            applications/reactor/tests/active_unary_reactor_push_test \
+            applications/reactor/tests/active_read_reactor_pull_test \
+            applications/reactor/tests/active_read_reactor_push_test \
+            applications/reactor/tests/active_write_reactor_pull_test \
+            applications/reactor/tests/active_write_reactor_push_test \
+            applications/reactor/tests/active_bidi_reactor_pull_test \
+            applications/reactor/tests/active_bidi_reactor_push_test \
+            applications/reactor/tests/active_write_reactor_producer_test \
+            applications/reactor/tests/active_bidi_reactor_producer_test \
+            applications/reactor/tests/reactor_teardown_test \
+            applications/reactor/tests/latest_slot_test \
+            applications/reactor/tests/continuous_journal_test \
             applications/reactor/tests/client_reactor_integration_test \
             applications/blocking/route_guide_sync_client \
             applications/blocking/route_guide_sync_server \

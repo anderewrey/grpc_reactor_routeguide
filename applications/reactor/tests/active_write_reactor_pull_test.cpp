@@ -36,6 +36,11 @@
 
 namespace {
 
+/// Every reactor in this file is instantiated with Delivery::kPull; its push counterpart is
+/// covered by active_write_reactor_push_test.cpp.
+constexpr auto kDelivery = RpcReactor::Client::Delivery::kPull;
+constexpr auto kSubmission = RpcReactor::Client::Submission::kApplicationPushes;
+
 /// Test service implementing RecordRoute with distance/feature counting
 /// Mirrors route_guide_callback_server.cpp implementation using rg_utils
 class TestRouteGuideService final : public routeguide::RouteGuide::CallbackService {
@@ -198,7 +203,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_MultiplePoints_ReturnsCorrectSummary)
   std::binary_semaphore write_slot{1};  // gRPC requires waiting for OnWriteDone between writes
 
   // Create callbacks
-  routeguide::RecordRoute::Callbacks cbs;
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   cbs.write_done = [&write_slot](grpc::ClientWriteReactor<routeguide::Point>*, bool) {
     write_slot.release();
   };
@@ -213,7 +218,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_MultiplePoints_ReturnsCorrectSummary)
   };
 
   // Create reactor
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
   // Send points - two are known features, one is not
@@ -234,7 +239,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_MultiplePoints_ReturnsCorrectSummary)
   EXPECT_TRUE(write_slot.try_acquire_for(std::chrono::seconds(5))) << "Last write never completed";
 
   // Signal end of stream
-  reactor->CloseRequestStream();
+  EXPECT_TRUE(reactor->CloseRequestStream());
 
   // Wait for completion
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); })) << "Timeout waiting for RPC completion";
@@ -270,7 +275,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_EmptyStream_ReturnsZeroCounts) {
   std::promise<RecordRouteResult> result_promise;
   std::future<RecordRouteResult> result_future = result_promise.get_future();
 
-  routeguide::RecordRoute::Callbacks cbs;
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   cbs.write_done = [](grpc::ClientWriteReactor<routeguide::Point>*, bool) {};
   cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>*,
                                 const grpc::Status& status,
@@ -282,11 +287,11 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_EmptyStream_ReturnsZeroCounts) {
     result_promise.set_value(std::move(result));
   };
 
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
   // Immediately signal end of stream without sending any points
-  reactor->CloseRequestStream();
+  EXPECT_TRUE(reactor->CloseRequestStream());
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
@@ -313,8 +318,10 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_SinglePoint_ReturnsZeroDistance) {
   std::promise<RecordRouteResult> result_promise;
   std::future<RecordRouteResult> result_future = result_promise.get_future();
 
-  routeguide::RecordRoute::Callbacks cbs;
-  cbs.write_done = [](grpc::ClientWriteReactor<routeguide::Point>*, bool) {};
+  std::binary_semaphore write_done{0};  // Released once the single write completes
+
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
+  cbs.write_done = [&write_done](grpc::ClientWriteReactor<routeguide::Point>*, bool) { write_done.release(); };
   cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>*,
                                 const grpc::Status& status,
                                 const routeguide::RouteSummary& response) {
@@ -325,13 +332,15 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_SinglePoint_ReturnsZeroDistance) {
     result_promise.set_value(std::move(result));
   };
 
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
   // Send single point (known feature)
   reactor->SendRequest(rg_utils::MakePoint(407128000, -740060000));  // NYC Landmark
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  reactor->CloseRequestStream();
+  // Waits for the write rather than sleeping: CloseRequestStream() is rejected while a write is pending,
+  // and a rejected close would leave the RPC open until the timeout.
+  EXPECT_TRUE(write_done.try_acquire_for(std::chrono::seconds(5))) << "Write never completed";
+  EXPECT_TRUE(reactor->CloseRequestStream());
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
@@ -349,27 +358,24 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_SinglePoint_ReturnsZeroDistance) {
 /// SendRequest() checks write_pending_ and returns false if a write is in progress,
 /// preventing GRPC_CALL_ERROR_TOO_MANY_OPERATIONS.
 ///
-/// Tests the protection mechanism:
-/// 1. Client sends first point (accepted, returns true)
-/// 2. Client immediately sends second point without waiting (rejected, returns false)
-/// 3. Client waits for OnWriteDone, then sends third point (accepted)
-/// 4. RPC completes successfully with only 2 points (the accepted ones)
+/// Spams writes from the test thread and checks the invariant the guard enforces, rather than betting
+/// on a write still being pending at the next call, which a fast transport can make false:
+/// 1. Client calls SendRequest() in a row, without waiting, until one is accepted and one rejected
+/// 2. Each accepted write is only legal if every earlier one has completed
+/// 3. Once every accepted write completed, the client closes the stream
 ///
 /// Verifies that:
-/// - First SendRequest() returns true
-/// - Overlapping SendRequest() returns false
-/// - After waiting, SendRequest() returns true again
+/// - Accepted writes never exceed completed ones by more than the single one in flight
+/// - Some calls are accepted, and some are rejected as overlapping
 /// - Final point_count reflects only accepted writes
 TEST_F(ActiveWriteReactorTest, RecordRoute_OverlappingWrites_RejectedByWritePending) {
   std::promise<RecordRouteResult> result_promise;
   std::future<RecordRouteResult> result_future = result_promise.get_future();
 
-  std::binary_semaphore write_slot{0};  // Released by each completed write; the first goes out ungated
+  std::atomic<int> completed{0};
 
-  routeguide::RecordRoute::Callbacks cbs;
-  cbs.write_done = [&write_slot](grpc::ClientWriteReactor<routeguide::Point>*, bool) {
-    write_slot.release();
-  };
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
+  cbs.write_done = [&completed](grpc::ClientWriteReactor<routeguide::Point>*, bool) { ++completed; };
   cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>*,
                                 const grpc::Status& status,
                                 const routeguide::RouteSummary& response) {
@@ -380,36 +386,44 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_OverlappingWrites_RejectedByWritePend
     result_promise.set_value(std::move(result));
   };
 
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
-  // First write should be accepted
-  const bool first_accepted = reactor->SendRequest(rg_utils::MakePoint(400000000, -740000000));
-  EXPECT_TRUE(first_accepted) << "First SendRequest should be accepted";
+  // Runs until it has seen both an acceptance and a rejection, since a fast transport can complete
+  // many writes before the next call.
+  constexpr int kMaxAttempts = 1000;
+  int accepted = 0;
+  int rejected = 0;
+  for (int i = 0; i < kMaxAttempts && (accepted == 0 || rejected == 0); ++i) {
+    if (reactor->SendRequest(rg_utils::MakePoint(400000000 + i, -740000000))) {
+      ++accepted;
+    } else {
+      ++rejected;
+    }
+    // Not an ASSERT: returning now would leave the RPC running against this test's locals.
+    if (accepted > completed.load() + 1) {
+      ADD_FAILURE() << "Two writes were in flight at once, so the guard did not reject the overlap";
+      break;
+    }
+  }
+  EXPECT_GT(accepted, 0) << "Every write was rejected";
+  EXPECT_GT(rejected, 0) << "No write was rejected, so no overlap was exercised";
 
-  // Second write immediately (without waiting) should be rejected
-  const bool second_accepted = reactor->SendRequest(rg_utils::MakePoint(401000000, -740000000));
-  EXPECT_FALSE(second_accepted) << "Overlapping SendRequest should be rejected";
-
-  // Wait for first write to complete
-  EXPECT_TRUE(write_slot.try_acquire_for(std::chrono::seconds(5))) << "First write never completed";
-
-  // Third write should now be accepted
-  const bool third_accepted = reactor->SendRequest(rg_utils::MakePoint(402000000, -740000000));
-  EXPECT_TRUE(third_accepted) << "SendRequest after OnWriteDone should be accepted";
-
-  // Wait for third write to complete
-  EXPECT_TRUE(write_slot.try_acquire_for(std::chrono::seconds(5))) << "Third write never completed";
-
-  reactor->CloseRequestStream();
+  // Close only once the last accepted write completed, since a pending write rejects the close.
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (completed.load() < accepted && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_EQ(completed.load(), accepted) << "An accepted write never completed";
+  EXPECT_TRUE(reactor->CloseRequestStream());
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
   const RecordRouteResult result = result_future.get();
 
   EXPECT_TRUE(result.status.ok()) << "Status: " << result.status.error_message();
-  // Only 2 points were actually sent (first and third; second was rejected)
-  EXPECT_EQ(result.summary.point_count(), 2);
+  // Only the accepted writes reached the server
+  EXPECT_EQ(result.summary.point_count(), accepted);
 }
 
 /// @test Validates OnWriteDone callback fires for each write.
@@ -427,7 +441,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_OnWriteDone_FiresForEachWrite) {
   std::future<RecordRouteResult> result_future = result_promise.get_future();
   std::atomic<int> write_done_count{0};
 
-  routeguide::RecordRoute::Callbacks cbs;
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   cbs.write_done = [&write_done_count](grpc::ClientWriteReactor<routeguide::Point>*, bool ok) {
     if (ok) {
       ++write_done_count;
@@ -444,16 +458,20 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_OnWriteDone_FiresForEachWrite) {
     result_promise.set_value(std::move(result));
   };
 
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
-  // Send 3 points, waiting for each write to complete
+  // Send 3 points, waiting for each write to be acknowledged before sending the next. A fixed sleep is
+  // not enough on a slow run, such as under ThreadSanitizer: a write still in flight makes the next
+  // SendRequest() and the close below refused.
   for (int i = 0; i < 3; ++i) {
-    reactor->SendRequest(rg_utils::MakePoint(400000000 + (i * 1000000), -740000000));
-    // Wait for write to be acknowledged before sending next
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    ASSERT_TRUE(reactor->SendRequest(rg_utils::MakePoint(400000000 + (i * 1000000), -740000000)));
+    for (int wait = 0; wait < 1000 && write_done_count.load() <= i; ++wait) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
   }
-  reactor->CloseRequestStream();
+  // Accepted, not merely attempted: an unclosed write side keeps the write-flow hold.
+  EXPECT_TRUE(reactor->CloseRequestStream());
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
@@ -478,7 +496,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_TryCancel_TerminatesStream) {
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  routeguide::RecordRoute::Callbacks cbs;
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   cbs.write_done = [](grpc::ClientWriteReactor<routeguide::Point>*, bool) {};
   cbs.done = [&done_promise](grpc::ClientWriteReactor<routeguide::Point>*,
                               const grpc::Status& status,
@@ -486,7 +504,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_TryCancel_TerminatesStream) {
     done_promise.set_value(status);
   };
 
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
   // Send a point then cancel
@@ -522,8 +540,10 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_ServerError_PropagatesStatus) {
   std::promise<RecordRouteResult> result_promise;
   std::future<RecordRouteResult> result_future = result_promise.get_future();
 
-  routeguide::RecordRoute::Callbacks cbs;
-  cbs.write_done = [](grpc::ClientWriteReactor<routeguide::Point>*, bool) {};
+  std::binary_semaphore write_done{0};  // Released once the single write completes
+
+  routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
+  cbs.write_done = [&write_done](grpc::ClientWriteReactor<routeguide::Point>*, bool) { write_done.release(); };
   cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>*,
                                 const grpc::Status& status,
                                 const routeguide::RouteSummary& response) {
@@ -534,13 +554,14 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_ServerError_PropagatesStatus) {
     result_promise.set_value(std::move(result));
   };
 
-  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor>(
+  auto reactor = std::make_unique<routeguide::RecordRoute::ClientReactor<kDelivery, kSubmission>>(
       *stub_, CreateClientContext(), std::move(cbs));
 
   // Send a point and end stream
   reactor->SendRequest(rg_utils::MakePoint(400000000, -740000000));
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  reactor->CloseRequestStream();
+  // Waits for the write rather than sleeping, as in RecordRoute_SinglePoint_ReturnsZeroDistance.
+  EXPECT_TRUE(write_done.try_acquire_for(std::chrono::seconds(5))) << "Write never completed";
+  EXPECT_TRUE(reactor->CloseRequestStream());
 
   ASSERT_TRUE(AwaitRpc(result_future, [&] { reactor->TryCancel(); }));
 
