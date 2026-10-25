@@ -140,7 +140,7 @@ class ClientReactorIntegrationTest : public RouteGuideTestFixtureBase<TestRouteG
   /// waits again before reporting the failure: the handlers reference the test's locals, so the test
   /// must not return while the RPC can still dispatch them. Aborts if the cancelled RPC never ends.
   template <class ReactorT>
-  static ::testing::AssertionResult WaitForDone(const std::atomic<bool>& done, const ReactorT& reactor,
+  static ::testing::AssertionResult WaitForDone(const std::atomic<bool>& done, ReactorT& reactor,
                                                 const char* what) {
     if (WaitFor(done)) {
       return ::testing::AssertionSuccess();

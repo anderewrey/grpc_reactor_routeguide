@@ -229,10 +229,9 @@ Four tests cover it, and each was mutation-verified except where noted.
 The four live in [active_bidi_reactor_push_test.cpp][bidi-push-test], under `kContinuous`. The write side is identical
 under both `Delivery` approaches, and the one place the two meet it, the `OnReadDone(false)` release, is exercised under
 each: `RouteChat_DeadlineExceeded_PropagatesStatus` exists in both bidi files and doubles as the guard for that release,
-since removing it hangs the test for its full timeout. Two properties are deliberately not covered by tests, and are
-recorded in [deferred-work.md](/_bmad-output/implementation-artifacts/deferred-work.md): the atomicity of the claim,
-whose race window is too narrow to hit from a test and which needs ThreadSanitizer, and the non-re-arm after a terminal
-write, which `OnReadDone(false)` masks.
+since removing it hangs the test for its full timeout. Two properties are deliberately not covered by tests: the
+atomicity of the claim, whose race window is too narrow to hit from a test and which needs ThreadSanitizer to catch, and
+the non-re-arm after a terminal write, which `OnReadDone(false)` masks.
 
 ### Write-flow hold coverage
 

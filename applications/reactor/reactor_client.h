@@ -161,7 +161,7 @@ class ActiveUnaryReactor : public grpc::ClientUnaryReactor {
   /// Sends a best-effort out-of-band cancel to the RPC. That signal is thread-safe
   /// and can be sent anytime from any thread. The goal of that signal is to provoke
   /// the `OnDone` event from the RPC.
-  void TryCancel() const {
+  void TryCancel() {
     // (Point 2.2, 2.3) RPC termination behest
     context_->TryCancel();
   }
@@ -309,7 +309,7 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
   /// Sends a best-effort out-of-band cancel to the RPC. That signal is thread-safe
   /// and can be sent anytime from any thread. The goal of that signal is to provoke
   /// the `OnDone` event from the RPC.
-  void TryCancel() const {
+  void TryCancel() {
     // (Point 3.2, 3.3) RPC termination behest
     context_->TryCancel();
   }
@@ -1347,7 +1347,6 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
       pending_request_ = std::move(*next);
       this->StartWrite(&pending_request_);
     } else {
-      writes_done_ = true;
       this->StartWritesDone();
     }
   }
@@ -1391,8 +1390,8 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   // closes the stream, or reports the read stream ending.
   std::atomic_bool write_idle_{false};
 
-  // Flag indicating CloseRequestStream() has been called.
-  // After this, no more SendRequest() calls are allowed.
+  // Submission::kApplicationPushes only: flag indicating CloseRequestStream() or SendLastRequest() has
+  // been called. After this, no more SendRequest() calls are allowed.
   // Set by application thread, read by application thread.
   std::atomic_bool writes_done_{false};
 

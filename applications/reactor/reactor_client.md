@@ -1,28 +1,207 @@
 # Reactor implementation of gRPC clients
 
-This is the reference for the client-side reactor library: the naming conventions, the delivery contracts, and a
-class-by-class walkthrough of all four reactors with a sequence diagram each. It states what the code does.
+This is the reference for the client-side reactor library. It opens with an overview of the four reactors and every
+variant they come in, then gives the naming conventions, the delivery contracts, and a class-by-class walkthrough of
+all four reactors with their sequence diagrams. It states what the code does.
 
-For why the library is built this way, which alternatives were rejected, and the reasoning behind the hold rules,
-see [architecture.md](/docs/architecture.md). For build and test commands, see
-[developing.md](/docs/developing.md) and [testing.md](/docs/testing.md).
+For a first reactor, step by step, see [walkthrough.md](/docs/walkthrough.md). For why the library is built this way,
+which alternatives were rejected, and the reasoning behind the hold rules, see [architecture.md](/docs/architecture.md).
+For build and test commands, see [developing.md](/docs/developing.md) and [testing.md](/docs/testing.md).
 
-Three template parameters orient everything below. The application chooses each per RPC, from that RPC's constraints.
+## Reactors and their variants
 
-| Parameter    | Taken by                 | Decides                                                     | Default       |
-|--------------|--------------------------|-------------------------------------------------------------|---------------|
-| `Delivery`   | All four reactors        | How a received message reaches the `read_ok` or `done` slot | None          |
-| `ReadPacing` | The two reading reactors | Who arms the read that follows a delivered message          | `kPerMessage` |
-| `Submission` | The two writing reactors | Who starts the transfer of each request                     | None          |
+The library offers one reactor per gRPC call shape, and up to three template parameters on each. A parameter applies
+only where the reactor carries messages in its direction: why, by direction and by single message or stream, is under
+[The model behind the reactors' choices](/docs/architecture.md#the-model-behind-the-reactors-choices).
 
-Under `Delivery::kPull` the callback is lent the message, which stays in the reactor. When the reactor keeps it, the
-application pulls it with `GetResponse()`. Under `Delivery::kPush` the callback is given the message as an owned
-object, and the reactor keeps nothing. The two axes are independent, so each reading reactor has six combinations, one
-per `Delivery` and `ReadPacing` pair. See [Delivery approaches](#delivery-approaches) and
-[Read pacing modes](#read-pacing-modes). Under `Submission::kApplicationPushes` the application writes each request
-with `SendRequest()`; under `Submission::kReactorPulls` the reactor asks the `next_request` callback for it. See
-[Request submission](#request-submission). Why these choices apply where they do, by direction and by single message or
-stream, is under [The model behind the reactors' choices](/docs/architecture.md#the-model-behind-the-reactors-choices).
+### The four reactors
+
+Each reactor derives from the matching gRPC callback reactor. The RouteGuide layer, `reactor_client_routeguide.h`, adds
+one thin adapter per RPC, `routeguide::<Rpc>::ClientReactor`, which starts the call and passes every template parameter
+through untouched.
+
+| Reactor              | Call shape       | Sends                    | Receives             | RouteGuide RPC |
+|----------------------|------------------|--------------------------|----------------------|----------------|
+| `ActiveUnaryReactor` | Unary            | One request, at creation | One final response   | `GetFeature`   |
+| `ActiveReadReactor`  | Server-streaming | One request, at creation | A stream of messages | `ListFeatures` |
+| `ActiveWriteReactor` | Client-streaming | A stream of requests     | One final response   | `RecordRoute`  |
+| `ActiveBidiReactor`  | Bidirectional    | A stream of requests     | A stream of messages | `RouteChat`    |
+
+A final response arrives together with the end of the RPC, through the `done` slot. A stream of messages arrives one
+message at a time, through the `read_ok` slot, and `read_nok` reports its end. A stream of requests is sent one write
+at a time, since gRPC allows one write in flight per stream, and each completed write is reported through
+`write_done`.
+
+### The three parameters
+
+Each parameter answers one question about one direction, and the application chooses it per RPC.
+
+**`Delivery`: who starts the transfer of a received message.** Taken by all four reactors, with no default. See
+[Delivery approaches](#delivery-approaches).
+
+| `Delivery` | The callback receives         | The message then waits | The application takes it with |
+|------------|-------------------------------|------------------------|-------------------------------|
+| `kPull`    | `const ResponseT&`, lent      | In the reactor         | `GetResponse()`, a swap       |
+|            |                               |                        | without a deep copy           |
+| `kPush`    | `std::unique_ptr<ResponseT>`, | Wherever the callback  | Nothing more: it owns it      |
+|            | given                         | hands it               |                               |
+
+`kPull` costs nothing per message, but the reactor has one read target, which the next read overwrites. `kPush` gives
+each message its own object, which survives any later read, and brings the obligations under
+[Message ownership](#message-ownership).
+
+**`ReadPacing`: whether an incoming stream waits for the application.** Taken by the two reading reactors,
+`ActiveReadReactor` and `ActiveBidiReactor`, with `kPerMessage` as the default. The three values sit on one scale, from
+a stream that never waits to one that always does. See [Read pacing modes](#read-pacing-modes).
+
+| `ReadPacing`  | The stream waits              | `read_ok` returns     | A held message is released by      |
+|---------------|-------------------------------|-----------------------|------------------------------------|
+| `kContinuous` | Never                         | Nothing               | Nothing: no message is held        |
+| `kPerMessage` | When `read_ok` returns `true` | `bool`: `true` holds, | `GetResponse()` or `ResumeRead()`, |
+|               |                               | `false` reads on      | once per kept message              |
+| `kTurnByTurn` | After every message           | Nothing               | `GetResponse()` or `ResumeRead()`, |
+|               |                               |                       | once per message                   |
+
+`kPerMessage` reaches both ends of the scale at runtime, one message at a time. `kContinuous` and `kTurnByTurn` add no
+behaviour to it: they fix its decision for the whole RPC, and the compiler then enforces it.
+
+**`Submission`: who starts the transfer of each request.** Taken by the two writing reactors, `ActiveWriteReactor`
+and `ActiveBidiReactor`, with no default. See [Request submission](#request-submission).
+
+| `Submission`         | Each request is sent by                 | The request stream is closed by | Write-side hold |
+|----------------------|-----------------------------------------|---------------------------------|-----------------|
+| `kApplicationPushes` | The application, with `SendRequest()`   | `SendLastRequest()` or          | Yes             |
+|                      | or `SendLastRequest()`, from any thread | `CloseRequestStream()`          |                 |
+| `kReactorPulls`      | The reactor, with what the              | `next_request` returning        | None            |
+|                      | `next_request` callback returns         | `std::nullopt`                  |                 |
+
+Under `kApplicationPushes` the write calls come from outside gRPC's reactions, so the reactor holds the RPC while one
+may still come: see [Write-side idle hold](#write-side-idle-hold) and [Write-flow hold](#write-flow-hold). Under
+`kReactorPulls` every write starts inside a reaction, so the reactor holds nothing, and the RPC ends on its own. The
+price is the callback's contract: it must answer at once, and cannot answer "not yet".
+
+An outgoing stream has no pacing parameter. gRPC allows one write in flight, and the reader's pacing on the other end
+already decides how fast the writes complete.
+
+### Which direction each parameter acts on
+
+Each parameter acts on one direction of the flow, and a reactor takes it only where that direction carries messages:
+
+| Reactor              | Outgoing: requests                          | Incoming: responses                   |
+|----------------------|---------------------------------------------|---------------------------------------|
+| `ActiveUnaryReactor` | One request, given to the constructor: none | One final response: `Delivery`        |
+| `ActiveReadReactor`  | One request, given to the constructor: none | A stream: `Delivery` and `ReadPacing` |
+| `ActiveWriteReactor` | A stream: `Submission`                      | One final response: `Delivery`        |
+| `ActiveBidiReactor`  | A stream: `Submission`                      | A stream: `Delivery` and `ReadPacing` |
+
+- `Delivery` is on all four reactors, since every reactor receives something.
+- `Submission` is on the two that send a stream. A single request goes to the constructor, and is sent when the call
+  starts, so no later transfer is left to decide.
+- `ReadPacing` is on the two that receive a stream. A final response arrives together with the end of the RPC, so no
+  next read is left to arm.
+
+The bidirectional reactor therefore has a push or pull for each direction: `Delivery` for what it receives, and
+`Submission` for what it sends. They are independent, so any `Delivery` combines with any `Submission`.
+
+### Every combination
+
+| Reactor              | `Delivery` | `Submission` | `ReadPacing` | Variants |
+|----------------------|------------|--------------|--------------|----------|
+| `ActiveUnaryReactor` | 2          |              |              | 2        |
+| `ActiveReadReactor`  | 2          |              | 3            | 6        |
+| `ActiveWriteReactor` | 2          | 2            |              | 4        |
+| `ActiveBidiReactor`  | 2          | 2            | 3            | 12       |
+
+That is 24 variants. The parameters follow the message and response types, in the order `kDelivery`, `kSubmission`,
+`kPacing`, and only `kPacing` has a default. So `ActiveBidiReactor<RequestT, ResponseT, kDelivery, kSubmission>` uses
+`kPerMessage`, and the RouteGuide adapters take the same parameters in the same order, for example
+`routeguide::RouteChat::ClientReactor<Delivery::kPull, Submission::kReactorPulls>`.
+
+### What each choice changes in the API
+
+A parameter changes the reactor's type, not only its behaviour. A member that a variant does not offer does not
+compile, so a misuse is caught at build time rather than at runtime.
+
+| Member                                | Offered when                                                                |
+|---------------------------------------|-----------------------------------------------------------------------------|
+| `GetResponse()`                       | `kPull`. On the two reading reactors, only with `kPerMessage` or            |
+|                                       | `kTurnByTurn`, the pacings that hold a message                              |
+| `ResumeRead()`                        | The two reading reactors under `kPush`, with `kPerMessage` or `kTurnByTurn` |
+| `read_ok` returning `bool`            | `kPerMessage`. It returns `void` under the two other pacings                |
+| `SendRequest()`, `SendLastRequest()`, | The two writing reactors under `kApplicationPushes`                         |
+| `CloseRequestStream()`                |                                                                             |
+| The `next_request` slot               | The two writing reactors under `kReactorPulls`. An empty placeholder under  |
+|                                       | `kApplicationPushes`, which a function cannot be bound to                   |
+| `Status()`, `TryCancel()`             | Every variant                                                               |
+
+The full API, member by member, is under [Application-facing API](#application-facing-api).
+
+### What each variant asks of the application
+
+| Variant                             | The application owes                           | Otherwise              |
+|-------------------------------------|------------------------------------------------|------------------------|
+| Every variant                       | Destroying the reactor only once `OnDone()`    | Use after free         |
+|                                     | has run                                        |                        |
+| `kPush`                             | Reclaiming each message handed to the event    | Leak or double free    |
+|                                     | queue exactly once, and draining the queue     |                        |
+|                                     | before `Halt()`                                |                        |
+| A held message: every message under | Exactly one `GetResponse()` (`kPull`) or       | The RPC never ends     |
+| `kTurnByTurn`, a kept one under     | `ResumeRead()` (`kPush`) for it                |                        |
+| `kPerMessage`                       |                                                |                        |
+| `ActiveWriteReactor` under          | Ending the write side: `SendLastRequest()`,    | `OnDone()` never fires |
+| `kApplicationPushes`                | `CloseRequestStream()`, `TryCancel()`, or a    |                        |
+|                                     | failed write                                   |                        |
+| `kReactorPulls`                     | A `next_request` that answers at once, without | A stalled gRPC thread  |
+|                                     | blocking, since it runs inside a reaction      |                        |
+
+Everything else is the reactor's job. The reasoning behind each row is under
+[Hold requirements](#hold-requirements) and [The obligation a held message adds](#the-obligation-a-held-message-adds).
+
+Every reactor starts its RPC in its constructor, as the last statement of the specialized reactor's constructor, so a
+specialization cannot forget to start it, and every reactor that exists is a running RPC. The price is a short window:
+a callback can run on a gRPC thread before the `std::make_unique` that creates the reactor has returned, so before the
+application's own pointer to the reactor is set. A callback therefore uses the reactor pointer it is given, never the
+application's, and leaves everything else to a handler on the application thread. When the reactor is created on that
+same thread, as in the demo, the handler runs only after the creating code has returned. Under
+`Submission::kReactorPulls`, the first `next_request` call even runs inside the constructor, as described under
+[Request submission](#request-submission).
+
+### Choosing a variant
+
+| Parameter    | Choose               | When                                                                         |
+|--------------|----------------------|------------------------------------------------------------------------------|
+| `Delivery`   | `kPull`              | The message is consumed in place, or pulled when the application is ready,   |
+|              |                      | and the event queue carries only reactor pointers                            |
+|              | `kPush`              | The message must outlive the next read, or travel on to another component    |
+| `ReadPacing` | `kPerMessage`        | By default: `read_ok` decides for each message                               |
+|              | `kContinuous`        | Every message is consumed as it arrives, and the stream never waits          |
+|              | `kTurnByTurn`        | The stream must wait for the application after every message                 |
+| `Submission` | `kReactorPulls`      | Each next request is available at once: a prepared list, a generator, a file |
+|              | `kApplicationPushes` | Requests appear later, on the application's own thread                       |
+
+The constraints behind each choice are argued in architecture.md, under
+[Choosing for a single terminal response](/docs/architecture.md#choosing-for-a-single-terminal-response),
+[Choosing for a stream of messages](/docs/architecture.md#choosing-for-a-stream-of-messages) and
+[Why the writing reactors also let the reactor pull](/docs/architecture.md#why-the-writing-reactors-also-let-the-reactor-pull).
+
+### Where each variant runs
+
+The demo client, `route_guide_active_reactor_client`, runs 18 of the 24 variants at once, one scenario file each:
+
+| Reactor              | Scenario files, under `applications/reactor/scenarios/`                 |
+|----------------------|-------------------------------------------------------------------------|
+| `ActiveUnaryReactor` | `get_feature_pull`, `get_feature_push`                                  |
+| `ActiveReadReactor`  | `list_features_<delivery>_<pacing>`, for each of the six pairs, such as |
+|                      | `list_features_pull_per_message`                                        |
+| `ActiveWriteReactor` | `record_route_pull`, `record_route_push`, `record_route_pull_producer`  |
+| `ActiveBidiReactor`  | `route_chat_<delivery>_<pacing>`, for each of the six pairs, and        |
+|                      | `route_chat_pull_per_message_producer`                                  |
+
+A file name gives the RPC, then the `Delivery`, then the `ReadPacing` for a reading reactor. A `_producer` file runs
+`Submission::kReactorPulls`, and every other writing scenario `kApplicationPushes`. Neighbouring files differ along one
+parameter only, so a `diff` between two of them shows exactly what that parameter changes. The six variants left out
+all use `kReactorPulls`, which combines with every `Delivery` and `ReadPacing` exactly as `kApplicationPushes` does, so
+one producer scenario per writing reactor shows it.
 
 ## API naming conventions
 
@@ -269,7 +448,8 @@ under either approach. See [Read pacing modes](#read-pacing-modes).
 
 Only the slot that carries a message changes its parameter between the two approaches. The slot names, the other
 callbacks, the write side, `Status()` and `TryCancel()` are identical. What each approach costs, and which one suits
-which RPC, is argued in [architecture.md](/docs/architecture.md#why-the-reactors-offer-two-delivery-approaches).
+which RPC, is argued in [architecture.md](/docs/architecture.md#why-the-reactors-offer-two-delivery-approaches). Both
+are shown side by side on a unary call in [walkthrough.md](/docs/walkthrough.md#part-1-a-unary-call).
 
 ## Message ownership
 

@@ -50,6 +50,13 @@ GitHub Actions CI builds and tests the project against Alpine's native gRPC and 
 vcpkg. This is CI-only and doesn't change local development. See [ci.yml](/.github/workflows/ci.yml) for the
 recipe.
 
+## Walkthrough
+
+New to the library? See [walkthrough.md](/docs/walkthrough.md). Pick the reactor your RPC's shape calls for, unary,
+stream reader, stream writer or bidirectional, and it builds that reactor step by step from a demo scenario you can run
+and copy, with a first answer to each choice and a checklist. For every variant side by side, see
+[Reactors and their variants](/applications/reactor/reactor_client.md#reactors-and-their-variants).
+
 ## Design rationale
 
 See [architecture.md](/docs/architecture.md) for why this project is built on the Active Object and Reactor

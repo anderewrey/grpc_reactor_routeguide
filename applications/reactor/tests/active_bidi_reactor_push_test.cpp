@@ -1192,10 +1192,10 @@ TEST_F(ActiveBidiReactorTest, RouteChat_OverlappingWrite_RejectedWhileHoldIsClai
 /// threads while the server closes the stream underneath them. A non-atomic claim lets two claimants
 /// through, which either breaks the one-write-in-flight invariant or double-releases the hold.
 /// Probabilistic by nature; it is the concurrency the design reasons about, not a proof.
-/// The server is deliberately left running: terminating it underneath the writers hits a
-/// pre-existing defect, recorded in deferred-work.md, where a write accepted into a terminating
-/// stream can leave the RPC unable to conclude. That defect predates the idle-window hold and
-/// reproduces identically on the baseline, so it is not this test's subject.
+/// The server is deliberately left running: terminating it underneath the writers hits a separate,
+/// pre-existing defect, where a write accepted into a terminating stream can leave the RPC unable to
+/// conclude. That defect predates the idle-window hold and reproduces identically on the baseline, so
+/// it is not this test's subject.
 TEST_F(ActiveBidiReactorTest, RouteChat_ConcurrentClaimants_KeepTheHoldAccountingIntact) {
   std::atomic<int> completed{0};
   std::atomic<int> accepted{0};

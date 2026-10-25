@@ -60,8 +60,9 @@ class GetFeature {
   spdlog::logger& logger_{VariantLogger("GetFeature.push")};
 
   // Declared last, so destruction deregisters the handler before anything it reaches is gone. The
-  // teardown limitation recorded in deferred-work.md is unchanged by that ordering: a reactor
-  // cancelled during teardown still pushes a response into a queue nobody drains.
+  // teardown limitation of Delivery::kPush is unchanged by that ordering: EventLoop::Halt() discards
+  // the queued events rather than draining them (see "Message ownership" in reactor_client.md), so a
+  // reactor cancelled during teardown still pushes a response into a queue nobody drains, and it leaks.
   RpcReactor::EventConnection on_done_;
 };
 
