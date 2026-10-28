@@ -102,3 +102,24 @@ changes. A name starting with `...` abbreviates the same RPC's prefix.
 
 The situation behind each use case, and why its variant fits, are in the
 [use cases' README](/applications/reactor/usecases/README.md).
+
+## Coroutine scenarios
+
+The coroutine level the [design draft](/docs/client-coroutines-design.md) proposes has scenarios of its own, written
+with its awaitables instead of callbacks. Each sits next to the callback scenario whose reactor configuration it wraps,
+with a `_coro` suffix, and runs in an application of its own:
+
+| Kind               | Application                              | Runs                                          |
+|--------------------|------------------------------------------|-----------------------------------------------|
+| Coroutine variant  | `route_guide_active_reactor_client_coro` | One scenario per awaitable                    |
+| Coroutine use case | `route_guide_reactor_usecases_coro`      | One per use case whose code stays on the      |
+|                    |                                          | application thread                            |
+
+| Scenario                | Awaitable                         | Diff against                                    |
+|-------------------------|-----------------------------------|-------------------------------------------------|
+| `get_feature_pull_coro` | `co::Unary`: `co_await Finish()`  | `get_feature_pull`, its callback parent         |
+| `whats_here_coro`       | `co::Unary`: `co_await Finish()`  | `whats_here`, its callback twin, and            |
+|                         |                                   | `get_feature_pull_coro`, the variant it clones  |
+
+Against its parent, a coroutine scenario changes the style only: the same reactor configuration, consumed by one
+coroutine instead of handlers. Against its coroutine variant, a coroutine use case changes the use only.

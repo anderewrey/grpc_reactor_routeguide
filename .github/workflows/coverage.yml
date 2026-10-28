@@ -202,6 +202,8 @@ jobs:
             applications/callback/route_guide_callback_server \
             applications/reactor/route_guide_active_reactor_client \
             applications/reactor/route_guide_reactor_usecases \
+            applications/reactor/route_guide_active_reactor_client_coro \
+            applications/reactor/route_guide_reactor_usecases_coro \
           ; do
             object_args="$object_args -object=build/$path"
           done
