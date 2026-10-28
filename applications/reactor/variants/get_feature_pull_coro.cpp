@@ -14,7 +14,7 @@
 
 namespace rg_demo::pull::coro {
 
-GetFeature::GetFeature(RpcReactor::co::Executor& executor, routeguide::RouteGuide::Stub& stub)
+GetFeature::GetFeature(RpcReactor::coro::Executor& executor, routeguide::RouteGuide::Stub& stub)
     : executor_(executor), stub_(stub) {
 }
 
@@ -26,7 +26,7 @@ void GetFeature::Start(routeguide::Point point) {
   roots_.Spawn(Run(std::move(point)));
 }
 
-RpcReactor::co::Task<> GetFeature::Run(routeguide::Point point) {
+RpcReactor::coro::Task<> GetFeature::Run(routeguide::Point point) {
   assert(OnApplicationThread());
   // (Point 1.1) Create reactor, which sends the request
   Call call{executor_, stub_, point, CreateClientContext()};

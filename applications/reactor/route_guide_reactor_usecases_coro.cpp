@@ -30,7 +30,7 @@
  * situation, and `diff variants/<variant>_coro.cpp usecases/<use case>_coro.cpp` is what the application adds.
  * The component mapping is that of route_guide_active_reactor_client_coro.
  *
- * - rg_demo::usecase::coro::WhatsHere, GetFeature under kPull through co::Unary: someone taps the map, and a
+ * - rg_demo::usecase::coro::WhatsHere, GetFeature under kPull through coro::Unary: someone taps the map, and a
  *   card shows the name of the place there, or that nothing named is there.
  *
  * Reading the output: WhatsHere logs the answer, then the card, as its callback twin does, every line on the
@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
 
   // Created on this thread, which runs EventLoop::Run() below, and before any coroutine starts. Every use
   // case's coroutine resumes through it, so it outlives them all.
-  RpcReactor::co::EventLoopExecutor executor;
+  RpcReactor::coro::EventLoopExecutor executor;
 
   // The use case roster. The stub and the executor above must outlive every one of them.
   rg_demo::usecase::coro::WhatsHere whats_here{executor, *stub};

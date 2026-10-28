@@ -115,11 +115,11 @@ with a `_coro` suffix, and runs in an application of its own:
 | Coroutine use case | `route_guide_reactor_usecases_coro`      | One per use case whose code stays on the      |
 |                    |                                          | application thread                            |
 
-| Scenario                | Awaitable                         | Diff against                                    |
-|-------------------------|-----------------------------------|-------------------------------------------------|
-| `get_feature_pull_coro` | `co::Unary`: `co_await Finish()`  | `get_feature_pull`, its callback parent         |
-| `whats_here_coro`       | `co::Unary`: `co_await Finish()`  | `whats_here`, its callback twin, and            |
-|                         |                                   | `get_feature_pull_coro`, the variant it clones  |
+| Scenario                | Awaitable                          | Diff against                                    |
+|-------------------------|------------------------------------|-------------------------------------------------|
+| `get_feature_pull_coro` | `coro::Unary`: `co_await Finish()` | `get_feature_pull`, its callback parent         |
+| `whats_here_coro`       | `coro::Unary`: `co_await Finish()` | `whats_here`, its callback twin, and            |
+|                         |                                    | `get_feature_pull_coro`, the variant it clones  |
 
 Against its parent, a coroutine scenario changes the style only: the same reactor configuration, consumed by one
 coroutine instead of handlers. Against its coroutine variant, a coroutine use case changes the use only.

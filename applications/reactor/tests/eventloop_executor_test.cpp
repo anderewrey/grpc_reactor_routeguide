@@ -27,10 +27,10 @@
 namespace {
 
 using RpcReactor::EventConnection;
-using RpcReactor::co::EventLoopExecutor;
-using RpcReactor::co::Executor;
-using RpcReactor::co::RootTasks;
-using RpcReactor::co::Task;
+using RpcReactor::coro::EventLoopExecutor;
+using RpcReactor::coro::Executor;
+using RpcReactor::coro::RootTasks;
+using RpcReactor::coro::Task;
 
 constexpr auto kTimeout = std::chrono::seconds(10);
 

@@ -14,7 +14,7 @@
 
 namespace rg_demo::usecase::coro {
 
-WhatsHere::WhatsHere(RpcReactor::co::Executor& executor, routeguide::RouteGuide::Stub& stub)
+WhatsHere::WhatsHere(RpcReactor::coro::Executor& executor, routeguide::RouteGuide::Stub& stub)
     : executor_(executor), stub_(stub) {
 }
 
@@ -26,7 +26,7 @@ void WhatsHere::Start(routeguide::Point point) {
   roots_.Spawn(Run(std::move(point)));
 }
 
-RpcReactor::co::Task<> WhatsHere::Run(routeguide::Point point) {
+RpcReactor::coro::Task<> WhatsHere::Run(routeguide::Point point) {
   assert(OnApplicationThread());
   // (Point 1.1) Create reactor, which sends the request
   Call call{executor_, stub_, point, CreateClientContext()};

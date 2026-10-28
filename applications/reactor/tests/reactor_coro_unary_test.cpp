@@ -3,7 +3,7 @@
 /// Copyright 2026 anderewrey
 ///
 
-/// Tests co::Unary, the unary awaitable of reactor_coro.h, against an in-process server, with coroutines
+/// Tests coro::Unary, the unary awaitable of reactor_coro.h, against an in-process server, with coroutines
 /// resumed on the AppLoop task queue that stands in for the application's event loop: the outcome and the
 /// owned response under both deliveries, a failed RPC, a cancel, and a frame destroyed while its RPC is in
 /// flight. The hand-over inside the awaitable, between the done callback and Finish(), is tested on its own,
@@ -33,10 +33,10 @@
 namespace {
 
 using RpcReactor::Client::Delivery;
-using RpcReactor::co::Executor;
-using RpcReactor::co::RootTasks;
-using RpcReactor::co::Task;
-using RpcReactor::co::Unary;
+using RpcReactor::coro::Executor;
+using RpcReactor::coro::RootTasks;
+using RpcReactor::coro::Task;
+using RpcReactor::coro::Unary;
 template <Delivery kDelivery>
 using GetFeatureCall = Unary<routeguide::GetFeature::ClientReactor<kDelivery>>;
 
@@ -291,7 +291,7 @@ class RecordingExecutor final : public Executor {
 /// and posts nothing: what Finish() does when the RPC ended first.
 TEST(CoroCompletionTest, EndedFirst_DoesNotSuspend_AndPostsNothing) {
   RecordingExecutor executor;
-  RpcReactor::co::detail::Completion completion;
+  RpcReactor::coro::detail::Completion completion;
   completion.Complete(executor);
 
   EXPECT_FALSE(completion.Suspend(std::noop_coroutine()));
@@ -301,7 +301,7 @@ TEST(CoroCompletionTest, EndedFirst_DoesNotSuspend_AndPostsNothing) {
 /// @test A coroutine that awaits first suspends, and the end of the operation posts it, once.
 TEST(CoroCompletionTest, AwaitedFirst_Suspends_AndTheEndPostsItOnce) {
   RecordingExecutor executor;
-  RpcReactor::co::detail::Completion completion;
+  RpcReactor::coro::detail::Completion completion;
   const std::coroutine_handle<> waiter = std::noop_coroutine();
 
   EXPECT_TRUE(completion.Suspend(waiter));
@@ -314,7 +314,7 @@ TEST(CoroCompletionTest, AwaitedFirst_Suspends_AndTheEndPostsItOnce) {
 /// @test Once abandoned, as by a Unary being destroyed, the end of the operation posts nothing.
 TEST(CoroCompletionTest, Abandoned_TheEndPostsNothing) {
   RecordingExecutor executor;
-  RpcReactor::co::detail::Completion completion;
+  RpcReactor::coro::detail::Completion completion;
 
   EXPECT_TRUE(completion.Suspend(std::noop_coroutine()));
   completion.Abandon();

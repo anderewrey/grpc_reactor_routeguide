@@ -18,7 +18,7 @@ namespace rg_demo::usecase::coro {
 /// name of the place there, or that nothing named is there. One question gets one answer, read once,
 /// where it arrives.
 ///
-/// The variant chosen is co::Unary over ActiveUnaryReactor under Delivery::kPull, for the reason
+/// The variant chosen is coro::Unary over ActiveUnaryReactor under Delivery::kPull, for the reason
 /// whats_here.h gives: the card is filled in where the answer arrives, and nothing keeps it after that.
 /// Here, that place is the line after `co_await call.Finish()`, which owns the answer swapped out of the
 /// reactor.
@@ -28,12 +28,12 @@ namespace rg_demo::usecase::coro {
 class WhatsHere {
   // The reactor flavour this scenario uses starts with its Delivery approach.
   using Delivery = routeguide::GetFeature::Delivery;
-  using Call = RpcReactor::co::Unary<routeguide::GetFeature::ClientReactor<Delivery::kPull>>;
+  using Call = RpcReactor::coro::Unary<routeguide::GetFeature::ClientReactor<Delivery::kPull>>;
 
  public:
   /// @param executor resumes the scenario's coroutine on the application thread, and must outlive this object
   /// @param stub of the RouteGuide API, which must outlive this object
-  WhatsHere(RpcReactor::co::Executor& executor, routeguide::RouteGuide::Stub& stub);
+  WhatsHere(RpcReactor::coro::Executor& executor, routeguide::RouteGuide::Stub& stub);
 
   WhatsHere(const WhatsHere&) = delete;
   WhatsHere& operator=(const WhatsHere&) = delete;
@@ -52,14 +52,14 @@ class WhatsHere {
  private:
   /// Servant component, as one function: sends the request, awaits the end of the RPC, and fills the card.
   /// @param point tapped on the map, taken by value since the coroutine outlives the call to Start()
-  RpcReactor::co::Task<> Run(routeguide::Point point);
+  RpcReactor::coro::Task<> Run(routeguide::Point point);
 
-  RpcReactor::co::Executor& executor_;
+  RpcReactor::coro::Executor& executor_;
   routeguide::RouteGuide::Stub& stub_;
   spdlog::logger& logger_{VariantLogger("WhatsHere.coro")};
 
   // Declared last, so a coroutine still suspended is destroyed before anything it reaches is gone.
-  RpcReactor::co::RootTasks roots_;
+  RpcReactor::coro::RootTasks roots_;
 };
 
 }  // namespace rg_demo::usecase::coro

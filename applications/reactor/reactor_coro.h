@@ -26,7 +26,7 @@
 /// Every awaitable keeps the level's boundary rule: its callbacks, on a gRPC thread, only record what they
 /// were given and hand the suspended coroutine to the executor. The coroutine always resumes on the
 /// executor's thread, the application thread.
-namespace RpcReactor::co {
+namespace RpcReactor::coro {
 
 /// How long an awaitable waits for its reactor's OnDone(), once the RPC is cancelled or has ended, before it
 /// gives up and leaks the reactor rather than freeing it under gRPC.
@@ -105,7 +105,7 @@ struct UnaryResult {
 /// A unary RPC a coroutine awaits: the request is sent on construction, and `co_await Finish()` resumes the
 /// coroutine on the application thread once the RPC has ended, with its status and its response.
 ///
-///     co::Unary<routeguide::GetFeature::ClientReactor<Delivery::kPull>> call{executor, stub, point};
+///     coro::Unary<routeguide::GetFeature::ClientReactor<Delivery::kPull>> call{executor, stub, point};
 ///     auto [status, feature] = co_await call.Finish();
 ///
 /// The response is always owned by the coroutine. Delivery decides how it becomes owned:
@@ -214,4 +214,4 @@ class Unary {
   std::unique_ptr<ReactorT> reactor_;  // declared last, so the callback's targets exist before the RPC starts
 };
 
-}  // namespace RpcReactor::co
+}  // namespace RpcReactor::coro

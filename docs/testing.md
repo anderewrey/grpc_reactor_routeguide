@@ -105,11 +105,11 @@ They are described in [coroutine core coverage](#coroutine-core-coverage).
 
 ### Coroutine awaitable tests
 
-[reactor_coro_unary_test.cpp][coro-unary-test] tests `co::Unary`, the unary awaitable of [reactor_coro.h][reactor-coro],
-against an in-process server, with each coroutine resumed on the `AppLoop` task queue. Its executor counts the
-coroutines it is handed, so a test can tell whether `Finish()` suspended. The hand-over inside the awaitable, between
-the done callback and `Finish()`, is tested on its own, with no RPC and no timing. Both are described in
-[unary awaitable coverage](#unary-awaitable-coverage).
+[reactor_coro_unary_test.cpp][coro-unary-test] tests `coro::Unary`, the unary awaitable of
+[reactor_coro.h][reactor-coro], against an in-process server, with each coroutine resumed on the `AppLoop` task queue.
+Its executor counts the coroutines it is handed, so a test can tell whether `Finish()` suspended. The hand-over inside
+the awaitable, between the done callback and `Finish()`, is tested on its own, with no RPC and no timing. Both are
+described in [unary awaitable coverage](#unary-awaitable-coverage).
 
 ### Callback application smoke test
 
@@ -411,7 +411,7 @@ hand, and count the live instances of a `Tracked` parameter or local to show whi
 | `RootTasks_DestroyedWithSuspendedChain_DestroysEveryFrame` | The owner releases a suspended chain of two frames |
 | `RootTasks_Spawn_RunsToTheFirstSuspension_ThenReleasesOnCompletion` | `Spawn()` starts at once, the end releases |
 | `RootTasks_SeveralRoots_EachReleasedOnItsOwnCompletion` | Roots ending in any order, or at once, are each released |
-| `Executor_ResumptionsFromOtherThreads_AllRunOnTheAppLoop` | 100 resumptions posted from other threads run on the loop |
+| `Executor_ResumptionsFromOtherThreads_AllRunOnTheAppLoop` | 100 resumptions posted from other threads run on it |
 | `Task_ExceptionEscapesTheBody_LogsAndTerminates` | An escaping exception is logged, then terminates |
 
 The stack test measures the stack position of a plain function each child calls, since a coroutine's own locals live
@@ -419,7 +419,8 @@ in its heap frame. Under GCC below `-O2`, symmetric transfer alone grows the sta
 that test overflows the stack. A child that ends without suspending therefore lets its awaiter go on without any
 transfer, which the race test checks against a body ending on another thread at the same time.
 
-[eventloop_executor_test.cpp][eventloop-executor-test] tests the executor of the applications against the real EventLoop:
+[eventloop_executor_test.cpp][eventloop-executor-test] tests the executor of the applications against the real
+EventLoop:
 
 | Test | Checks |
 | ------ | --------- |
@@ -441,7 +442,7 @@ Five mutants of `coro_task.h` were each caught:
 
 ### Unary awaitable coverage
 
-[reactor_coro_unary_test.cpp][coro-unary-test] runs `GetFeature` through `co::Unary`. Its service can hold an answer
+[reactor_coro_unary_test.cpp][coro-unary-test] runs `GetFeature` through `coro::Unary`. Its service can hold an answer
 until the test releases it, or until the client cancels, so a coroutine that awaits `Finish()` before the answer is
 known to suspend.
 
@@ -465,7 +466,7 @@ coroutines it is given:
 | `AwaitedFirst_Suspends_AndTheEndPostsItOnce` | A coroutine awaiting first suspends, and the end posts it once |
 | `Abandoned_TheEndPostsNothing` | Once abandoned, as by a destroyed `Unary`, the end posts nothing |
 
-Six mutants of `co::Unary` were each caught:
+Six mutants of `coro::Unary` were each caught:
 
 | Mutant | Caught by |
 | ------ | --------- |

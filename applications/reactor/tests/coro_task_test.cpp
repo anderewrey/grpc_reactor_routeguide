@@ -25,9 +25,9 @@
 
 namespace {
 
-using RpcReactor::co::Executor;
-using RpcReactor::co::RootTasks;
-using RpcReactor::co::Task;
+using RpcReactor::coro::Executor;
+using RpcReactor::coro::RootTasks;
+using RpcReactor::coro::Task;
 
 /// Counts its live instances, to show when a frame destroys what it owns. Coroutines take it by value, so
 /// the frame owns a copy of its own.

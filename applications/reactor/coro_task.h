@@ -22,7 +22,7 @@
 ///
 /// Errors are values: no function here throws on purpose, and an exception that escapes a coroutine body
 /// is a bug, which ends the process at the place it happened, see PromiseBase::unhandled_exception().
-namespace RpcReactor::co {
+namespace RpcReactor::coro {
 
 /// Resumes coroutine handles later, on a thread of its own choosing: the application thread, for every
 /// executor of this level.
@@ -288,4 +288,4 @@ class RootTasks {
   std::list<RootHandle> roots_;
 };
 
-}  // namespace RpcReactor::co
+}  // namespace RpcReactor::coro

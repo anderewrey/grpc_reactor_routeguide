@@ -62,7 +62,7 @@ class EventConnection {
 
 }  // namespace RpcReactor
 
-namespace RpcReactor::co {
+namespace RpcReactor::coro {
 
 /// The executor of the applications: resumes every coroutine on the application thread, the one that runs
 /// the EventLoop handlers.
@@ -113,4 +113,4 @@ class EventLoopExecutor final : public Executor {
   EventConnection connection_{kResumeEvent, [this](const EventLoop::Event* event) { Resume(event); }};
 };
 
-}  // namespace RpcReactor::co
+}  // namespace RpcReactor::coro

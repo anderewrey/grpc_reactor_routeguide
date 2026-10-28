@@ -14,7 +14,7 @@
 
 namespace rg_demo::pull::coro {
 
-/// Exhibits co::Unary, the unary awaitable, over ActiveUnaryReactor under Delivery::kPull, via the GetFeature
+/// Exhibits coro::Unary, the unary awaitable, over ActiveUnaryReactor under Delivery::kPull, via the GetFeature
 /// RPC. One coroutine per RPC runs on the application thread from start to end: it awaits Finish(), which
 /// resumes it once OnDone() has run, with the status and the response swapped out of the reactor.
 ///
@@ -24,12 +24,12 @@ namespace rg_demo::pull::coro {
 class GetFeature {
   // The reactor flavour this scenario exhibits starts with its Delivery approach.
   using Delivery = routeguide::GetFeature::Delivery;
-  using Call = RpcReactor::co::Unary<routeguide::GetFeature::ClientReactor<Delivery::kPull>>;
+  using Call = RpcReactor::coro::Unary<routeguide::GetFeature::ClientReactor<Delivery::kPull>>;
 
  public:
   /// @param executor resumes the scenario's coroutine on the application thread, and must outlive this object
   /// @param stub of the RouteGuide API, which must outlive this object
-  GetFeature(RpcReactor::co::Executor& executor, routeguide::RouteGuide::Stub& stub);
+  GetFeature(RpcReactor::coro::Executor& executor, routeguide::RouteGuide::Stub& stub);
 
   GetFeature(const GetFeature&) = delete;
   GetFeature& operator=(const GetFeature&) = delete;
@@ -48,14 +48,14 @@ class GetFeature {
  private:
   /// Servant component, as one function: sends the request, awaits the end of the RPC, and logs the answer.
   /// @param point to look up, taken by value since the coroutine outlives the call to Start()
-  RpcReactor::co::Task<> Run(routeguide::Point point);
+  RpcReactor::coro::Task<> Run(routeguide::Point point);
 
-  RpcReactor::co::Executor& executor_;
+  RpcReactor::coro::Executor& executor_;
   routeguide::RouteGuide::Stub& stub_;
   spdlog::logger& logger_{VariantLogger("GetFeature.pull.coro")};
 
   // Declared last, so a coroutine still suspended is destroyed before anything it reaches is gone.
-  RpcReactor::co::RootTasks roots_;
+  RpcReactor::coro::RootTasks roots_;
 };
 
 }  // namespace rg_demo::pull::coro

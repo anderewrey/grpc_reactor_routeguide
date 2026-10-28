@@ -31,13 +31,13 @@
  *
  * Component mapping, against the callback variants:
  * - A scenario's Start() method = Proxy, which spawns the scenario's coroutine
- * - ClientReactor classes = Method Request, unchanged, inside an awaitable such as co::Unary
- * - EventLoop = Scheduler + Activation Queue, unchanged: co::EventLoopExecutor posts each coroutine to resume
+ * - ClientReactor classes = Method Request, unchanged, inside an awaitable such as coro::Unary
+ * - EventLoop = Scheduler + Activation Queue, unchanged: coro::EventLoopExecutor posts each coroutine to resume
  *   as an event, and its one handler resumes it on the application thread
  * - A scenario's coroutine = Servant, as one function instead of one handler per event
  * - The awaited Finish() = Future
  *
- * - rg_demo::pull::coro::GetFeature, GetFeature under kPull through co::Unary: one request, and the coroutine
+ * - rg_demo::pull::coro::GetFeature, GetFeature under kPull through coro::Unary: one request, and the coroutine
  *   resumes with the status and the response once OnDone() has run.
  *
  * Reading the output: each scenario logs "rpc started" when its coroutine has sent the request, then, once
@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
 
   // Created on this thread, which runs EventLoop::Run() below, and before any coroutine starts. Every
   // scenario's coroutine resumes through it, so it outlives them all.
-  RpcReactor::co::EventLoopExecutor executor;
+  RpcReactor::coro::EventLoopExecutor executor;
 
   // The scenario roster. The stub and the executor above must outlive every one of them.
   rg_demo::pull::coro::GetFeature get_feature_pull{executor, *stub};
