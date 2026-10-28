@@ -334,7 +334,10 @@ Every non-trivial claim needs a test or a demonstrable run:
 
 ## Suggested order
 
-1. `Task<T>`, `Spawn()`, the executor interface and `coro_eventloop.h`, with their unit tests.
+1. `Task<T>`, `Spawn()`, the executor interface and `coro_eventloop.h`, with their unit tests. Done, in the
+   `RpcReactor::co` namespace: `Spawn()` is a member of `RootTasks`, the owner of the root tasks, and
+   `EventLoopExecutor` takes the application thread as a parameter, the calling thread by default, so its tests can run
+   EventLoop on a thread of their own. [testing.md](/docs/testing.md#coroutine-core-coverage) lists what the tests prove.
 2. The unary awaitable: `get_feature_pull_coro`, then `whats_here_coro`, to settle `Finish()` and ownership.
 3. The reader without a buffer: both `turn_by_turn_coro` variants, then `turn_by_turn_guidance_coro`.
 4. The buffered readers: their three variants, then `trip_recorder_coro`, `live_vehicle_position_coro` and

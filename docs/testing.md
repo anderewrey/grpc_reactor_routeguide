@@ -91,10 +91,17 @@ differs only in RPC shape.
 
 ### Coroutine core tests
 
-[coro_task_test.cpp][coro-task-test] tests the core of the coroutine level, which the
-[client coroutines design draft](/docs/client-coroutines-design.md) proposes: `Task<T>`, `RootTasks` and the
-`Executor` interface of [coro_task.h][coro-task], driven by hand or resumed on the `AppLoop` task queue of
-[continuous_use_support.h][continuous-support]. It needs no gRPC server. It is described in [coroutine core coverage](#coroutine-core-coverage).
+Two test binaries test the core of the coroutine level, which the
+[client coroutines design draft](/docs/client-coroutines-design.md) proposes. Neither needs a gRPC server:
+
+- [coro_task_test.cpp][coro-task-test]: `Task<T>`, `RootTasks` and the `Executor` interface of
+  [coro_task.h][coro-task], driven by hand or resumed on the `AppLoop` task queue of
+  [continuous_use_support.h][continuous-support]
+- [coro_eventloop_test.cpp][coro-eventloop-test]: `EventLoopExecutor` of [coro_eventloop.h][coro-eventloop], against a
+  real EventLoop in `NON_BLOCK` mode, started once for every test as in the integration test, since both EventLoop and
+  the executor are one per process
+
+They are described in [coroutine core coverage](#coroutine-core-coverage).
 
 ### Callback application smoke test
 
@@ -402,6 +409,15 @@ in its heap frame. Under GCC below `-O2`, symmetric transfer alone grows the sta
 that test overflows the stack. A child that ends without suspending therefore lets its awaiter go on without any
 transfer, which the race test checks against a body ending on another thread at the same time.
 
+[coro_eventloop_test.cpp][coro-eventloop-test] tests the executor of the applications against the real EventLoop:
+
+| Test | Checks |
+| ------ | --------- |
+| `Executor_ResumptionsFromOtherThreads_AllRunOnTheApplicationThread` | 100 resumptions posted from other threads |
+| | run on the EventLoop thread, the tests' application thread |
+| `Executor_Post_ResumesInPostOrder_AfterEveryEventQueuedBefore` | Resumptions follow the post order, and an event |
+| | queued between two posts runs between them |
+
 Five mutants of `coro_task.h` were each caught:
 
 | Mutant | Caught by |
@@ -655,7 +671,9 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [journal-test]: /applications/reactor/tests/continuous_journal_test.cpp
 [continuous-support]: /applications/reactor/tests/continuous_use_support.h
 [coro-task-test]: /applications/reactor/tests/coro_task_test.cpp
+[coro-eventloop-test]: /applications/reactor/tests/coro_eventloop_test.cpp
 [coro-task]: /applications/reactor/coro_task.h
+[coro-eventloop]: /applications/reactor/coro_eventloop.h
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp
 [callback-smoke-test]: /applications/callback/tests/callback_smoke_test.sh
 [test-fixture]: /applications/reactor/tests/route_guide_test_fixture.h
