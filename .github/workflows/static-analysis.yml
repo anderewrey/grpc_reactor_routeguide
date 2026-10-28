@@ -60,12 +60,13 @@ jobs:
 
       - uses: actions/checkout@v5
 
-      # See ci.yml's build-test-alpine job for the same EventLoop fork pin and rationale.
+      # The EventLoop commit vcpkg/ports/eventloop pins: the other workflows build it through vcpkg,
+      # this one from source. Keep the two in step.
       - name: Build and install EventLoop
         run: |
-          git clone https://github.com/anderewrey/EventLoop.git /tmp/EventLoop
+          git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop
           cd /tmp/EventLoop
-          git checkout d5d29a0349f3159067df0c3ff2741f1e984679f0
+          git checkout ce1c71eb09ae97dd1672fff90f03b94c02c22649
           cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_CXX_COMPILER=clang++
           cmake --build build
@@ -130,14 +131,14 @@ jobs:
 
       - uses: actions/checkout@v5
 
-      # See ci.yml's build-test-alpine job for the same EventLoop fork pin and rationale. Built
+      # The same EventLoop commit as the build job above, and vcpkg/ports/eventloop. Built
       # with g++ regardless of matrix.tool: only its headers are needed here, not a matching
       # compiler, so there is nothing clang-tidy-specific about this step.
       - name: Build and install EventLoop
         run: |
-          git clone https://github.com/anderewrey/EventLoop.git /tmp/EventLoop
+          git clone https://github.com/amoldhamale1105/EventLoop.git /tmp/EventLoop
           cd /tmp/EventLoop
-          git checkout d5d29a0349f3159067df0c3ff2741f1e984679f0
+          git checkout ce1c71eb09ae97dd1672fff90f03b94c02c22649
           cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_CXX_COMPILER=g++
           cmake --build build
