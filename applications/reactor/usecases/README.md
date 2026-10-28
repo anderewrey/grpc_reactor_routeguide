@@ -8,42 +8,32 @@ scenario, variants and use cases, with its parameters.
 
 ## Situations and the variant each calls for
 
-| Scenario                | Real-life situation                        | Why this variant                           |
-|-------------------------|--------------------------------------------|--------------------------------------------|
-| `live_vehicle_position` | A map draws a vehicle's position from a    | Only the newest fix matters: a             |
-|                         | live feed of fixes                         | `LatestSlot` keeps it, and the feed never  |
-|                         |                                            | waits for the map                          |
-| `trip_recorder`         | A vehicle's black box stores every         | Every report matters, and the feed never   |
-|                         | position report of a trip                  | waits for storage; the backlog has no      |
-|                         |                                            | bound                                      |
-| `unnamed_places_audit`  | A map-quality tool counts the places with  | Each place is counted and forgotten:       |
-|                         | no name in a region                        | nothing is kept                            |
-| `place_search`          | A search shows only the named places of    | An unwanted place is skipped at no cost,   |
-|                         | the visible area                           | and a kept one is taken without a copy     |
-| `offline_map_download`  | Saving a region's places for offline use,  | Full speed until the backlog passes a      |
-|                         | pausing when the disk writer falls behind  | threshold, then the download waits         |
-| `turn_by_turn_guidance` | A guidance screen shows one stop at a      | Exactly one message in flight, released by |
-|                         | time, the next once the driver confirms    | the application. `kPush` is required: the  |
-|                         | the current one                            | screen owns the stop until the driver      |
-|                         |                                            | confirms, while `kPull`'s `GetResponse()`  |
-|                         |                                            | would arm the next read as it takes it     |
-| `gpx_track_upload`      | Uploading a route recorded earlier, from a | The whole source is ready: the reactor     |
-|                         | GPX file, to get its summary               | pulls each point and closes on its own.    |
-|                         |                                            | `kPull`: the screen reads the summary once |
-| `live_route_recording`  | Recording a route while driving, each      | Points appear over time, on the            |
-|                         | point sent as the GPS produces it          | application's thread. `kPush`: the summary |
-|                         |                                            | is handed to the trip history, which keeps |
-|                         |                                            | it                                         |
-| `convoy_chat`           | Drivers in a convoy exchange notes tied to | Notes are written whenever people type     |
-|                         | their positions                            | them. `kPush` with `kContinuous`: every    |
-|                         |                                            | note is shown, and the chat never stalls   |
-| `guided_tour_briefing`  | A prepared tour sends its scripted notes   | The script is ready, so the reactor paces  |
-|                         | stop by stop, and reads the replies        | it to the network. `kPull` with            |
-|                         |                                            | `kPerMessage`: a repeated reply is skipped |
-|                         |                                            | in place, a new one pulled without a copy  |
-| `whats_here`            | Tapping the map to ask what is at that     | One question, one answer: either delivery  |
-|                         | point                                      | fits. `kPull`: the card reads the answer   |
-|                         |                                            | once, where it arrives                     |
+Each entry gives the real-life situation, then why its variant fits:
+
+- **`live_vehicle_position`**: a map draws a vehicle's position from a live feed of fixes. Only the newest fix
+  matters: a `LatestSlot` keeps it, and the feed never waits for the map.
+- **`trip_recorder`**: a vehicle's black box stores every position report of a trip. Every report matters, and the
+  feed never waits for storage; the backlog has no bound.
+- **`unnamed_places_audit`**: a map-quality tool counts the places with no name in a region. Each place is counted
+  and forgotten: nothing is kept.
+- **`place_search`**: a search shows only the named places of the visible area. An unwanted place is skipped at no
+  cost, and a kept one is taken without a copy.
+- **`offline_map_download`**: saving a region's places for offline use, pausing when the disk writer falls behind.
+  Full speed until the backlog passes a threshold, then the download waits.
+- **`turn_by_turn_guidance`**: a guidance screen shows one stop at a time, the next once the driver confirms the
+  current one. Exactly one message in flight, released by the application. `kPush` is required: the screen owns the
+  stop until the driver confirms, while `kPull`'s `GetResponse()` would arm the next read as it takes it.
+- **`gpx_track_upload`**: uploading a route recorded earlier, from a GPX file, to get its summary. The whole source
+  is ready: the reactor pulls each point and closes on its own. `kPull`: the screen reads the summary once.
+- **`live_route_recording`**: recording a route while driving, each point sent as the GPS produces it. Points appear
+  over time, on the application's thread. `kPush`: the summary is handed to the trip history, which keeps it.
+- **`convoy_chat`**: drivers in a convoy exchange notes tied to their positions. Notes are written whenever people
+  type them. `kPush` with `kContinuous`: every note is shown, and the chat never stalls.
+- **`guided_tour_briefing`**: a prepared tour sends its scripted notes stop by stop, and reads the replies. The
+  script is ready, so the reactor paces it to the network. `kPull` with `kPerMessage`: a repeated reply is skipped
+  in place, a new one pulled without a copy.
+- **`whats_here`**: tapping the map to ask what is at that point. One question, one answer: either delivery fits.
+  `kPull`: the card reads the answer once, where it arrives.
 
 The source of each use case gives the full reason for its parameters. Each one that waits on time, for a GPS fix, a
 driver's confirmation or a typed note, gets it from a timed `EventLoop` event on the application thread: nothing

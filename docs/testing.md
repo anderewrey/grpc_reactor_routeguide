@@ -320,12 +320,14 @@ start with compile-time checks: the write methods do not exist under `kReactorPu
 | `PullsEveryRequest_ThenClosesStream` | Both | One pull per request plus the `std::nullopt` one, all sent, OK status |
 | `EmptySource_ClosesBeforeAnyWrite` | Both | A single pull, no write, OK status |
 | `UnboundSlot_ClosesAtOnce` | Writer | An unbound slot closes the stream at once |
-| `ServerEndsEarly_CompletesWithoutApplicationAction` | Writer | `OnDone` follows the server's error with no |
-| | | application call, and no pull follows the failed write |
+| `ServerEndsEarly_CompletesWithoutApplicationAction` | Writer | `OnDone` follows the server's error unprompted |
 | `ServerFinishesFirst_CompletesWithoutApplicationAction` | Bidi | The same when the server finishes mid-stream |
 | `TryCancelFromWriteDone_StopsPulling` | Both | No pull follows a `TryCancel()` from `write_done` |
 | `TryCancelFromApplication_Completes` | Writer | `TryCancel()` ends an RPC whose source never runs dry |
 | `HeldRead_DoesNotStallPulls` | Bidi | The source runs dry while the first answer is still held |
+
+In `ServerEndsEarly_CompletesWithoutApplicationAction`, `OnDone` needs no application call, and no pull follows the
+failed write.
 
 The writer's first test also checks that each pull follows the `write_done` of the write before it, and that the first
 pull runs on the thread that constructs the reactor.
@@ -413,10 +415,11 @@ hand, and count the live instances of a `Tracked` parameter or local to show whi
 | `RootTasks_SeveralRoots_EachReleasedOnItsOwnCompletion` | Roots ending in any order, or at once, are each released |
 | `Executor_ResumptionsFromOtherThreads_AllRunOnTheAppLoop` | 100 resumptions posted from other threads run on it |
 | `Task_ExceptionEscapesTheBody_LogsAndTerminates` | An escaping exception is logged, then terminates |
-| `CurrentTask_FollowsEachTaskAcrossItsSuspensions_AndIsNoneBetween` | Two tasks keep their own numbers across a |
-| | resumption, in a task they await too, and the loop runs under none between them |
-| `CurrentTask_TaskSuspendedAgain_LeavesTheLoopUnderNoTask` | A task resumed then suspended again leaves the loop |
-| | under no task |
+| `CurrentTask_FollowsEachTaskAcrossItsSuspensions_AndIsNoneBetween` | Two tasks keep their own numbers |
+| `CurrentTask_TaskSuspendedAgain_LeavesTheLoopUnderNoTask` | A task suspended again leaves the loop under no task |
+
+`CurrentTask_FollowsEachTaskAcrossItsSuspensions_AndIsNoneBetween` checks that each of two tasks keeps its own number
+across a resumption, and in a task it awaits too. Between them, the loop runs under no task.
 
 The stack test measures the stack position of a plain function each child calls, since a coroutine's own locals live
 in its heap frame. Under GCC below `-O2`, symmetric transfer alone grows the stack by about 128 bytes per await, and
@@ -426,23 +429,22 @@ transfer, which the race test checks against a body ending on another thread at 
 [eventloop_executor_test.cpp][eventloop-executor-test] tests the executor of the applications against the real
 EventLoop:
 
-| Test | Checks |
-| ------ | --------- |
-| `Executor_ResumptionsFromOtherThreads_AllRunOnTheApplicationThread` | 100 resumptions posted from other threads |
-| | run on the EventLoop thread, the tests' application thread |
-| `Executor_Post_ResumesInPostOrder_AfterEveryEventQueuedBefore` | Resumptions follow the post order, and an event |
-| | queued between two posts runs between them |
+- `Executor_ResumptionsFromOtherThreads_AllRunOnTheApplicationThread` checks that 100 resumptions posted from other
+  threads run on the EventLoop thread, the tests' application thread.
+- `Executor_Post_ResumesInPostOrder_AfterEveryEventQueuedBefore` checks that resumptions follow the post order, and
+  that an event queued between two posts runs between them.
 
 Five mutants of `coro_task.h` were each caught:
 
 | Mutant | Caught by |
 | ------ | --------- |
-| Transferring to the awaiter even when the body ended inside its start | The stack test overflows under GCC, and five |
-| | more tests fail under AddressSanitizer |
+| Transferring to the awaiter even when the body ended inside its start | The stack test, and five more tests |
 | Not destroying a frame with its task | The frame tests |
 | Not destroying the owner's suspended roots | The suspended chain test |
 | Not removing an ended root from its owner | Every spawning test, on the double destruction |
 | A plain `bool` for the start's hand-over flag | ThreadSanitizer, in the race test |
+
+Under the first mutant, the stack test overflows under GCC, and the five other tests fail under AddressSanitizer.
 
 `CurrentTask` gives the task number the coroutine applications log as `[task#N]`. Four mutants of it were each caught
 by one of the two `CurrentTask` tests: not setting it in `Spawn()`, not restoring it in `ResumeHandover::Resumed()`, not
@@ -461,8 +463,7 @@ known to suspend.
 | `GetFeature_PullServerError_ReturnsTheStatusAndAnEmptyResponse` | A failed RPC is a status, with an empty response |
 | `GetFeature_PushServerError_ReturnsTheStatusAndAnEmptyMessage` | Under `kPush`, the message is never null |
 | `GetFeature_TryCancel_FinishReturnsCancelled` | A cancel ends a held RPC, and `Finish()` returns `CANCELLED` |
-| `GetFeature_FrameDestroyedMidRpc_CancelsAndWaitsForOnDone` | A frame destroyed mid-RPC frees nothing under gRPC, |
-| | and posts nothing |
+| `GetFeature_FrameDestroyedMidRpc_CancelsAndWaitsForOnDone` | Frees nothing under gRPC, and posts nothing |
 
 Whether `Finish()` suspends depends on whether the RPC ended first, which a test can only arrange by waiting on
 timing. So the hand-over that decides it, `ResumeHandover` of [coro_task.h][coro-task], is tested directly in
@@ -482,8 +483,7 @@ Six mutants of `coro::Unary` were each caught:
 | `Abandon()` doing nothing | The abandoned hand-over test, and the destroyed frame test |
 | The destructor not waiting for `OnDone()` before destroying the reactor | The destroyed frame test |
 | Always suspending in `Finish()` | The hand-over test of an operation ended first |
-| Never posting the waiter | The hand-over test of a coroutine awaiting first, and every RPC |
-| | test that suspends |
+| Never posting the waiter | The hand-over test of a coroutine awaiting first, and every RPC test that suspends |
 | Not keeping the message the done callback hands over under `kPush` | Both `kPush` tests |
 
 ### Naming convention

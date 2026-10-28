@@ -37,16 +37,13 @@ core.
 The coroutine level is a new, generic level between the reactors and the application. It changes how the application
 consumes a reactor, and nothing below that:
 
-| Level            | Files                                  | Active Object component       | Changed here           |
-|------------------|----------------------------------------|-------------------------------|------------------------|
-| Infrastructure   | EventLoop library                      | Scheduler, Activation Queue   | No                     |
-| Generic          | `reactor_client.h`                     | Method Request, Future, Guard | No                     |
-| Service-specific | `reactor_client_routeguide.h`          | Method Request, bound to      | No                     |
-|                  |                                        | RouteGuide                    |                        |
-| Coroutine (new)  | `coro_task.h`, `reactor_coro.h`, and   | Future, as an awaitable       | New                    |
-|                  | the executor in `reactor_eventloop.h`  |                               |                        |
-| Application      | `variants/`, `usecases/`, and their    | Proxy, Servant                | New `_coro` files only |
-|                  | `_coro` twins                          |                               |                        |
+| Level | Files | Active Object component | Changed here |
+|---|---|---|---|
+| Infrastructure | EventLoop library | Scheduler, Activation Queue | No |
+| Generic | `reactor_client.h` | Method Request, Future, Guard | No |
+| Service-specific | `reactor_client_routeguide.h` | Method Request, bound to RouteGuide | No |
+| Coroutine (new) | `coro_task.h`, `reactor_coro.h`, the executor in `reactor_eventloop.h` | An awaitable Future | New |
+| Application | `variants/`, `usecases/`, and their `_coro` twins | Proxy, Servant | New `_coro` files only |
 
 Two Active Object components change shape. The Future becomes something the application awaits, instead of
 something a handler queries later with `Status()` or `GetResponse()`. The Servant becomes one function per RPC,
@@ -61,14 +58,12 @@ the callback level, see [Scenarios](#scenarios).
 
 Each of the three headers knows one thing more than the level below it, and nothing about the levels beside it:
 
-| Header                | Knows                                                    | Does not know              |
-|-----------------------|----------------------------------------------------------|----------------------------|
-| `coro_task.h`         | C++20 coroutines: `Task<T>`, `Spawn()`, an executor that | gRPC, EventLoop,           |
-|                       | resumes a handle, and the hand-over that reaches it      | RouteGuide                 |
-| `reactor_coro.h`      | The generic reactors of `reactor_client.h`, the task     | EventLoop, RouteGuide      |
-|                       | core, and the buffers, reusing `latest_slot.h`           |                            |
-| `reactor_eventloop.h` | EventLoop: `EventConnection` for the callback level, and | gRPC, RouteGuide           |
-|                       | the executor that posts a handle and resumes it          |                            |
+- `coro_task.h` knows C++20 coroutines: `Task<T>`, `Spawn()`, an executor that resumes a handle, and the hand-over
+  that reaches it. It does not know gRPC, EventLoop, or RouteGuide.
+- `reactor_coro.h` knows the generic reactors of `reactor_client.h`, the task core, and the buffers, reusing
+  `latest_slot.h`. It does not know EventLoop or RouteGuide.
+- `reactor_eventloop.h` knows EventLoop: `EventConnection` for the callback level, and the executor that posts a handle
+  and resumes it. It does not know gRPC or RouteGuide.
 
 Every helper is either a private member of the class it serves, such as `Task<T>`'s promise, or a named building block
 of the level, such as `ResumeHandover`, which every awaitable uses to hand its coroutine to the executor. There is no
@@ -125,15 +120,14 @@ C++20 has coroutines in the language, but no library types: no `task`, and no `g
 but still no task type, so the level's core is written here whatever the standard. The level therefore defines a small
 `Task<T>`:
 
-| Property               | Choice                                                                          |
-|------------------------|---------------------------------------------------------------------------------|
-| Start                  | Lazy: the body starts when the task is awaited or spawned                       |
-| Awaiters               | One at most                                                                     |
-| Resumption of awaiter  | Symmetric transfer after a suspension: `await_suspend` returns the handle to    |
-|                        | resume. None when the body ends without suspending                              |
-| Ownership              | The caller owns the frame; destroying the `Task` destroys a finished frame      |
-| Root tasks             | `Spawn()` gives a root task to an owner that keeps it until it completes        |
-| Exceptions             | Not relied on: `unhandled_exception()` logs and calls `std::terminate()`        |
+| Property | Choice |
+|---|---|
+| Start | Lazy: the body starts when the task is awaited or spawned |
+| Awaiters | One at most |
+| Resumption of awaiter | Symmetric transfer after a suspension only: `await_suspend` returns the handle to resume |
+| Ownership | The caller owns the frame; destroying the `Task` destroys a finished frame |
+| Root tasks | `Spawn()` gives a root task to an owner that keeps it until it completes |
+| Exceptions | Not relied on: `unhandled_exception()` logs and calls `std::terminate()` |
 
 An awaitable can complete without suspending, for instance a `Read()` on a buffer that already holds a message. A loop
 of such reads must not grow the stack with each iteration. Symmetric transfer alone does not promise that: GCC 13 and
@@ -174,12 +168,10 @@ to it that survives a `co_await` dangles as soon as the next read completes, and
 awaitable hands the coroutine an owned message. `Delivery` stays, because it decides how the message becomes owned, and
 what that costs:
 
-| Delivery | How the coroutine gets an owned message                 | Cost per message       | Read-ahead              |
-|----------|---------------------------------------------------------|------------------------|-------------------------|
-| `kPull`  | `Read()` swaps it out of the reactor with               | No allocation          | `GetResponse()` arms    |
-|          | `GetResponse()`                                         |                        | the next read at once   |
-| `kPush`  | `Read()` takes the `std::unique_ptr` the callback       | One allocation         | None until the next     |
-|          | handed out                                              |                        | `Read()`                |
+| Delivery | How the coroutine gets an owned message | Cost per message | Read-ahead |
+|---|---|---|---|
+| `kPull` | `Read()` swaps it out with `GetResponse()` | No allocation | `GetResponse()` arms the next read at once |
+| `kPush` | `Read()` takes the `std::unique_ptr` the callback hands out | One allocation | None until the next `Read()` |
 
 The read-ahead column is the difference `turn_by_turn_guidance` already turns on. Under `kPull`, `GetResponse()` takes
 the message and arms the next read in one call, so the next message can arrive while the coroutine works on this one.
@@ -191,14 +183,12 @@ until then. Only a buffered reader, below, holds several messages at once, so on
 A coroutine that awaits each read takes one message at a time, which is `kTurnByTurn` by construction. The other
 pacings put a buffer between the reactor and the coroutine:
 
-| Reader               | Reactor underneath                  | Buffer policy                                        |
-|----------------------|-------------------------------------|------------------------------------------------------|
-| No buffer            | `kTurnByTurn`, either delivery      | None: one message in flight                          |
-| `Buffer::kUnbounded` | `kPush`, `kContinuous`              | Every message queued, the stream never waits         |
-| `Buffer::kLatest`    | `kPull`, `kContinuous`, with a      | One slot, overwritten, the stream never waits        |
-|                      | `LatestSlot`                        |                                                      |
-| `Buffer::kBounded`   | `kPush`, `kPerMessage`              | Holds the stream once a given number of messages     |
-|                      |                                     | wait                                                 |
+| Reader | Reactor underneath | Buffer policy |
+|---|---|---|
+| No buffer | `kTurnByTurn`, either delivery | None: one message in flight |
+| `Buffer::kUnbounded` | `kPush`, `kContinuous` | Every message queued, the stream never waits |
+| `Buffer::kLatest` | `kPull`, `kContinuous`, with a `LatestSlot` | One slot, overwritten, the stream never waits |
+| `Buffer::kBounded` | `kPush`, `kPerMessage` | Holds the stream once a given number of messages wait |
 
 `kLatest` copies each lent message into the slot inside the callback, as `live_vehicle_position` does today. That copy
 is the level's own code, so the boundary rule holds, and it makes `kLatest` the one buffered reader that runs on
@@ -211,13 +201,10 @@ the callback level.
 
 ### Writers: awaited writes, or a synchronous source
 
-| Submission           | Coroutine side                                              | Fits                             |
-|----------------------|-------------------------------------------------------------|----------------------------------|
-| `kApplicationPushes` | `co_await writer.Write(point)`, then                        | Points that appear over time,    |
-|                      | `co_await writer.Close()`; each write resumes on            | such as `live_route_recording`   |
-|                      | `write_done`                                                |                                  |
-| `kReactorPulls`      | The writer is given a range, and the reactor pulls from it  | A source ready at once, such as  |
-|                      |                                                             | `gpx_track_upload`               |
+- `kApplicationPushes` fits points that appear over time, such as `live_route_recording`. The coroutine runs
+  `co_await writer.Write(point)`, then `co_await writer.Close()`, and each write resumes on `write_done`.
+- `kReactorPulls` fits a source ready at once, such as `gpx_track_upload`. The writer is given a range, and the reactor
+  pulls from it.
 
 The shape of the code enforces one write in flight: a coroutine cannot start a second `Write()` before the first one
 resumes it. A coroutine that must wait for its next request, for a GPS fix or a typed note, needs
@@ -275,13 +262,12 @@ level's own vocabulary, and none reaches across another level.
 A coroutine scenario is a file next to its parent, the callback scenario whose reactor configuration it wraps, with a
 `_coro` suffix. Its flavour is named by the filename and the namespace, never by the class, as for every scenario:
 
-| Parent                                   | Coroutine scenario                            | Class                    |
-|------------------------------------------|-----------------------------------------------|--------------------------|
-| `variants/list_features_push_continuous` | `variants/list_features_push_continuous_coro` | `rg_demo::push::`        |
-|                                          |                                               | `continuous::coro::`     |
-|                                          |                                               | `ListFeatures`           |
-| `usecases/trip_recorder`                 | `usecases/trip_recorder_coro`                 | `rg_demo::usecase::`     |
-|                                          |                                               | `coro::TripRecorder`     |
+| Coroutine scenario | Namespace | Class |
+|---|---|---|
+| `variants/list_features_push_continuous_coro` | `rg_demo::push::continuous::coro` | `ListFeatures` |
+| `usecases/trip_recorder_coro` | `rg_demo::usecase::coro` | `TripRecorder` |
+
+Their parents are `variants/list_features_push_continuous` and `usecases/trip_recorder`.
 
 Every coroutine scenario then has two diffs, each along one axis:
 
@@ -335,24 +321,20 @@ boundary rule keeps at the callback level:
 | `convoy_chat`           | `convoy_chat_coro`            | `route_chat_push_continuous_coro`      |
 | `unnamed_places_audit`  | None                          | Counts inside `read_ok`                |
 | `place_search`          | None                          | Declines inside `read_ok`              |
-| `guided_tour_briefing`  | None                          | Declines repeated replies inside       |
-|                         |                               | `read_ok`                              |
+| `guided_tour_briefing`  | None                          | Declines repeated replies in `read_ok` |
 
 ## How the milestone proves it
 
 Every non-trivial claim needs a test or a demonstrable run:
 
-| Claim                                               | Proof                                                           |
-|-----------------------------------------------------|-----------------------------------------------------------------|
-| `Task<T>` resumes, transfers and destroys correctly | Unit tests of the task type, under ASan and TSan                |
-| Every resumption runs on the application thread     | An assert in the executor's resume handler, and in every        |
-|                                                     | coroutine scenario                                              |
-| Each buffer behaves as its callback parent does     | Tests on the `AppLoop` task queue, against the in-process       |
-|                                                     | server of `continuous_use_support.h`, one per buffer            |
-| Teardown never frees a reactor under gRPC           | A test that halts the loop with RPCs in flight, under ASan      |
-| Each twin does what its parent does                 | Each pair of applications runs against a fresh                  |
-|                                                     | `route_guide_callback_server`, with the same totals: every fix, |
-|                                                     | report, place, point and note counted as by the parent          |
+- **`Task<T>` resumes, transfers and destroys correctly.** Unit tests of the task type, under ASan and TSan.
+- **Every resumption runs on the application thread.** An assert in the executor's resume handler, and in every
+  coroutine scenario.
+- **Each buffer behaves as its callback parent does.** Tests on the `AppLoop` task queue, against the in-process server
+  of `continuous_use_support.h`, one per buffer.
+- **Teardown never frees a reactor under gRPC.** A test that halts the loop with RPCs in flight, under ASan.
+- **Each twin does what its parent does.** Each pair of applications runs against a fresh `route_guide_callback_server`,
+  with the same totals: every fix, report, place, point and note counted as by the parent.
 
 ## Suggested order
 

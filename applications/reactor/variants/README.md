@@ -3,16 +3,13 @@
 Each file pair in this directory is one variant scenario: a class that owns one RPC and runs one variant. There are two
 kinds of scenarios, one directory and one application each:
 
-| Kind     | Directory                                    | Application                         | Named after          |
-|----------|----------------------------------------------|-------------------------------------|----------------------|
-| Variant  | `variants/`, this one                        | `route_guide_active_reactor_client` | Its RPC and variant: |
-|          |                                              |                                     | `<rpc>_<delivery>_`  |
-|          |                                              |                                     | `<pacing>`, and      |
-|          |                                              |                                     | `_producer` under    |
-|          |                                              |                                     | `kReactorPulls`      |
-| Use case | [usecases/](/applications/reactor/usecases/) | `route_guide_reactor_usecases`      | A real-life          |
-|          |                                              |                                     | situation, such as   |
-|          |                                              |                                     | `trip_recorder`      |
+| Kind | Directory | Application | Named after |
+|------|-----------|-------------|-------------|
+| Variant | `variants/`, this one | `route_guide_active_reactor_client` | Its RPC and variant |
+| Use case | [usecases/](/applications/reactor/usecases/) | `route_guide_reactor_usecases` | A real-life situation |
+
+A variant's name is `<rpc>_<delivery>_<pacing>`, with `_producer` added under `kReactorPulls`. A use case's name is
+its situation, such as `trip_recorder`.
 
 A variant shows what one choice of parameters changes, against the neighbouring file that differs along that one
 choice. A use case shows why a variant fits a real need, and is a clone of the variant it uses, along the use only. The
@@ -68,37 +65,43 @@ keeping every second message, the same under both deliveries; the use cases deci
 the one in its last column along one parameter only, so `diff` between the two shows exactly what that parameter
 changes. A name starting with `...` abbreviates the same RPC's prefix.
 
-| Scenario                               | What it does with each message                 | Diff against            |
-|----------------------------------------|------------------------------------------------|-------------------------|
-| `get_feature_pull`                     | The done handler pulls the answer out of the   | `get_feature_push`      |
-|                                        | reactor with `GetResponse()`                   |                         |
-| `get_feature_push`                     | The done callback hands the answer out owned,  | `get_feature_pull`      |
-|                                        | and the handler reclaims it                    |                         |
-| `list_features_pull_continuous`        | `read_ok` logs and counts each message inside  | `..._pull_turn_by_turn` |
-|                                        | the reaction; the done handler reports the     |                         |
-|                                        | count                                          |                         |
-| `list_features_pull_per_message`       | `read_ok` keeps every second message, for the  | `..._pull_turn_by_turn` |
-|                                        | handler to pull, and skips the others          |                         |
-| `list_features_pull_turn_by_turn`      | Every feature is held until the handler pulls  | `..._push_turn_by_turn` |
-|                                        | it, so one is in flight at a time              |                         |
-| `list_features_push_continuous`        | Every feature is queued owned, and the reactor | `..._push_turn_by_turn` |
-|                                        | reads on at once                               |                         |
-| `list_features_push_per_message`       | Every message is queued owned, and `read_ok`   | `..._push_turn_by_turn` |
-|                                        | holds every second one until `ResumeRead()`    |                         |
-| `list_features_push_turn_by_turn`      | Every feature is queued owned, and held until  | `..._pull_turn_by_turn` |
-|                                        | the handler calls `ResumeRead()`               |                         |
-| `record_route_pull`                    | The application sends each point, the last one | `record_route_push`     |
-|                                        | with `SendLastRequest()`, then pulls the       |                         |
-|                                        | summary                                        |                         |
-| `record_route_push`                    | The same, with the summary handed out owned    | `record_route_pull`     |
-| `record_route_pull_producer`           | The reactor pulls each point from a prepared   | `record_route_pull`     |
-|                                        | list, and closes the request stream itself     |                         |
-| `route_chat_<delivery>_<pacing>`       | Six files, the same note pump in each. Each    | its `list_features_`    |
-|                                        | read side behaves as its `ListFeatures`        | namesake                |
-|                                        | namesake, with the same rule under             |                         |
-|                                        | `kPerMessage`                                  |                         |
-| `route_chat_pull_per_message_producer` | The same read side, with the reactor pulling   | `..._pull_per_message`  |
-|                                        | each note                                      |                         |
+| Scenario                               | Diff against                  |
+|----------------------------------------|-------------------------------|
+| `get_feature_pull`                     | `get_feature_push`            |
+| `get_feature_push`                     | `get_feature_pull`            |
+| `list_features_pull_continuous`        | `..._pull_turn_by_turn`       |
+| `list_features_pull_per_message`       | `..._pull_turn_by_turn`       |
+| `list_features_pull_turn_by_turn`      | `..._push_turn_by_turn`       |
+| `list_features_push_continuous`        | `..._push_turn_by_turn`       |
+| `list_features_push_per_message`       | `..._push_turn_by_turn`       |
+| `list_features_push_turn_by_turn`      | `..._pull_turn_by_turn`       |
+| `record_route_pull`                    | `record_route_push`           |
+| `record_route_push`                    | `record_route_pull`           |
+| `record_route_pull_producer`           | `record_route_pull`           |
+| `route_chat_<delivery>_<pacing>`       | its `list_features_` namesake |
+| `route_chat_pull_per_message_producer` | `..._pull_per_message`        |
+
+What each one does with each message:
+
+- `get_feature_pull`: the done handler pulls the answer out of the reactor with `GetResponse()`.
+- `get_feature_push`: the done callback hands the answer out owned, and the handler reclaims it.
+- `list_features_pull_continuous`: `read_ok` logs and counts each message inside the reaction. The done handler
+  reports the count.
+- `list_features_pull_per_message`: `read_ok` keeps every second message, for the handler to pull, and skips the
+  others.
+- `list_features_pull_turn_by_turn`: every feature is held until the handler pulls it, so one is in flight at a time.
+- `list_features_push_continuous`: every feature is queued owned, and the reactor reads on at once.
+- `list_features_push_per_message`: every message is queued owned, and `read_ok` holds every second one until
+  `ResumeRead()`.
+- `list_features_push_turn_by_turn`: every feature is queued owned, and held until the handler calls `ResumeRead()`.
+- `record_route_pull`: the application sends each point, the last one with `SendLastRequest()`, then pulls the
+  summary.
+- `record_route_push`: the same, with the summary handed out owned.
+- `record_route_pull_producer`: the reactor pulls each point from a prepared list, and closes the request stream
+  itself.
+- `route_chat_<delivery>_<pacing>`: six files, the same note pump in each. Each read side behaves as its
+  `ListFeatures` namesake, with the same rule under `kPerMessage`.
+- `route_chat_pull_per_message_producer`: the same read side, with the reactor pulling each note.
 
 The situation behind each use case, and why its variant fits, are in the
 [use cases' README](/applications/reactor/usecases/README.md).
@@ -109,17 +112,16 @@ The coroutine level the [design draft](/docs/client-coroutines-design.md) propos
 with its awaitables instead of callbacks. Each sits next to the callback scenario whose reactor configuration it wraps,
 with a `_coro` suffix, and runs in an application of its own:
 
-| Kind               | Application                              | Runs                                          |
-|--------------------|------------------------------------------|-----------------------------------------------|
-| Coroutine variant  | `route_guide_active_reactor_client_coro` | One scenario per awaitable                    |
-| Coroutine use case | `route_guide_reactor_usecases_coro`      | One per use case whose code stays on the      |
-|                    |                                          | application thread                            |
+| Kind | Application | Runs |
+|------|-------------|------|
+| Coroutine variant | `route_guide_active_reactor_client_coro` | One scenario per awaitable |
+| Coroutine use case | `route_guide_reactor_usecases_coro` | One per use case with its code on the application thread |
 
 | Scenario                | Awaitable                          | Diff against                                    |
 |-------------------------|------------------------------------|-------------------------------------------------|
 | `get_feature_pull_coro` | `coro::Unary`: `co_await Finish()` | `get_feature_pull`, its callback parent         |
-| `whats_here_coro`       | `coro::Unary`: `co_await Finish()` | `whats_here`, its callback twin, and            |
-|                         |                                    | `get_feature_pull_coro`, the variant it clones  |
+| `whats_here_coro`       | `coro::Unary`: `co_await Finish()` | `whats_here`, its callback twin                 |
+| `whats_here_coro`       | `coro::Unary`: `co_await Finish()` | `get_feature_pull_coro`, the variant it clones  |
 
 Against its parent, a coroutine scenario changes the style only: the same reactor configuration, consumed by one
 coroutine instead of handlers. Against its coroutine variant, a coroutine use case changes the use only.
