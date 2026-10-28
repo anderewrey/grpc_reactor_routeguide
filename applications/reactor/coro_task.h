@@ -12,9 +12,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <exception>
-#include <list>
 #include <optional>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 
 /// The core of the coroutine level: a task type, an owner for root tasks, the interface of the executor
@@ -297,7 +297,7 @@ class RootTasks {
  public:
   RootTasks() = default;
   ~RootTasks() {
-    // Taken out first, so a destructor run by a frame's destruction never sees a half-cleared list.
+    // Taken out first, so a destructor run by a frame's destruction never sees a half-cleared set.
     const auto roots = std::exchange(roots_, {});
     for (const auto root : roots) root.destroy();
   }
@@ -314,7 +314,7 @@ class RootTasks {
   CurrentTask::Id Spawn(Task<> task) {
     const auto root = Root(std::move(task)).handle;
     root.promise().owner_ = this;
-    root.promise().position_ = roots_.insert(roots_.end(), root);
+    roots_.insert(root);
     const CurrentTask::Id id = last_id_.fetch_add(1, std::memory_order_relaxed) + 1;
     const CurrentTask::Scope scope(id);
     root.resume();
@@ -341,8 +341,7 @@ class RootTasks {
       struct SelfDestroy {
         static bool await_ready() noexcept { return false; }
         static void await_suspend(RootHandle self) noexcept {
-          const RootPromise& promise = self.promise();
-          promise.owner_->roots_.erase(promise.position_);
+          self.promise().owner_->roots_.erase(self);
           self.destroy();
           CurrentTask::Set(CurrentTask::kNone);  // the thread goes back to code outside the task
         }
@@ -355,12 +354,11 @@ class RootTasks {
     [[noreturn]] static void unhandled_exception() noexcept { std::terminate(); }
 
     RootTasks* owner_ = nullptr;
-    std::list<RootHandle>::iterator position_;
   };
 
   static RootFrame Root(Task<> task) { co_await std::move(task); }
 
-  std::list<RootHandle> roots_;
+  std::unordered_set<RootHandle> roots_;
   // Shared by every owner, so task numbers are unique in the process, whichever thread spawns.
   static inline std::atomic<CurrentTask::Id> last_id_{CurrentTask::kNone};
 };
