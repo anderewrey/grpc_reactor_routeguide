@@ -109,6 +109,8 @@ TEST(CoroEventLoopTest, Executor_ResumptionsFromOtherThreads_AllRunOnTheApplicat
 }
 
 /// Suspends, hands out its handle, and logs its name once resumed.
+// A coroutine takes its arguments by value: a reference would dangle once it suspends.
+// cppcheck-suppress passedByValue
 Task<> LogWhenResumed(std::string name, std::coroutine_handle<>* handle, std::vector<std::string>* log) {
   struct Suspend {
     std::coroutine_handle<>* out;
