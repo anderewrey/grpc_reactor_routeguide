@@ -54,12 +54,12 @@ namespace detail {
 class PromiseBase {
  public:
   /// Lazy: the body starts only when the task is awaited, or spawned.
-  std::suspend_always initial_suspend() const noexcept { return {}; }
+  static std::suspend_always initial_suspend() noexcept { return {}; }
 
   /// Resumes the awaiter once the body has finished: by symmetric transfer when the body suspended on the
   /// way, or by letting the awaiter go on without suspending when the body finished first, see Start().
   struct FinalAwaiter {
-    bool await_ready() const noexcept { return false; }
+    static bool await_ready() noexcept { return false; }
     template <class Promise>
     std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> self) const noexcept {
       PromiseBase& promise = self.promise();
@@ -70,11 +70,11 @@ class PromiseBase {
     }
     void await_resume() const noexcept {}
   };
-  FinalAwaiter final_suspend() const noexcept { return {}; }
+  static FinalAwaiter final_suspend() noexcept { return {}; }
 
   /// An exception escaping a coroutine body is a bug: logs it on stderr, then ends the process. The
   /// promise stores no std::exception_ptr, so a frame finishes with a value or never finishes.
-  [[noreturn]] void unhandled_exception() const noexcept {
+  [[noreturn]] static void unhandled_exception() noexcept {
     try {
       throw;
     } catch (const std::exception& e) {
@@ -180,7 +180,7 @@ class [[nodiscard]] Task {
   auto operator co_await() && noexcept {
     struct Awaiter {
       std::coroutine_handle<promise_type> handle;
-      bool await_ready() const noexcept { return false; }
+      static bool await_ready() noexcept { return false; }
       bool await_suspend(std::coroutine_handle<> awaiter) const noexcept {
         return handle.promise().Start(handle, awaiter);
       }
@@ -228,8 +228,8 @@ class RootTasks {
   RootTasks() = default;
   ~RootTasks() {
     // Taken out first, so a destructor run by a frame's destruction never sees a half-cleared list.
-    auto roots = std::exchange(roots_, {});
-    for (auto root : roots) root.destroy();
+    const auto roots = std::exchange(roots_, {});
+    for (const auto root : roots) root.destroy();
   }
 
   RootTasks(const RootTasks&) = delete;
@@ -262,22 +262,22 @@ class RootTasks {
 
   struct RootPromise {
     RootFrame get_return_object() noexcept { return RootFrame{RootHandle::from_promise(*this)}; }
-    std::suspend_always initial_suspend() const noexcept { return {}; }
-    auto final_suspend() const noexcept {
+    static std::suspend_always initial_suspend() noexcept { return {}; }
+    static auto final_suspend() noexcept {
       struct SelfDestroy {
-        bool await_ready() const noexcept { return false; }
-        void await_suspend(RootHandle self) const noexcept {
+        static bool await_ready() noexcept { return false; }
+        static void await_suspend(RootHandle self) noexcept {
           const RootPromise& promise = self.promise();
           promise.owner_->roots_.erase(promise.position_);
           self.destroy();
         }
-        void await_resume() const noexcept {}
+        static void await_resume() noexcept {}
       };
       return SelfDestroy{};
     }
-    void return_void() const noexcept {}
+    static void return_void() noexcept {}
     // Root() only awaits a Task, whose own promise ends the process first, so this never runs.
-    [[noreturn]] void unhandled_exception() const noexcept { std::terminate(); }
+    [[noreturn]] static void unhandled_exception() noexcept { std::terminate(); }
 
     RootTasks* owner_ = nullptr;
     std::list<RootHandle>::iterator position_;

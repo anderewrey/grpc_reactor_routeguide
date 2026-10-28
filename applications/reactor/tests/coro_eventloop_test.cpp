@@ -77,11 +77,11 @@ class EventLoopEnvironment : public ::testing::Environment {
 class CompleteOnAnotherThread {
  public:
   explicit CompleteOnAnotherThread(std::vector<std::thread>* threads) : threads_(threads) {}
-  bool await_ready() const noexcept { return false; }
+  static bool await_ready() noexcept { return false; }
   void await_suspend(std::coroutine_handle<> handle) const {
     threads_->emplace_back([handle] { EventLoopEnvironment::executor->Post(handle); });
   }
-  std::thread::id await_resume() const noexcept { return std::this_thread::get_id(); }
+  static std::thread::id await_resume() noexcept { return std::this_thread::get_id(); }
 
  private:
   std::vector<std::thread>* threads_;
@@ -113,9 +113,9 @@ TEST(CoroEventLoopTest, Executor_ResumptionsFromOtherThreads_AllRunOnTheApplicat
 Task<> LogWhenResumed(std::string name, std::coroutine_handle<>* handle, std::vector<std::string>* log) {
   struct Suspend {
     std::coroutine_handle<>* out;
-    bool await_ready() const noexcept { return false; }
+    static bool await_ready() noexcept { return false; }
     void await_suspend(std::coroutine_handle<> h) const noexcept { *out = h; }
-    void await_resume() const noexcept {}
+    static void await_resume() noexcept {}
   };
   co_await Suspend{handle};
   log->push_back(name);

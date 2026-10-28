@@ -45,9 +45,9 @@ class Tracked {
 /// Suspends the awaiting coroutine and hands its handle out, as a pending RPC operation would.
 struct Suspend {
   std::coroutine_handle<>* out;
-  bool await_ready() const noexcept { return false; }
+  static bool await_ready() noexcept { return false; }
   void await_suspend(std::coroutine_handle<> handle) const noexcept { *out = handle; }
-  void await_resume() const noexcept {}
+  static void await_resume() noexcept {}
 };
 
 Task<int> Answer() { co_return 42; }
@@ -68,7 +68,7 @@ Task<> Count(int* steps) {
 TEST(CoroTaskTest, Task_NotAwaited_BodyNeverStarts) {
   int steps = 0;
   {
-    auto task = Count(&steps);
+    const auto task = Count(&steps);
   }
   EXPECT_EQ(steps, 0);
 }
@@ -155,11 +155,11 @@ class ResumeFromAnotherThread {
  public:
   ResumeFromAnotherThread(Executor* executor, std::vector<std::thread>* threads)
       : executor_(executor), threads_(threads) {}
-  bool await_ready() const noexcept { return false; }
+  static bool await_ready() noexcept { return false; }
   void await_suspend(std::coroutine_handle<> handle) const {
     threads_->emplace_back([executor = executor_, handle] { executor->Post(handle); });
   }
-  void await_resume() const noexcept {}
+  static void await_resume() noexcept {}
 
  private:
   Executor* executor_;
@@ -206,7 +206,7 @@ TEST(CoroTaskTest, Task_DestroyedBeforeStart_DestroysItsFrame) {
   int live = 0;
   int steps = 0;
   {
-    auto task = OwnsTracked(Tracked(&live), &steps);
+    const auto task = OwnsTracked(Tracked(&live), &steps);
     EXPECT_EQ(live, 1);
   }
   EXPECT_EQ(live, 0);
@@ -218,7 +218,7 @@ TEST(CoroTaskTest, Task_MovedFrom_OwnsNothing) {
   int steps = 0;
   auto task = OwnsTracked(Tracked(&live), &steps);
   {
-    auto moved = std::move(task);
+    const auto moved = std::move(task);
     EXPECT_EQ(live, 1);
   }
   EXPECT_EQ(live, 0);
@@ -338,11 +338,11 @@ class CompleteOnAnotherThread {
  public:
   CompleteOnAnotherThread(Executor* executor, std::vector<std::thread>* threads)
       : executor_(executor), threads_(threads) {}
-  bool await_ready() const noexcept { return false; }
+  static bool await_ready() noexcept { return false; }
   void await_suspend(std::coroutine_handle<> handle) const {
     threads_->emplace_back([executor = executor_, handle] { executor->Post(handle); });
   }
-  std::thread::id await_resume() const noexcept { return std::this_thread::get_id(); }
+  static std::thread::id await_resume() noexcept { return std::this_thread::get_id(); }
 
  private:
   Executor* executor_;
