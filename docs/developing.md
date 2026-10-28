@@ -197,6 +197,7 @@ pre-commit run --all-files
 - [vcpkg-usage.md](/docs/vcpkg-usage.md): vcpkg setup, custom triplets, multi-compiler support
 - [grpc-build-guide.md](/docs/grpc-build-guide.md): gRPC build options and optimization
 - [reactor_client.md](/applications/reactor/reactor_client.md): reactor pattern implementation
+- [reactor_coro.md](/applications/reactor/reactor_coro.md): the coroutine level over the reactors
 
 <!-- Reference links -->
 [vcpkg]: https://vcpkg.io/

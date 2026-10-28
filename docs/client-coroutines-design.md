@@ -1,8 +1,10 @@
 # Client coroutines: design draft
 
 > [!NOTE]
-> This is a proposal. Nothing it describes exists yet. Once the level is built and its claims are proven by tests and
-> runs, its reasoning moves into [architecture.md](/docs/architecture.md), and this file goes away.
+> This is a design draft, built step by step. Steps 1 and 2 of the [suggested order](#suggested-order) exist, and
+> [reactor_coro.md](/applications/reactor/reactor_coro.md) is their reference. Once the level is built and its claims
+> are proven by tests and runs, this draft's reasoning moves into [architecture.md](/docs/architecture.md), and this
+> file goes away.
 
 ## Goal
 
