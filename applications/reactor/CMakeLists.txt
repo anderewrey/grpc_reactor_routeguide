@@ -106,5 +106,57 @@ target_link_libraries(route_guide_reactor_usecases
         EventLoop::EventLoop
 )
 
+# Coroutine twin of the variants executable: one scenario per awaitable of the coroutine level, each
+# next to the callback variant it wraps, under variants/ with a _coro suffix.
+add_executable(route_guide_active_reactor_client_coro
+    route_guide_active_reactor_client_coro.cpp
+    reactor_client.h
+    reactor_client_routeguide.h
+    coro_task.h
+    reactor_coro.h
+    coro_eventloop.h
+    demo_support.h
+    demo_support.cpp
+    variants/get_feature_pull_coro.h
+    variants/get_feature_pull_coro.cpp
+)
+
+target_include_directories(route_guide_active_reactor_client_coro
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}
+)
+
+target_link_libraries(route_guide_active_reactor_client_coro
+    PRIVATE
+        rg_service
+        EventLoop::EventLoop
+)
+
+# Coroutine twin of the use case executable: one use case per callback use case that keeps its code on
+# the application thread, under usecases/ with a _coro suffix.
+add_executable(route_guide_reactor_usecases_coro
+    route_guide_reactor_usecases_coro.cpp
+    reactor_client.h
+    reactor_client_routeguide.h
+    coro_task.h
+    reactor_coro.h
+    coro_eventloop.h
+    demo_support.h
+    demo_support.cpp
+    usecases/whats_here_coro.h
+    usecases/whats_here_coro.cpp
+)
+
+target_include_directories(route_guide_reactor_usecases_coro
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}
+)
+
+target_link_libraries(route_guide_reactor_usecases_coro
+    PRIVATE
+        rg_service
+        EventLoop::EventLoop
+)
+
 # Tests subdirectory
 add_subdirectory(tests)

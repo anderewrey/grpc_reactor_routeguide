@@ -127,7 +127,8 @@ run.
 ### Reactor demo applications
 
 The two reactor applications, `route_guide_active_reactor_client` for the variants and
-`route_guide_reactor_usecases` for the use cases, have no tests of their own, and no CTest entry
+`route_guide_reactor_usecases` for the use cases, and their coroutine twins, `route_guide_active_reactor_client_coro`
+and `route_guide_reactor_usecases_coro`, have no tests of their own, and no CTest entry
 runs them: their event loop never stops, so they run by hand, against `route_guide_callback_server`,
 as described in [developing.md](/docs/developing.md#run). Every scenario asserts which thread runs
 each callback and handler. Each use case also asserts what it claims, so a Debug run checks it every

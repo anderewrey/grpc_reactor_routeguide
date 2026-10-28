@@ -338,7 +338,10 @@ Every non-trivial claim needs a test or a demonstrable run:
    `RpcReactor::co` namespace: `Spawn()` is a member of `RootTasks`, the owner of the root tasks, and
    `EventLoopExecutor` takes the application thread as a parameter, the calling thread by default, so its tests can run
    EventLoop on a thread of their own. [testing.md](/docs/testing.md#coroutine-core-coverage) lists what the tests prove.
-2. The unary awaitable: `get_feature_pull_coro`, then `whats_here_coro`, to settle `Finish()` and ownership.
+2. The unary awaitable: `get_feature_pull_coro`, then `whats_here_coro`, to settle `Finish()` and ownership. Done:
+   `co::Unary` in `reactor_coro.h`, with both applications. Its context is an optional last constructor argument,
+   for a deadline, and its `Finish()` returns a `UnaryResult` of the status and the owned response.
+   [testing.md](/docs/testing.md#unary-awaitable-coverage) lists what the tests prove.
 3. The reader without a buffer: both `turn_by_turn_coro` variants, then `turn_by_turn_guidance_coro`.
 4. The buffered readers: their three variants, then `trip_recorder_coro`, `live_vehicle_position_coro` and
    `offline_map_download_coro`.

@@ -153,6 +153,8 @@ DIR=cmake-build-vcpkg-debug-gcc
 ./$DIR/applications/callback/route_guide_callback_client
 ./$DIR/applications/reactor/route_guide_active_reactor_client
 ./$DIR/applications/reactor/route_guide_reactor_usecases
+./$DIR/applications/reactor/route_guide_active_reactor_client_coro
+./$DIR/applications/reactor/route_guide_reactor_usecases_coro
 ```
 
 The client applications connect to a running server, so start a server before its matching client.
