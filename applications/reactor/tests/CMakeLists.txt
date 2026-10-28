@@ -23,6 +23,7 @@ set(REACTOR_TESTS
     continuous_journal_test
     coro_task_test
     coro_eventloop_test
+    reactor_coro_unary_test
 )
 
 foreach(test_name IN LISTS REACTOR_TESTS)

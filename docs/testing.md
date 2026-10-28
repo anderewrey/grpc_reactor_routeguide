@@ -103,6 +103,13 @@ Two test binaries test the core of the coroutine level, which the
 
 They are described in [coroutine core coverage](#coroutine-core-coverage).
 
+### Coroutine awaitable tests
+
+[reactor_coro_unary_test.cpp][coro-unary-test] tests `co::Unary`, the unary awaitable of [reactor_coro.h][reactor-coro],
+against an in-process server, with each coroutine resumed on the `AppLoop` task queue. Its executor counts the
+coroutines it is handed, so a test can tell whether `Finish()` suspended. It is described in
+[unary awaitable coverage](#unary-awaitable-coverage).
+
 ### Callback application smoke test
 
 [callback_smoke_test.sh][callback-smoke-test] runs the callback example applications themselves,
@@ -139,6 +146,7 @@ application says which log lines to compare, such as a `resumed  | #k` line alwa
 | Message ownership crossing the thread boundary through `EventLoop` | Integration test |
 | New reactor type | Both: one synchronous unit test file per `Delivery` plus one integration test per `Delivery` |
 | Coroutine task and executor mechanics | Coroutine core tests |
+| An awaitable over a reactor | Coroutine awaitable tests |
 
 ## Test coverage
 
@@ -429,6 +437,33 @@ Five mutants of `coro_task.h` were each caught:
 | Not removing an ended root from its owner | Every spawning test, on the double destruction |
 | A plain `bool` for the start's hand-over flag | ThreadSanitizer, in the race test |
 
+### Unary awaitable coverage
+
+[reactor_coro_unary_test.cpp][coro-unary-test] runs `GetFeature` through `co::Unary`. Its service can hold an answer
+until the test releases it, or until the client cancels, so a coroutine that awaits `Finish()` before the answer is
+known to suspend.
+
+| Test | Checks |
+| ------ | --------- |
+| `GetFeature_PullOk_ReturnsOwnedResponseOnTheLoop` | One resumption, on the loop, with the response swapped out |
+| `GetFeature_PushOk_ReturnsOwnedResponseOnTheLoop` | The same under `kPush`, with the message handed over |
+| `GetFeature_PullServerError_ReturnsTheStatusAndAnEmptyResponse` | A failed RPC is a status, with an empty response |
+| `GetFeature_PushServerError_ReturnsTheStatusAndAnEmptyMessage` | Under `kPush`, the message is never null |
+| `GetFeature_EndedBeforeFinish_DoesNotSuspend` | An RPC already ended resumes nothing: no post |
+| `GetFeature_TryCancel_FinishReturnsCancelled` | A cancel ends a held RPC, and `Finish()` returns `CANCELLED` |
+| `GetFeature_FrameDestroyedMidRpc_CancelsAndWaitsForOnDone` | A frame destroyed mid-RPC frees nothing under gRPC, |
+| | and posts nothing |
+
+Five mutants of `co::Unary` were each caught:
+
+| Mutant | Caught by |
+| ------ | --------- |
+| The destructor not abandoning the waiter, so the done callback posts a destroyed frame | The destroyed frame test |
+| The destructor not waiting for `OnDone()` before destroying the reactor | The destroyed frame test |
+| Always suspending in `Finish()` | The test of an RPC already ended |
+| Never posting the waiter | Every test that suspends |
+| Not keeping the message the done callback hands over under `kPush` | Both `kPush` tests |
+
 ### Naming convention
 
 Test names have three underscore-separated segments: `RpcMethod_Scenario_Result`. The first and
@@ -674,6 +709,8 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [coro-eventloop-test]: /applications/reactor/tests/coro_eventloop_test.cpp
 [coro-task]: /applications/reactor/coro_task.h
 [coro-eventloop]: /applications/reactor/coro_eventloop.h
+[coro-unary-test]: /applications/reactor/tests/reactor_coro_unary_test.cpp
+[reactor-coro]: /applications/reactor/reactor_coro.h
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp
 [callback-smoke-test]: /applications/callback/tests/callback_smoke_test.sh
 [test-fixture]: /applications/reactor/tests/route_guide_test_fixture.h
