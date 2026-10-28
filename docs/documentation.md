@@ -37,6 +37,10 @@ use a table, since this is really two parallel facts about two components:
 | Proxy | Returns immediately |
 | Servant | Runs later, on the application thread |
 
+**Write each table row on one line.** Markdown starts a new row at every line, so a cell wrapped onto a second line
+becomes a second, mostly empty row. Lines stay within the 120 columns markdownlint checks, tables included: when a row
+does not fit, tighten its cells, or move the long part after the table, as a sentence, a list or a code block.
+
 **Convey emphasis and warnings with words, not symbols.** No emoji or decorative Unicode symbols in headings or
 text. GitHub's alert blocks (`[!NOTE]`, `[!IMPORTANT]`, `[!WARNING]`, and so on) are the exception: use them for
 callouts, since this project is hosted and read on GitHub, and its Markdown viewer renders them natively.

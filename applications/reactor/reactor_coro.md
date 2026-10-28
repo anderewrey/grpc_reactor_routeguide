@@ -1,30 +1,27 @@
 # Coroutine implementation of gRPC clients
 
-The coroutine level lets an application consume the reactors of [reactor_client.md](/applications/reactor/reactor_client.md)
-from a C++20 coroutine: one function per RPC, which suspends at each `co_await` and resumes on the application thread.
-This document is its reference. Why the level exists, and why each choice was made, is in the
-[design draft](/docs/client-coroutines-design.md).
+The coroutine level lets an application consume the reactors of
+[reactor_client.md](/applications/reactor/reactor_client.md) from a C++20 coroutine: one function per RPC, which
+suspends at each `co_await` and resumes on the application thread. This document is its reference. Why the level
+exists, and why each choice was made, is in the [design draft](/docs/client-coroutines-design.md).
 
 > [!NOTE]
-> The level is built step by step, as the design draft's [suggested order](/docs/client-coroutines-design.md#suggested-order)
-> lists. Today it has the task core and the unary awaitable. The readers, the writers and the bidirectional join come
-> next, and each adds its section here.
+> The level is built step by step, as the design draft's
+> [suggested order](/docs/client-coroutines-design.md#suggested-order) lists. Today it has the task core and the unary
+> awaitable. The readers, the writers and the bidirectional join come next, and each adds its section here.
 
 ## The words you need
 
 | Word | What it is here |
 |------|-----------------|
-| Coroutine | A function whose body contains `co_await` or `co_return`, such as a scenario's `Run()`. It can stop in |
-| | the middle and continue later |
-| Frame | The heap memory a coroutine's locals and arguments live in, so they survive while it is stopped |
-| Suspend | The coroutine stops at a `co_await`, and the thread goes back to whoever started or resumed it |
-| Resume | The coroutine continues from where it suspended, with its frame intact |
-| Handle | `std::coroutine_handle<>`, the address of a suspended frame, which whoever holds it can resume once |
-| Promise | The object the compiler keeps in each frame, which decides how the coroutine starts, ends and returns its |
-| | value |
-| Awaitable | What a `co_await` waits on, such as `Unary::Finish()`. It decides whether the coroutine suspends, and |
-| | what the `co_await` gives back |
-| Executor | What resumes a suspended handle later, on the thread of its choice: the application thread, here |
+| Coroutine | A function containing `co_await` or `co_return`, such as a scenario's `Run()`, that can stop and resume |
+| Frame | The heap memory holding a coroutine's locals and arguments, which survives while it is stopped |
+| Suspend | The coroutine stops at a `co_await`, and the thread returns to whoever started or resumed it |
+| Resume | The coroutine continues where it suspended, with its frame intact |
+| Handle | `std::coroutine_handle<>`, the address of a suspended frame, to resume once |
+| Promise | The object in each frame that decides how the coroutine starts, ends and returns its value |
+| Awaitable | What a `co_await` waits on, such as `Unary::Finish()`: it decides whether to suspend, and the result |
+| Executor | What resumes a suspended handle later, on the thread of its choice: here, the application thread |
 | Task | `Task<T>`, a coroutine that produces one `T` for the one coroutine that awaits it |
 | Root task | A task no coroutine awaits, started by `RootTasks::Spawn()`, such as one scenario per RPC |
 
@@ -32,17 +29,14 @@ This document is its reference. Why the level exists, and why each choice was ma
 
 The level has two headers of its own, and shares the EventLoop adapter with the callback level:
 
-| Header | Holds | Knows |
+| Header | Knows | Holds |
 |--------|-------|-------|
-| [coro_task.h](/applications/reactor/coro_task.h) | `Task<T>`, `RootTasks`, `Executor`, | C++20 coroutines only |
-| | `ResumeHandover`, `CurrentTask` | |
-| [reactor_coro.h](/applications/reactor/reactor_coro.h) | `Unary<ReactorT>`, `UnaryResult`, | The generic reactors and the task |
-| | `DestroyAfterOnDone()` | core |
-| [reactor_eventloop.h](/applications/reactor/reactor_eventloop.h) | `EventLoopExecutor`, beside the callback level's | EventLoop |
-| | `EventConnection` | |
+| [coro_task.h](/applications/reactor/coro_task.h) | C++20 coroutines only | `Task`, `RootTasks`, `Executor`, `ResumeHandover`, `CurrentTask` |
+| [reactor_coro.h](/applications/reactor/reactor_coro.h) | The generic reactors, the task core | `Unary`, `UnaryResult`, `DestroyAfterOnDone()` |
+| [reactor_eventloop.h](/applications/reactor/reactor_eventloop.h) | EventLoop | `EventLoopExecutor`, beside the callback level's `EventConnection` |
 
 Everything is in the `RpcReactor::coro` namespace. A helper used by one class only is a private member of that class,
-such as `Task<T>`'s promise. A helper several classes use is a named class of the level, such as `ResumeHandover`.
+such as `Task`'s promise. A helper several classes use is a named class of the level, such as `ResumeHandover`.
 
 ## The life of one `co_await`
 
@@ -56,21 +50,17 @@ coro::Task<> GetFeature::Run(routeguide::Point point) {
 }
 ```
 
-| Step | Thread | What happens | Where |
-|------|--------|--------------|-------|
-| 1 | Application | Constructing the `Unary` constructs its reactor, which sends the request | `Unary`'s constructor |
-| 2 | Application | `co_await Finish()` asks the hand-over whether to suspend. If the | `ResumeHandover::Suspend()` |
-| | | RPC has already ended, it does not suspend, and goes to step 7 | |
-| 3 | Application | The coroutine suspends, and the thread returns to what resumed it, | `RootTasks::Spawn()` returns |
-| | | such as `Spawn()` or an event handler | |
-| 4 | gRPC | `OnDone()` calls the awaitable's done callback, which keeps the message | `ResumeHandover::Complete()` |
-| | | under `kPush`, then hands the handle to the executor | |
-| 5 | gRPC | The executor queues the handle as an EventLoop event | `EventLoopExecutor::Post()` |
-| 6 | Application | The event's one handler asserts it runs on the application thread, | `EventLoopExecutor`'s handler |
-| | | and resumes the handle | |
-| 7 | Application | `Finish()` takes the status and the owned response out of the reactor, | `Unary`'s `Take()` |
-| | | destroys the reactor once `OnDone()` has returned, and gives back a | |
-| | | `UnaryResult` | |
+1. **Application thread.** Constructing the `Unary` constructs its reactor, which sends the request.
+2. **Application thread.** `co_await Finish()` asks `ResumeHandover::Suspend()` whether to suspend. If the RPC has
+   already ended, it does not suspend, and goes to step 7.
+3. **Application thread.** The coroutine suspends, and the thread returns to what started or resumed it, such as
+   `RootTasks::Spawn()` or an event handler.
+4. **gRPC thread.** `OnDone()` calls the awaitable's done callback. Under `kPush` it keeps the message, then
+   `ResumeHandover::Complete()` hands the handle to the executor.
+5. **gRPC thread.** `EventLoopExecutor::Post()` queues the handle as an EventLoop event.
+6. **Application thread.** The event's one handler asserts it runs on the application thread, and resumes the handle.
+7. **Application thread.** `Finish()` takes the status and the owned response out of the reactor, destroys the reactor
+   once `OnDone()` has returned, and gives back a `UnaryResult`.
 
 The only code that runs on the gRPC thread, steps 4 and 5, is the level's own. The coroutine's code always runs on the
 application thread, which is the level's boundary rule.
@@ -81,11 +71,10 @@ The coroutine level changes how the application consumes a reactor, and nothing 
 
 | Component | Callback level | Coroutine level |
 |-----------|----------------|-----------------|
-| Proxy | A scenario's `Start()` creates the reactor | A scenario's `Start()` spawns the scenario's coroutine |
+| Proxy | A scenario's `Start()` creates the reactor | A scenario's `Start()` spawns its coroutine |
 | Method Request | The reactor | The same reactor, inside an awaitable |
-| Scheduler, Activation Queue | EventLoop | EventLoop, which `EventLoopExecutor` posts each resumption to |
-| Future | `Status()` and `GetResponse()`, queried by a handler | The awaitable: `co_await Finish()` gives the status |
-| | | and the response |
+| Scheduler, Activation Queue | EventLoop | EventLoop, which `EventLoopExecutor` posts to |
+| Future | `Status()` and `GetResponse()`, queried by a handler | The awaitable: `co_await Finish()` |
 | Servant | One handler per event | One coroutine per RPC |
 
 ## Rules a coroutine follows
@@ -126,7 +115,7 @@ A lazily started coroutine that produces one `T`, or nothing for `Task<>`, for t
 | Member | Use |
 |--------|-----|
 | `co_await std::move(task)` | Starts the body, and gives its `T` once it ends |
-| Destructor | Destroys the frame, whether finished, not started or suspended, and with it any task it awaits |
+| Destructor | Destroys the frame, finished, not started or suspended, and any task it awaits |
 
 Move-only, and `[[nodiscard]]`. A body that ends without suspending lets its awaiter go on without any transfer, so a
 loop of such awaits keeps a flat stack on every compiler, see
@@ -138,8 +127,7 @@ Owns the root tasks: the ones no coroutine awaits.
 
 | Member | Use |
 |--------|-----|
-| `Spawn(Task<> task)` | Runs the task at once, up to its first suspension, keeps it until it ends, and returns its |
-| | number |
+| `Spawn(Task<> task)` | Runs the task up to its first suspension, keeps it until it ends, and returns its number |
 | `Size()` | How many root tasks have started and not ended yet |
 | Destructor | Destroys the frames still suspended, which releases everything they own |
 
@@ -158,7 +146,7 @@ The executor of the applications, in [reactor_eventloop.h](/applications/reactor
 
 | Member | Use |
 |--------|-----|
-| Constructor | Registers the one handler of `kResumeEvent`. Takes the application thread, by default the calling one |
+| Constructor | Registers the one handler of `kResumeEvent`, for the application thread, by default the calling one |
 | `Post(handle)` | Triggers `kResumeEvent` with the handle's address |
 | Its handler | Asserts it runs on the application thread, then resumes the handle |
 
@@ -173,11 +161,9 @@ wait, or a re-armable variant.
 
 | Member | Called by | Use |
 |--------|-----------|-----|
-| `Suspend(waiter)` | The awaitable's `await_suspend()` | Returns whether the coroutine suspends: false when the |
-| | | operation has already ended |
+| `Suspend(waiter)` | The awaitable's `await_suspend()` | Whether to suspend: false once the operation has ended |
 | `Complete(executor)` | Whatever ends the operation, on any thread | Posts the waiting coroutine, if any |
-| `Abandon()` | The awaitable's destructor | Makes a later `Complete()` post nothing, since the coroutine is being |
-| | | destroyed |
+| `Abandon()` | The awaitable's destructor | Makes a later `Complete()` post nothing |
 | `Resumed()` | The awaitable's `await_resume()`, first | Restores the task number for the logs |
 
 ### `CurrentTask`
@@ -192,19 +178,18 @@ A unary RPC a coroutine awaits. `ReactorT` is a service-specific reactor derivin
 
 | Member | Use |
 |--------|-----|
-| `Unary(executor, stub, request, context)` | Sends the request. The context is optional, a fresh one by default, for |
-| | a deadline or metadata |
+| `Unary(executor, stub, request, context)` | Sends the request. The context is optional, for a deadline or metadata |
 | `co_await Finish()` | Resumes once the RPC has ended, with a `UnaryResult` |
 | `TryCancel()` | Cancels an RPC still in flight: `Finish()` then gives `CANCELLED` |
-| Destructor | Cancels an RPC still in flight, and destroys the reactor only once `OnDone()` has run |
+| Destructor | Cancels an RPC still in flight, and destroys the reactor once `OnDone()` has run |
 
 Non-copyable and non-movable, since the reactor's callback refers to it. The response is always owned by the coroutine,
 and `Delivery` decides how:
 
-| Delivery | `UnaryResult::response` | How |
-|----------|-------------------------|-----|
+| Delivery | `UnaryResult::response` | How it becomes owned |
+|----------|-------------------------|----------------------|
 | `kPull` | `ResponseT` | Swapped out of the reactor by `GetResponse()`, empty unless the status is OK |
-| `kPush` | `std::unique_ptr<ResponseT>` | The message the done callback hands over, never null, empty on a failed RPC |
+| `kPush` | `std::unique_ptr<ResponseT>` | Handed over by the done callback, never null, empty on a failed RPC |
 
 ### `DestroyAfterOnDone(reactor, timeout)`
 
@@ -214,12 +199,9 @@ timeout, it leaks the reactor rather than freeing it under gRPC, and returns fal
 
 ## Scenarios and tests
 
-| To | Read |
-|----|------|
-| See every coroutine scenario, and the two diffs each has | [Coroutine |
-| | scenarios](/applications/reactor/variants/README.md#coroutine-scenarios) |
-| See what each test proves, and the mutants each caught | [Coroutine core |
-| | coverage](/docs/testing.md#coroutine-core-coverage), [unary |
-| | awaitable |
-| | coverage](/docs/testing.md#unary-awaitable-coverage) |
-| Understand why each choice was made | [The design draft](/docs/client-coroutines-design.md) |
+- [Coroutine scenarios](/applications/reactor/variants/README.md#coroutine-scenarios) lists every coroutine scenario,
+  and the two diffs each has.
+- [Coroutine core coverage](/docs/testing.md#coroutine-core-coverage) and
+  [unary awaitable coverage](/docs/testing.md#unary-awaitable-coverage) list what each test proves, and the mutants
+  each caught.
+- [The design draft](/docs/client-coroutines-design.md) explains why each choice was made.
