@@ -89,6 +89,13 @@ Unlike the four unit test files, this single fixture accumulates one case per re
 instead of splitting into one file per type. Every case exercises the same dispatch path and
 differs only in RPC shape.
 
+### Coroutine core tests
+
+[coro_task_test.cpp][coro-task-test] tests the core of the coroutine level, which the
+[client coroutines design draft](/docs/client-coroutines-design.md) proposes: `Task<T>`, `RootTasks` and the
+`Executor` interface of [coro_task.h][coro-task], driven by hand or resumed on the `AppLoop` task queue of
+[continuous_use_support.h][continuous-support]. It needs no gRPC server. It is described in [coroutine core coverage](#coroutine-core-coverage).
+
 ### Callback application smoke test
 
 [callback_smoke_test.sh][callback-smoke-test] runs the callback example applications themselves,
@@ -124,6 +131,7 @@ application says which log lines to compare, such as a `resumed  | #k` line alwa
 | Thread-hopping and dispatch through `EventLoop` | Integration test |
 | Message ownership crossing the thread boundary through `EventLoop` | Integration test |
 | New reactor type | Both: one synchronous unit test file per `Delivery` plus one integration test per `Delivery` |
+| Coroutine task and executor mechanics | Coroutine core tests |
 
 ## Test coverage
 
@@ -366,6 +374,45 @@ stops after its first message. Taking a hold as `kTurnByTurn` does, the first te
 not even a cancel can end it. Delivery in order, and of every message once, follows from the FIFO queue and from gRPC's
 one read at a time, so the tests assert it rather than mutate it.
 
+### Coroutine core coverage
+
+[coro_task_test.cpp][coro-task-test] tests the task type and its owner. Most tests resume a suspended coroutine by
+hand, and count the live instances of a `Tracked` parameter or local to show which frames still exist.
+
+| Test | Checks |
+| ------ | --------- |
+| `Task_NotAwaited_BodyNeverStarts` | The start is lazy |
+| `Task_Awaited_ReturnsTheValue` | The awaiter gets the value the body returned |
+| `Task_NestedChain_ValuesFlowBackUp` | Each awaiter of a chain of three gets its child's value |
+| `Task_MoveOnlyValue_IsMovedOut` | A `std::unique_ptr` is moved out to the awaiter |
+| `Task_MillionSynchronousAwaits_StackDoesNotGrow` | A million children that never suspend run at one stack depth |
+| `Task_ChildSuspends_ItsEndResumesTheAwaiter` | A child that suspends resumes its awaiter once it ends |
+| `Task_BodyEndsOnAnotherThreadDuringStart_AwaiterResumedOnce` | 1000 bodies end on another thread, racing their start |
+| `Task_DestroyedBeforeStart_DestroysItsFrame` | A task never awaited releases its frame and never runs |
+| `Task_MovedFrom_OwnsNothing` | Only the task moved to destroys the frame |
+| `Task_Finished_FrameLivesUntilTheTaskIsDestroyed` | The caller owns the finished frame until it destroys the task |
+| `RootTasks_DestroyedWithSuspendedChain_DestroysEveryFrame` | The owner releases a suspended chain of two frames |
+| `RootTasks_Spawn_RunsToTheFirstSuspension_ThenReleasesOnCompletion` | `Spawn()` starts at once, the end releases |
+| `RootTasks_SeveralRoots_EachReleasedOnItsOwnCompletion` | Roots ending in any order, or at once, are each released |
+| `Executor_ResumptionsFromOtherThreads_AllRunOnTheAppLoop` | 100 resumptions posted from other threads run on the loop |
+| `Task_ExceptionEscapesTheBody_LogsAndTerminates` | An escaping exception is logged, then terminates |
+
+The stack test measures the stack position of a plain function each child calls, since a coroutine's own locals live
+in its heap frame. Under GCC below `-O2`, symmetric transfer alone grows the stack by about 128 bytes per await, and
+that test overflows the stack. A child that ends without suspending therefore lets its awaiter go on without any
+transfer, which the race test checks against a body ending on another thread at the same time.
+
+Five mutants of `coro_task.h` were each caught:
+
+| Mutant | Caught by |
+| ------ | --------- |
+| Transferring to the awaiter even when the body ended inside its start | The stack test overflows under GCC, and five |
+| | more tests fail under AddressSanitizer |
+| Not destroying a frame with its task | The frame tests |
+| Not destroying the owner's suspended roots | The suspended chain test |
+| Not removing an ended root from its owner | Every spawning test, on the double destruction |
+| A plain `bool` for the start's hand-over flag | ThreadSanitizer, in the race test |
+
 ### Naming convention
 
 Test names have three underscore-separated segments: `RpcMethod_Scenario_Result`. The first and
@@ -607,6 +654,8 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [latest-test]: /applications/reactor/tests/latest_slot_test.cpp
 [journal-test]: /applications/reactor/tests/continuous_journal_test.cpp
 [continuous-support]: /applications/reactor/tests/continuous_use_support.h
+[coro-task-test]: /applications/reactor/tests/coro_task_test.cpp
+[coro-task]: /applications/reactor/coro_task.h
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp
 [callback-smoke-test]: /applications/callback/tests/callback_smoke_test.sh
 [test-fixture]: /applications/reactor/tests/route_guide_test_fixture.h

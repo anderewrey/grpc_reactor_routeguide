@@ -21,6 +21,7 @@ set(REACTOR_TESTS
     reactor_teardown_test
     latest_slot_test
     continuous_journal_test
+    coro_task_test
 )
 
 foreach(test_name IN LISTS REACTOR_TESTS)

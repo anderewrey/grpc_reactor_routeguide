@@ -107,13 +107,19 @@ but still no task type, so the level's core is written here whatever the standar
 |------------------------|---------------------------------------------------------------------------------|
 | Start                  | Lazy: the body starts when the task is awaited or spawned                       |
 | Awaiters               | One at most                                                                     |
-| Resumption of awaiter  | Symmetric transfer: `await_suspend` returns the handle to resume                |
+| Resumption of awaiter  | Symmetric transfer after a suspension: `await_suspend` returns the handle to    |
+|                        | resume. None when the body ends without suspending                              |
 | Ownership              | The caller owns the frame; destroying the `Task` destroys a finished frame      |
 | Root tasks             | `Spawn()` gives a root task to an owner that keeps it until it completes        |
 | Exceptions             | Not relied on: `unhandled_exception()` logs and calls `std::terminate()`        |
 
-Symmetric transfer matters because an awaitable can complete without suspending, for instance a `Read()` on a buffer
-that already holds a message. A loop of such reads would otherwise grow the stack with each iteration.
+An awaitable can complete without suspending, for instance a `Read()` on a buffer that already holds a message. A loop
+of such reads must not grow the stack with each iteration. Symmetric transfer alone does not promise that: GCC 13 and
+14 compile it to a nested call below `-O2`, about 128 bytes of stack per await, and a million awaits overflow the
+stack of a Debug build. Clang, and GCC at `-O2`, compile it to a jump. So a task that ends without suspending lets its
+awaiter go on without any transfer: the awaiter starts the body with a call, and an atomic flag tells whichever of the
+two finishes second to resume the awaiter. Only a body that suspended on the way resumes its awaiter by symmetric
+transfer, from a resumption the executor started, so the stack stays bounded whatever the compiler does.
 
 asio-grpc and stdexec solve the same problem with far more generality. Neither is a dependency here, for the reason
 the reactors were written in this repository: the mechanics stay visible and testable, and the vcpkg build stays as it
