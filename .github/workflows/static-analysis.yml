@@ -168,13 +168,15 @@ jobs:
       # findings. -i build skips the generated protobuf/gRPC sources as primary check targets;
       # preprocessorErrorDirective is scoped to build/* (protoc's own version-guard #error, reached
       # transitively through an #include there) so a real #error in this project's own code would
-      # still surface.
+      # still surface. --library=googletest describes gtest's macros, such as TEST(), which cppcheck
+      # cannot expand on its own since it does not read the system headers that define them.
       - name: Run cppcheck
         if: matrix.tool == 'cppcheck'
         run: |
           cppcheck --project=build/compile_commands.json \
             -j "$(nproc)" \
             --enable=warning,performance,portability \
+            --library=googletest \
             --suppress=missingIncludeSystem \
             --suppress=preprocessorErrorDirective:build/* \
             --inline-suppr \
