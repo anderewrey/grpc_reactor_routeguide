@@ -151,7 +151,7 @@ What the application owes, by variant, and what happens otherwise:
 - `kReactorPulls`: a `next_request` that answers at once, without blocking, since it runs inside a reaction.
   Otherwise: a stalled gRPC thread.
 
-Everything else is the reactor's job. The reasoning behind each row is under
+Everything else is the reactor's job. The reasoning behind each item is under
 [Hold requirements](#hold-requirements) and [The obligation a held message adds](#the-obligation-a-held-message-adds).
 
 Every reactor starts its RPC in its constructor, as the last statement of the specialized reactor's constructor, so a
