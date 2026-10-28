@@ -94,7 +94,7 @@ differs only in RPC shape.
 Two test binaries test the core of the coroutine level, which the
 [client coroutines design draft](/docs/client-coroutines-design.md) proposes. Neither needs a gRPC server:
 
-- [coro_task_test.cpp][coro-task-test]: `Task<T>`, `RootTasks` and the `Executor` interface of
+- [coro_task_test.cpp][coro-task-test]: `Task<T>`, `RootTasks`, the `Executor` interface and `ResumeHandover` of
   [coro_task.h][coro-task], driven by hand or resumed on the `AppLoop` task queue of
   [continuous_use_support.h][continuous-support]
 - [eventloop_executor_test.cpp][eventloop-executor-test]: `EventLoopExecutor`, of
@@ -108,8 +108,8 @@ They are described in [coroutine core coverage](#coroutine-core-coverage).
 [reactor_coro_unary_test.cpp][coro-unary-test] tests `coro::Unary`, the unary awaitable of
 [reactor_coro.h][reactor-coro], against an in-process server, with each coroutine resumed on the `AppLoop` task queue.
 Its executor counts the coroutines it is handed, so a test can tell whether `Finish()` suspended. The hand-over inside
-the awaitable, between the done callback and `Finish()`, is tested on its own, with no RPC and no timing. Both are
-described in [unary awaitable coverage](#unary-awaitable-coverage).
+the awaitable, between the done callback and `Finish()`, is tested on its own in coro_task_test.cpp, with no RPC and
+no timing. Both are described in [unary awaitable coverage](#unary-awaitable-coverage).
 
 ### Callback application smoke test
 
@@ -457,8 +457,8 @@ known to suspend.
 | | and posts nothing |
 
 Whether `Finish()` suspends depends on whether the RPC ended first, which a test can only arrange by waiting on
-timing. So the hand-over that decides it, `detail::Completion`, is tested directly, with an executor that records the
-coroutines it is given:
+timing. So the hand-over that decides it, `ResumeHandover` of [coro_task.h][coro-task], is tested directly in
+[coro_task_test.cpp][coro-task-test], with an executor that records the coroutines it is given:
 
 | Test | Checks |
 | ------ | --------- |

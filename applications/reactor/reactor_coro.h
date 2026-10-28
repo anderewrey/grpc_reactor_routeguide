@@ -7,7 +7,6 @@
 
 #include <grpcpp/grpcpp.h>
 
-#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <coroutine>
@@ -32,64 +31,21 @@ namespace RpcReactor::coro {
 /// gives up and leaks the reactor rather than freeing it under gRPC.
 inline constexpr std::chrono::seconds kOnDoneTimeout{5};
 
-namespace detail {
-
-/// Hands a suspended coroutine from the gRPC thread that ends an operation to the executor, or lets it go on
-/// without suspending when the operation ended first. Lock-free: the slot holds nothing, the waiting
-/// coroutine's address, or kEnded.
-class Completion {
- public:
-  /// Called by the awaitable's await_suspend(), on the application thread.
-  /// @return true when the coroutine suspends until Complete() posts it; false when the operation has
-  ///         already ended, so it goes on
-  bool Suspend(std::coroutine_handle<> waiter) noexcept {
-    void* expected = nullptr;  // NOLINT(misc-const-correctness): compare_exchange_strong() writes it
-    return slot_.compare_exchange_strong(expected, waiter.address(), std::memory_order_acq_rel);
-  }
-
-  /// Called by the reactor's callback, on a gRPC thread, once what it records is in place: posts the
-  /// waiting coroutine, if any, to the executor.
-  void Complete(Executor& executor) {
-    void* waiter = slot_.exchange(kEnded, std::memory_order_acq_rel);
-    if (waiter != nullptr && waiter != kEnded) executor.Post(std::coroutine_handle<>::from_address(waiter));
-  }
-
-  /// Called by the awaitable's destructor, before it cancels the RPC: a callback that runs from then on
-  /// posts nothing, since the coroutine it would resume is being destroyed.
-  void Abandon() noexcept { slot_.exchange(kEnded, std::memory_order_acq_rel); }
-
- private:
-  // Any address no coroutine frame can have.
-  static inline char kEndedTag = 0;
-  static inline void* const kEnded = &kEndedTag;
-  std::atomic<void*> slot_{nullptr};
-};
-
-/// The response and the delivery of a generic unary reactor, deduced from the service-specific class that
-/// derives from it.
-template <class ResponseT_, Client::Delivery kDelivery_>
-struct UnaryTraits {
-  using ResponseT = ResponseT_;
-  static constexpr Client::Delivery kDelivery = kDelivery_;
-};
-template <class ResponseT, Client::Delivery kDelivery>
-UnaryTraits<ResponseT, kDelivery> UnaryTraitsOf(const Client::ActiveUnaryReactor<ResponseT, kDelivery>*);
-
 /// Destroys a reactor once its OnDone() has run, cancelling its RPC first. Should OnDone() never come, the
 /// reactor is leaked rather than freed under gRPC.
+/// @param reactor the awaitable's reactor, empty once destroyed; already empty is fine
+/// @param timeout how long to wait for OnDone()
 /// @return false when the reactor was leaked
 template <class ReactorT>
-bool TearDown(std::unique_ptr<ReactorT>& reactor) {
+bool DestroyAfterOnDone(std::unique_ptr<ReactorT>& reactor, std::chrono::milliseconds timeout) {
   if (!reactor) return true;
-  if (reactor->CancelAndWait(kOnDoneTimeout)) {
+  if (reactor->CancelAndWait(timeout)) {
     reactor.reset();
     return true;
   }
   static_cast<void>(reactor.release());
   return false;
 }
-
-}  // namespace detail
 
 /// What an awaited unary RPC ends with: its status, and its response, owned by the coroutine.
 /// @tparam MessageT ResponseT under Delivery::kPull, std::unique_ptr<ResponseT> under Delivery::kPush
@@ -124,8 +80,17 @@ struct UnaryResult {
 ///         from a stub, a context, a request and the unary callbacks
 template <class ReactorT>
 class Unary {
-  using Traits = decltype(detail::UnaryTraitsOf(static_cast<ReactorT*>(nullptr)));
-  using ResponseT = typename Traits::ResponseT;
+  /// The response and the delivery of the generic unary reactor ReactorT derives from.
+  template <class ResponseT_, Client::Delivery kDelivery_>
+  struct Traits_ {
+    using ResponseT = ResponseT_;
+    static constexpr Client::Delivery kDelivery = kDelivery_;
+  };
+  template <class ResponseT_, Client::Delivery kDelivery_>
+  static Traits_<ResponseT_, kDelivery_> TraitsOf(const Client::ActiveUnaryReactor<ResponseT_, kDelivery_>*);
+
+  using Traits = decltype(TraitsOf(static_cast<ReactorT*>(nullptr)));
+  using ResponseT = Traits::ResponseT;
   static constexpr Client::Delivery kDelivery = Traits::kDelivery;
   static constexpr bool kPull = kDelivery == Client::Delivery::kPull;
 
@@ -148,8 +113,8 @@ class Unary {
 
   /// Cancels an RPC still in flight, and destroys the reactor once its OnDone() has run.
   ~Unary() {
-    completion_.Abandon();
-    detail::TearDown(reactor_);
+    handover_.Abandon();
+    DestroyAfterOnDone(reactor_, kOnDoneTimeout);
   }
 
   Unary(const Unary&) = delete;
@@ -169,7 +134,7 @@ class Unary {
     struct Awaiter {
       Unary& call;
       static bool await_ready() noexcept { return false; }
-      bool await_suspend(std::coroutine_handle<> waiter) const noexcept { return call.completion_.Suspend(waiter); }
+      bool await_suspend(std::coroutine_handle<> waiter) const noexcept { return call.handover_.Suspend(waiter); }
       ResultT await_resume() const { return call.Take(); }
     };
     assert(reactor_ && "Finish() is awaited exactly once");
@@ -184,11 +149,11 @@ class Unary {
   Callbacks MakeCallbacks() {
     Callbacks cbs;
     if constexpr (kPull) {
-      cbs.done = [this](auto*, const grpc::Status&, const ResponseT&) { completion_.Complete(executor_); };
+      cbs.done = [this](auto*, const grpc::Status&, const ResponseT&) { handover_.Complete(executor_); };
     } else {
       cbs.done = [this](auto*, const grpc::Status&, std::unique_ptr<ResponseT> response) {
         pushed_ = std::move(response);
-        completion_.Complete(executor_);
+        handover_.Complete(executor_);
       };
     }
     return cbs;
@@ -204,12 +169,12 @@ class Unary {
       result.response = std::move(pushed_);
     }
     // OnDone() may still be returning, on its gRPC thread, from the callback that resumed this coroutine.
-    detail::TearDown(reactor_);
+    DestroyAfterOnDone(reactor_, kOnDoneTimeout);
     return result;
   }
 
   Executor& executor_;
-  detail::Completion completion_;
+  ResumeHandover handover_;
   std::unique_ptr<ResponseT> pushed_;  // Delivery::kPush only, set by the done callback
   std::unique_ptr<ReactorT> reactor_;  // declared last, so the callback's targets exist before the RPC starts
 };

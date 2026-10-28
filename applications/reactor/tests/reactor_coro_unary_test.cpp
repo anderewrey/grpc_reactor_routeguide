@@ -7,7 +7,7 @@
 /// resumed on the AppLoop task queue that stands in for the application's event loop: the outcome and the
 /// owned response under both deliveries, a failed RPC, a cancel, and a frame destroyed while its RPC is in
 /// flight. The hand-over inside the awaitable, between the done callback and Finish(), is tested on its own,
-/// with no RPC and no timing: an operation that ended first, one awaited first, and one abandoned.
+/// with no RPC and no timing, in coro_task_test.cpp.
 
 #include <gtest/gtest.h>
 
@@ -75,7 +75,7 @@ class UnaryService final : public routeguide::RouteGuide::CallbackService {
                                        routeguide::Feature* feature) override {
     auto* reactor = context->DefaultReactor();
     const routeguide::Point request = *point;
-    auto answer = [this, context, reactor, feature, request] {
+    const auto answer = [this, context, reactor, feature, request] {
       if (error_ != grpc::StatusCode::OK) {
         reactor->Finish(grpc::Status(error_, "failed on purpose"));
         return;
@@ -127,7 +127,7 @@ class CountingExecutor final : public Executor {
 /// What a test coroutine saw, written on the loop, read by the test once `done` is ready.
 template <Delivery kDelivery>
 struct Seen {
-  typename GetFeatureCall<kDelivery>::ResultT result;
+  GetFeatureCall<kDelivery>::ResultT result;
   std::thread::id resumed_on;
 };
 
@@ -274,52 +274,6 @@ TEST_F(ReactorCoroUnaryTest, GetFeature_FrameDestroyedMidRpc_CancelsAndWaitsForO
     roots.reset();
   });
   EXPECT_EQ(executor_.Posts(), 0);
-}
-
-// =============================================================================
-// detail::Completion, the hand-over between the done callback and Finish()
-// =============================================================================
-
-/// Records the handles it is given, and resumes none.
-class RecordingExecutor final : public Executor {
- public:
-  void Post(std::coroutine_handle<> handle) override { posted.push_back(handle); }
-  std::vector<std::coroutine_handle<>> posted;
-};
-
-/// @test An operation that ended before the coroutine awaits it lets the coroutine go on without suspending,
-/// and posts nothing: what Finish() does when the RPC ended first.
-TEST(CoroCompletionTest, EndedFirst_DoesNotSuspend_AndPostsNothing) {
-  RecordingExecutor executor;
-  RpcReactor::coro::detail::Completion completion;
-  completion.Complete(executor);
-
-  EXPECT_FALSE(completion.Suspend(std::noop_coroutine()));
-  EXPECT_TRUE(executor.posted.empty());
-}
-
-/// @test A coroutine that awaits first suspends, and the end of the operation posts it, once.
-TEST(CoroCompletionTest, AwaitedFirst_Suspends_AndTheEndPostsItOnce) {
-  RecordingExecutor executor;
-  RpcReactor::coro::detail::Completion completion;
-  const std::coroutine_handle<> waiter = std::noop_coroutine();
-
-  EXPECT_TRUE(completion.Suspend(waiter));
-  EXPECT_TRUE(executor.posted.empty());
-  completion.Complete(executor);
-  ASSERT_EQ(executor.posted.size(), 1U);
-  EXPECT_EQ(executor.posted.front(), waiter);
-}
-
-/// @test Once abandoned, as by a Unary being destroyed, the end of the operation posts nothing.
-TEST(CoroCompletionTest, Abandoned_TheEndPostsNothing) {
-  RecordingExecutor executor;
-  RpcReactor::coro::detail::Completion completion;
-
-  EXPECT_TRUE(completion.Suspend(std::noop_coroutine()));
-  completion.Abandon();
-  completion.Complete(executor);
-  EXPECT_TRUE(executor.posted.empty());
 }
 
 }  // namespace

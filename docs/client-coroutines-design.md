@@ -61,12 +61,16 @@ Each of the three headers knows one thing more than the level below it, and noth
 
 | Header                | Knows                                                    | Does not know              |
 |-----------------------|----------------------------------------------------------|----------------------------|
-| `coro_task.h`         | C++20 coroutines: `Task<T>`, `Spawn()`, and an executor  | gRPC, EventLoop,           |
-|                       | that resumes a handle                                    | RouteGuide                 |
+| `coro_task.h`         | C++20 coroutines: `Task<T>`, `Spawn()`, an executor that | gRPC, EventLoop,           |
+|                       | resumes a handle, and the hand-over that reaches it      | RouteGuide                 |
 | `reactor_coro.h`      | The generic reactors of `reactor_client.h`, the task     | EventLoop, RouteGuide      |
 |                       | core, and the buffers, reusing `latest_slot.h`           |                            |
 | `reactor_eventloop.h` | EventLoop: `EventConnection` for the callback level, and | gRPC, RouteGuide           |
 |                       | the executor that posts a handle and resumes it          |                            |
+
+Every helper is either a private member of the class it serves, such as `Task<T>`'s promise, or a named building block
+of the level, such as `ResumeHandover`, which every awaitable uses to hand its coroutine to the executor. There is no
+`detail` namespace.
 
 The awaitables take the executor as a parameter, not EventLoop. Their unit tests can then resume coroutines on the
 single-threaded `AppLoop` task queue of `continuous_use_support.h`, with no EventLoop and no global state, and the

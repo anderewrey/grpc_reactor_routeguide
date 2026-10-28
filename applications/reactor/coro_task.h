@@ -16,12 +16,12 @@
 #include <type_traits>
 #include <utility>
 
-/// The core of the coroutine level: a task type, an owner for root tasks, and the interface of the executor
-/// that resumes them. It knows C++20 coroutines only, not gRPC, EventLoop or RouteGuide, so the server
-/// side can reuse it as it is.
+/// The core of the coroutine level: a task type, an owner for root tasks, the interface of the executor
+/// that resumes them, and the hand-over every awaitable uses to reach that executor. It knows C++20
+/// coroutines only, not gRPC, EventLoop or RouteGuide, so the server side can reuse it as it is.
 ///
 /// Errors are values: no function here throws on purpose, and an exception that escapes a coroutine body
-/// is a bug, which ends the process at the place it happened, see PromiseBase::unhandled_exception().
+/// is a bug, which ends the process at the place it happened, see Task's unhandled_exception().
 namespace RpcReactor::coro {
 
 /// Resumes coroutine handles later, on a thread of its own choosing: the application thread, for every
@@ -45,99 +45,40 @@ class Executor {
   Executor& operator=(Executor&&) = default;
 };
 
-template <class T>
-class Task;
-
-namespace detail {
-
-/// What Task<T>'s promise has whatever T: lazy start, the one awaiter, and the exception policy.
-class PromiseBase {
+/// Hands a suspended coroutine from the thread that ends an operation, such as a gRPC callback, to the
+/// executor, or lets it go on without suspending when the operation ended first. The building block of
+/// every awaitable whose operation ends on another thread. Lock-free: the slot holds nothing, the waiting
+/// coroutine's address, or kEnded.
+///
+/// Single-shot: once ended, it stays ended.
+class ResumeHandover {
  public:
-  /// Lazy: the body starts only when the task is awaited, or spawned.
-  static std::suspend_always initial_suspend() noexcept { return {}; }
-
-  /// Resumes the awaiter once the body has finished: by symmetric transfer when the body suspended on the
-  /// way, or by letting the awaiter go on without suspending when the body finished first, see Start().
-  struct FinalAwaiter {
-    static bool await_ready() noexcept { return false; }
-    template <class Promise>
-    std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> self) const noexcept {
-      PromiseBase& promise = self.promise();
-      // The second of the body and Start() to get here resumes the awaiter. When the body is second, the
-      // awaiter is suspended, and gets the thread by symmetric transfer.
-      if (promise.second_.exchange(true, std::memory_order_acq_rel)) return promise.awaiter_;
-      return std::noop_coroutine();  // the awaiter is still in Start(), which goes on without suspending
-    }
-    void await_resume() const noexcept {}
-  };
-  static FinalAwaiter final_suspend() noexcept { return {}; }
-
-  /// An exception escaping a coroutine body is a bug: logs it on stderr, then ends the process. The
-  /// promise stores no std::exception_ptr, so a frame finishes with a value or never finishes.
-  [[noreturn]] static void unhandled_exception() noexcept {
-    try {
-      throw;
-    } catch (const std::exception& e) {
-      std::fprintf(stderr, "coroutine: unhandled exception: %s\n", e.what());
-    } catch (...) {
-      std::fputs("coroutine: unhandled exception of unknown type\n", stderr);
-    }
-    std::terminate();
+  /// Called by the awaitable's await_suspend(), on the application thread.
+  /// @param waiter the coroutine that awaits the operation
+  /// @return true when the coroutine suspends until Complete() posts it; false when the operation has
+  ///         already ended, so it goes on
+  bool Suspend(std::coroutine_handle<> waiter) noexcept {
+    void* expected = nullptr;  // NOLINT(misc-const-correctness): compare_exchange_strong() writes it
+    return slot_.compare_exchange_strong(expected, waiter.address(), std::memory_order_acq_rel);
   }
 
-  /// Runs the body for its one awaiter, up to its first suspension or its end.
-  ///
-  /// A body that finishes without suspending, such as a read from a buffer that already holds a message,
-  /// lets the awaiter go on without suspending at all: no handle is resumed, and the stack is back where
-  /// it was. A loop of such awaits therefore runs in constant stack depth whatever the compiler does.
-  /// Symmetric transfer alone does not promise that: GCC compiles it to a nested call below -O2, which
-  /// adds about 128 bytes of stack per await.
-  /// @param self the task's own frame
-  /// @param awaiter the coroutine awaiting the task
-  /// @return true when the body suspended, so the awaiter suspends until the body resumes it; false when
-  ///         the body has already finished, so the awaiter goes on
-  template <class Promise>
-  bool Start(std::coroutine_handle<Promise> self, std::coroutine_handle<> awaiter) noexcept {
-    assert(!awaiter_ && "a Task is awaited once at most");
-    awaiter_ = awaiter;
-    self.resume();
-    return !second_.exchange(true, std::memory_order_acq_rel);
+  /// Called once the operation has ended, from whatever thread ends it, once what it records is in place:
+  /// posts the waiting coroutine, if any, to the executor.
+  void Complete(Executor& executor) {
+    void* waiter = slot_.exchange(kEnded, std::memory_order_acq_rel);
+    if (waiter != nullptr && waiter != kEnded) executor.Post(std::coroutine_handle<>::from_address(waiter));
   }
+
+  /// Called by the awaitable's destructor, before it cancels its operation: an end that comes from then on
+  /// posts nothing, since the coroutine it would resume is being destroyed.
+  void Abandon() noexcept { slot_.exchange(kEnded, std::memory_order_acq_rel); }
 
  private:
-  std::coroutine_handle<> awaiter_;
-  // Set by the first of the body's end and Start()'s return, so the second knows the first has passed.
-  // Atomic for an executor that resumes the body on another thread while Start() still runs.
-  std::atomic<bool> second_{false};
+  // Any address no coroutine frame can have.
+  static inline char kEndedTag = 0;
+  static inline void* const kEnded = &kEndedTag;
+  std::atomic<void*> slot_{nullptr};
 };
-
-template <class T>
-class Promise : public PromiseBase {
- public:
-  Task<T> get_return_object() noexcept;
-
-  void return_value(T value) noexcept(std::is_nothrow_move_constructible_v<T>) { value_.emplace(std::move(value)); }
-
-  /// @return the value the body returned, moved out
-  T TakeValue() noexcept(std::is_nothrow_move_constructible_v<T>) {
-    assert(value_.has_value());
-    return std::move(*value_);
-  }
-
- private:
-  std::optional<T> value_;
-};
-
-template <>
-class Promise<void> : public PromiseBase {
- public:
-  Task<void> get_return_object() noexcept;
-
-  void return_void() const noexcept {}
-  void TakeValue() const noexcept {}
-};
-
-}  // namespace detail
 
 /// A lazily started coroutine that produces one T, or nothing for Task<void>, for the one coroutine that
 /// awaits it.
@@ -160,9 +101,11 @@ class Promise<void> : public PromiseBase {
 template <class T = void>
 class [[nodiscard]] Task {
   static_assert(!std::is_reference_v<T>, "a Task returns an owned value, never a reference");
+  class Promise;
 
  public:
-  using promise_type = detail::Promise<T>;
+  /// The promise the language looks up. Its type is private: only the language and Task use it.
+  using promise_type = Promise;
 
   Task(Task&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {}
   Task& operator=(Task&& other) noexcept {
@@ -179,7 +122,7 @@ class [[nodiscard]] Task {
   /// Starts the body, and resumes the awaiting coroutine with its value once the body co_returns.
   auto operator co_await() && noexcept {
     struct Awaiter {
-      std::coroutine_handle<promise_type> handle;
+      std::coroutine_handle<Promise> handle;
       static bool await_ready() noexcept { return false; }
       bool await_suspend(std::coroutine_handle<> awaiter) const noexcept {
         return handle.promise().Start(handle, awaiter);
@@ -191,28 +134,103 @@ class [[nodiscard]] Task {
   }
 
  private:
-  friend promise_type;
-  explicit Task(std::coroutine_handle<promise_type> handle) noexcept : handle_(handle) {}
+  /// What the promise has whatever T: lazy start, the one awaiter, and the exception policy.
+  class PromiseBase {
+   public:
+    /// Lazy: the body starts only when the task is awaited, or spawned.
+    static std::suspend_always initial_suspend() noexcept { return {}; }
+
+    /// Resumes the awaiter once the body has finished: by symmetric transfer when the body suspended on the
+    /// way, or by letting the awaiter go on without suspending when the body finished first, see Start().
+    struct FinalAwaiter {
+      static bool await_ready() noexcept { return false; }
+      static std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> self) noexcept {
+        PromiseBase& promise = self.promise();
+        // The second of the body and Start() to get here resumes the awaiter. When the body is second, the
+        // awaiter is suspended, and gets the thread by symmetric transfer.
+        if (promise.second_.exchange(true, std::memory_order_acq_rel)) return promise.awaiter_;
+        return std::noop_coroutine();  // the awaiter is still in Start(), which goes on without suspending
+      }
+      static void await_resume() noexcept {}
+    };
+    static FinalAwaiter final_suspend() noexcept { return {}; }
+
+    /// An exception escaping a coroutine body is a bug: logs it on stderr, then ends the process. The
+    /// promise stores no std::exception_ptr, so a frame finishes with a value or never finishes.
+    [[noreturn]] static void unhandled_exception() noexcept {
+      try {
+        throw;
+      } catch (const std::exception& e) {
+        std::fprintf(stderr, "coroutine: unhandled exception: %s\n", e.what());
+      } catch (...) {
+        std::fputs("coroutine: unhandled exception of unknown type\n", stderr);
+      }
+      std::terminate();
+    }
+
+    /// Runs the body for its one awaiter, up to its first suspension or its end.
+    ///
+    /// A body that finishes without suspending, such as a read from a buffer that already holds a message,
+    /// lets the awaiter go on without suspending at all: no handle is resumed, and the stack is back where
+    /// it was. A loop of such awaits therefore runs in constant stack depth whatever the compiler does.
+    /// Symmetric transfer alone does not promise that: GCC compiles it to a nested call below -O2, which
+    /// adds about 128 bytes of stack per await.
+    /// @param self the task's own frame
+    /// @param awaiter the coroutine awaiting the task
+    /// @return true when the body suspended, so the awaiter suspends until the body resumes it; false when
+    ///         the body has already finished, so the awaiter goes on
+    bool Start(std::coroutine_handle<Promise> self, std::coroutine_handle<> awaiter) noexcept {
+      assert(!awaiter_ && "a Task is awaited once at most");
+      awaiter_ = awaiter;
+      self.resume();
+      return !second_.exchange(true, std::memory_order_acq_rel);
+    }
+
+   private:
+    std::coroutine_handle<> awaiter_;
+    // Set by the first of the body's end and Start()'s return, so the second knows the first has passed.
+    // Atomic for an executor that resumes the body on another thread while Start() still runs.
+    std::atomic<bool> second_{false};
+  };
+
+  /// The common part, and how a body that co_returns a value hands it over.
+  template <class U>
+  class ReturnValue : public PromiseBase {
+   public:
+    void return_value(U value) noexcept(std::is_nothrow_move_constructible_v<U>) { value_.emplace(std::move(value)); }
+
+    /// @return the value the body returned, moved out
+    U TakeValue() noexcept(std::is_nothrow_move_constructible_v<U>) {
+      assert(value_.has_value());
+      return std::move(*value_);
+    }
+
+   private:
+    std::optional<U> value_;
+  };
+
+  /// The common part, and how a body that co_returns nothing ends.
+  class ReturnVoid : public PromiseBase {
+   public:
+    static void return_void() noexcept {}
+    static void TakeValue() noexcept {}
+  };
+
+  /// The promise: the common part, and return_value() or return_void() as T asks. A base chosen by T, rather
+  /// than a Promise<void> specialization, which GCC refuses inside a class.
+  class Promise : public std::conditional_t<std::is_void_v<T>, ReturnVoid, ReturnValue<T>> {
+   public:
+    Task get_return_object() noexcept { return Task{std::coroutine_handle<Promise>::from_promise(*this)}; }
+  };
+
+  explicit Task(std::coroutine_handle<Promise> handle) noexcept : handle_(handle) {}
 
   void Release() noexcept {
     if (handle_) std::exchange(handle_, nullptr).destroy();
   }
 
-  std::coroutine_handle<promise_type> handle_;
+  std::coroutine_handle<Promise> handle_;
 };
-
-namespace detail {
-
-template <class T>
-Task<T> Promise<T>::get_return_object() noexcept {
-  return Task<T>{std::coroutine_handle<Promise<T>>::from_promise(*this)};
-}
-
-inline Task<void> Promise<void>::get_return_object() noexcept {
-  return Task<void>{std::coroutine_handle<Promise<void>>::from_promise(*this)};
-}
-
-}  // namespace detail
 
 /// Owns the root tasks: the ones no coroutine awaits, such as one scenario per RPC. Spawn() starts a root
 /// task, and the owner keeps its frame until the task completes, then destroys it. Its destructor destroys

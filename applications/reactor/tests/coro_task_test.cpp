@@ -4,8 +4,9 @@
 ///
 
 /// Tests the core of the coroutine level, coro_task.h: Task<T>'s start, value, symmetric transfer and frame
-/// ownership, RootTasks' ownership of spawned tasks, the exception policy, and an Executor resuming
-/// coroutines on the single-threaded AppLoop task queue that stands in for the application's event loop.
+/// ownership, RootTasks' ownership of spawned tasks, the exception policy, an Executor resuming coroutines
+/// on the single-threaded AppLoop task queue that stands in for the application's event loop, and
+/// ResumeHandover, which every awaitable uses to hand its coroutine to the executor.
 
 #include <gtest/gtest.h>
 
@@ -26,6 +27,7 @@
 namespace {
 
 using RpcReactor::coro::Executor;
+using RpcReactor::coro::ResumeHandover;
 using RpcReactor::coro::RootTasks;
 using RpcReactor::coro::Task;
 
@@ -387,6 +389,52 @@ TEST(CoroTaskTest, Executor_ResumptionsFromOtherThreads_AllRunOnTheAppLoop) {
   ASSERT_EQ(resumed_on.size(), 100U);
   for (const auto& id : resumed_on) EXPECT_EQ(id, app_thread);
   EXPECT_NE(app_thread, std::this_thread::get_id());
+}
+
+// =============================================================================
+// ResumeHandover, the hand-over between the end of an operation and the awaiting coroutine
+// =============================================================================
+
+/// Records the handles it is given, and resumes none.
+class RecordingExecutor final : public Executor {
+ public:
+  void Post(std::coroutine_handle<> handle) override { posted.push_back(handle); }
+  std::vector<std::coroutine_handle<>> posted;
+};
+
+/// @test An operation that ended before the coroutine awaits it lets the coroutine go on without suspending,
+/// and posts nothing: what Unary's Finish() does when the RPC ended first.
+TEST(CoroHandoverTest, EndedFirst_DoesNotSuspend_AndPostsNothing) {
+  RecordingExecutor executor;
+  ResumeHandover handover;
+  handover.Complete(executor);
+
+  EXPECT_FALSE(handover.Suspend(std::noop_coroutine()));
+  EXPECT_TRUE(executor.posted.empty());
+}
+
+/// @test A coroutine that awaits first suspends, and the end of the operation posts it, once.
+TEST(CoroHandoverTest, AwaitedFirst_Suspends_AndTheEndPostsItOnce) {
+  RecordingExecutor executor;
+  ResumeHandover handover;
+  const std::coroutine_handle<> waiter = std::noop_coroutine();
+
+  EXPECT_TRUE(handover.Suspend(waiter));
+  EXPECT_TRUE(executor.posted.empty());
+  handover.Complete(executor);
+  ASSERT_EQ(executor.posted.size(), 1U);
+  EXPECT_EQ(executor.posted.front(), waiter);
+}
+
+/// @test Once abandoned, as by an awaitable being destroyed, the end of the operation posts nothing.
+TEST(CoroHandoverTest, Abandoned_TheEndPostsNothing) {
+  RecordingExecutor executor;
+  ResumeHandover handover;
+
+  EXPECT_TRUE(handover.Suspend(std::noop_coroutine()));
+  handover.Abandon();
+  handover.Complete(executor);
+  EXPECT_TRUE(executor.posted.empty());
 }
 
 }  // namespace
