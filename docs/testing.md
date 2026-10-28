@@ -413,6 +413,10 @@ hand, and count the live instances of a `Tracked` parameter or local to show whi
 | `RootTasks_SeveralRoots_EachReleasedOnItsOwnCompletion` | Roots ending in any order, or at once, are each released |
 | `Executor_ResumptionsFromOtherThreads_AllRunOnTheAppLoop` | 100 resumptions posted from other threads run on it |
 | `Task_ExceptionEscapesTheBody_LogsAndTerminates` | An escaping exception is logged, then terminates |
+| `CurrentTask_FollowsEachTaskAcrossItsSuspensions_AndIsNoneBetween` | Two tasks keep their own numbers across a |
+| | resumption, in a task they await too, and the loop runs under none between them |
+| `CurrentTask_TaskSuspendedAgain_LeavesTheLoopUnderNoTask` | A task resumed then suspended again leaves the loop |
+| | under no task |
 
 The stack test measures the stack position of a plain function each child calls, since a coroutine's own locals live
 in its heap frame. Under GCC below `-O2`, symmetric transfer alone grows the stack by about 128 bytes per await, and
@@ -439,6 +443,10 @@ Five mutants of `coro_task.h` were each caught:
 | Not destroying the owner's suspended roots | The suspended chain test |
 | Not removing an ended root from its owner | Every spawning test, on the double destruction |
 | A plain `bool` for the start's hand-over flag | ThreadSanitizer, in the race test |
+
+`CurrentTask` gives the task number the coroutine applications log as `[task#N]`. Four mutants of it were each caught
+by one of the two `CurrentTask` tests: not setting it in `Spawn()`, not restoring it in `ResumeHandover::Resumed()`, not
+clearing it when a task suspends through the hand-over, and not clearing it when a root task ends.
 
 ### Unary awaitable coverage
 

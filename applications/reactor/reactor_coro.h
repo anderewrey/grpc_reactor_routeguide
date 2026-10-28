@@ -162,6 +162,7 @@ class Unary {
   /// On the application thread, once the RPC has ended: takes the outcome out of the reactor, then destroys
   /// the reactor once its OnDone() has returned.
   ResultT Take() {
+    handover_.Resumed();
     ResultT result{reactor_->Status(), {}};
     if constexpr (kPull) {
       static_cast<void>(reactor_->GetResponse(result.response));  // false on a failed RPC: left empty

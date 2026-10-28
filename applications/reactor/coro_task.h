@@ -9,6 +9,7 @@
 #include <cassert>
 #include <coroutine>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <list>
@@ -45,10 +46,53 @@ class Executor {
   Executor& operator=(Executor&&) = default;
 };
 
+class RootTasks;
+class ResumeHandover;
+
+/// Which root task the calling thread runs, for the logs: on the application thread, the task whose code runs
+/// now, or kNone between tasks. Spawn() numbers each root task from 1, and the task's number follows it across
+/// every suspension made through ResumeHandover, and every task it awaits, since they run in its frame chain.
+///
+///     spdlog::info("task#{}", coro::CurrentTask::Get());
+class CurrentTask {
+ public:
+  using Id = std::uint64_t;
+  /// No task: the thread runs code outside any coroutine, such as an event handler.
+  static constexpr Id kNone = 0;
+
+  /// @return the task the calling thread runs, or kNone
+  [[nodiscard]] static Id Get() noexcept { return current_; }
+
+ private:
+  friend RootTasks;
+  friend ResumeHandover;
+
+  /// Sets the current task until it is destroyed, then restores the one before.
+  class Scope {
+   public:
+    explicit Scope(Id task) noexcept : previous_(std::exchange(current_, task)) {}
+    ~Scope() { current_ = previous_; }
+    Scope(const Scope&) = delete;
+    Scope& operator=(const Scope&) = delete;
+    Scope(Scope&&) = delete;
+    Scope& operator=(Scope&&) = delete;
+
+   private:
+    Id previous_;
+  };
+
+  static void Set(Id task) noexcept { current_ = task; }
+
+  static inline thread_local Id current_ = kNone;
+};
+
 /// Hands a suspended coroutine from the thread that ends an operation, such as a gRPC callback, to the
 /// executor, or lets it go on without suspending when the operation ended first. The building block of
 /// every awaitable whose operation ends on another thread. Lock-free: the slot holds nothing, the waiting
 /// coroutine's address, or kEnded.
+///
+/// It also carries the current task across the suspension, for the logs: Suspend() records it, and clears it
+/// when the coroutine suspends, since the thread goes back to code outside the task. Resumed() restores it.
 ///
 /// Single-shot: once ended, it stays ended.
 class ResumeHandover {
@@ -58,9 +102,16 @@ class ResumeHandover {
   /// @return true when the coroutine suspends until Complete() posts it; false when the operation has
   ///         already ended, so it goes on
   bool Suspend(std::coroutine_handle<> waiter) noexcept {
+    task_ = CurrentTask::Get();
     void* expected = nullptr;  // NOLINT(misc-const-correctness): compare_exchange_strong() writes it
-    return slot_.compare_exchange_strong(expected, waiter.address(), std::memory_order_acq_rel);
+    const bool suspended = slot_.compare_exchange_strong(expected, waiter.address(), std::memory_order_acq_rel);
+    if (suspended) CurrentTask::Set(CurrentTask::kNone);
+    return suspended;
   }
+
+  /// Called by the awaitable's await_resume(), first, on the application thread: the coroutine runs its task
+  /// again.
+  void Resumed() const noexcept { CurrentTask::Set(task_); }
 
   /// Called once the operation has ended, from whatever thread ends it, once what it records is in place:
   /// posts the waiting coroutine, if any, to the executor.
@@ -78,6 +129,7 @@ class ResumeHandover {
   static inline char kEndedTag = 0;
   static inline void* const kEnded = &kEndedTag;
   std::atomic<void*> slot_{nullptr};
+  CurrentTask::Id task_ = CurrentTask::kNone;  // written and read on the application thread only
 };
 
 /// A lazily started coroutine that produces one T, or nothing for Task<void>, for the one coroutine that
@@ -258,11 +310,15 @@ class RootTasks {
   /// Starts a task at once, on the calling thread, up to its first suspension, and keeps it until it
   /// completes. Not noexcept: the root frame is allocated.
   /// @param task a task not started yet
-  void Spawn(Task<> task) {
+  /// @return the task's number, which CurrentTask gives while its code runs
+  CurrentTask::Id Spawn(Task<> task) {
     const auto root = Root(std::move(task)).handle;
     root.promise().owner_ = this;
     root.promise().position_ = roots_.insert(roots_.end(), root);
+    const CurrentTask::Id id = last_id_.fetch_add(1, std::memory_order_relaxed) + 1;
+    const CurrentTask::Scope scope(id);
     root.resume();
+    return id;
   }
 
   /// @return how many root tasks have started and not completed yet
@@ -288,6 +344,7 @@ class RootTasks {
           const RootPromise& promise = self.promise();
           promise.owner_->roots_.erase(promise.position_);
           self.destroy();
+          CurrentTask::Set(CurrentTask::kNone);  // the thread goes back to code outside the task
         }
         static void await_resume() noexcept {}
       };
@@ -304,6 +361,8 @@ class RootTasks {
   static RootFrame Root(Task<> task) { co_await std::move(task); }
 
   std::list<RootHandle> roots_;
+  // Shared by every owner, so task numbers are unique in the process, whichever thread spawns.
+  static inline std::atomic<CurrentTask::Id> last_id_{CurrentTask::kNone};
 };
 
 }  // namespace RpcReactor::coro

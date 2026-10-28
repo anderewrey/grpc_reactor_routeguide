@@ -105,6 +105,18 @@ Resuming inline, on the gRPC thread, would be faster by one queue hop. It would 
 which the boundary rule forbids. The event queue stays FIFO, so a coroutine's resumptions arrive in the order the
 reactor produced them, after every event queued before them.
 
+### Telling coroutines apart in the logs: the task, not the thread
+
+The callback level tells its two sides apart by the thread id in the log pattern: a gRPC thread runs the callback,
+and the application thread runs the handler. Every coroutine resumes on the application thread, so the thread id no
+longer tells two coroutines apart. The coroutine applications log the running task instead, as `[task#N]` after the
+thread id, or `[task#-]` outside any task.
+
+`Spawn()` numbers each root task, and `CurrentTask` gives the number of the task the thread runs. The hand-over every
+awaitable uses records the number when the coroutine suspends, clears it while the thread runs other code, and
+restores it when the coroutine resumes. So no executor and no scenario carries the number. A custom spdlog flag prints
+it, so the scenarios' log calls do not change.
+
 ### The task type: written here, not taken from a library
 
 C++20 has coroutines in the language, but no library types: no `task`, and no `generator`. C++23 adds `std::generator`

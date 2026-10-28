@@ -26,6 +26,7 @@
 
 namespace {
 
+using RpcReactor::coro::CurrentTask;
 using RpcReactor::coro::Executor;
 using RpcReactor::coro::ResumeHandover;
 using RpcReactor::coro::RootTasks;
@@ -435,6 +436,129 @@ TEST(CoroHandoverTest, Abandoned_TheEndPostsNothing) {
   handover.Abandon();
   handover.Complete(executor);
   EXPECT_TRUE(executor.posted.empty());
+}
+
+// =============================================================================
+// CurrentTask, the task number the logs show
+// =============================================================================
+
+/// An operation another thread ends, handing the awaiting coroutine to the executor through a ResumeHandover,
+/// as every awaitable of the level does.
+class HandedOverOperation {
+ public:
+  explicit HandedOverOperation(Executor* executor) : executor_(executor) {}
+  static bool await_ready() noexcept { return false; }
+  bool await_suspend(std::coroutine_handle<> waiter) noexcept { return handover_.Suspend(waiter); }
+  void await_resume() const noexcept { handover_.Resumed(); }
+
+  /// Ends the operation, from any thread.
+  void End() { handover_.Complete(*executor_); }
+
+ private:
+  Executor* executor_;
+  ResumeHandover handover_;
+};
+
+/// What a task saw of its own number.
+struct SeenTasks {
+  CurrentTask::Id at_start = CurrentTask::kNone;
+  CurrentTask::Id in_awaited_task = CurrentTask::kNone;
+  CurrentTask::Id after_resume = CurrentTask::kNone;
+};
+
+/// Checks that a task saw its own number everywhere it looked.
+void ExpectOwnTask(const SeenTasks& seen, CurrentTask::Id id) {
+  EXPECT_EQ(seen.at_start, id);
+  EXPECT_EQ(seen.in_awaited_task, id);
+  EXPECT_EQ(seen.after_resume, id);
+}
+
+Task<> RecordTask(CurrentTask::Id* seen) {
+  *seen = CurrentTask::Get();
+  co_return;
+}
+
+Task<> SeeOwnTask(HandedOverOperation* operation, SeenTasks* seen, std::promise<void>* done) {
+  seen->at_start = CurrentTask::Get();
+  co_await RecordTask(&seen->in_awaited_task);
+  co_await *operation;
+  seen->after_resume = CurrentTask::Get();
+  done->set_value();
+}
+
+/// @test A spawned task runs under the number Spawn() returns, in its own code and in a task it awaits. Across a
+/// suspension through the hand-over, it runs under it again once resumed on the loop, and the loop thread runs
+/// under no task between two resumptions. Two tasks get two numbers.
+TEST(CoroTaskTest, CurrentTask_FollowsEachTaskAcrossItsSuspensions_AndIsNoneBetween) {
+  continuous_use_test::AppLoop loop;
+  AppLoopExecutor executor(&loop);
+  RootTasks roots;
+  HandedOverOperation first_operation(&executor);
+  HandedOverOperation second_operation(&executor);
+  SeenTasks first;
+  SeenTasks second;
+  std::promise<void> first_done;
+  std::promise<void> second_done;
+  CurrentTask::Id first_id = CurrentTask::kNone;
+  CurrentTask::Id second_id = CurrentTask::kNone;
+  CurrentTask::Id between = CurrentTask::kNone + 1;
+
+  std::promise<void> spawned;
+  loop.Post([&] {
+    first_id = roots.Spawn(SeeOwnTask(&first_operation, &first, &first_done));
+    second_id = roots.Spawn(SeeOwnTask(&second_operation, &second, &second_done));
+    between = CurrentTask::Get();
+    spawned.set_value();
+  });
+  spawned.get_future().wait();
+  // Ended from this thread, as a gRPC callback would: the loop resumes each task.
+  second_operation.End();
+  first_operation.End();
+  ASSERT_EQ(first_done.get_future().wait_for(std::chrono::seconds(10)), std::future_status::ready);
+  ASSERT_EQ(second_done.get_future().wait_for(std::chrono::seconds(10)), std::future_status::ready);
+  std::promise<CurrentTask::Id> after;
+  loop.Post([&] { after.set_value(CurrentTask::Get()); });
+
+  EXPECT_NE(first_id, CurrentTask::kNone);
+  EXPECT_NE(first_id, second_id);
+  EXPECT_EQ(between, CurrentTask::kNone);
+  EXPECT_EQ(after.get_future().get(), CurrentTask::kNone);
+  ExpectOwnTask(first, first_id);
+  ExpectOwnTask(second, second_id);
+}
+
+Task<> WaitTwice(HandedOverOperation* first, HandedOverOperation* second, std::promise<void>* done) {
+  co_await *first;
+  co_await *second;
+  done->set_value();
+}
+
+/// @test A task resumed on the loop that suspends again leaves the loop under no task until its next
+/// resumption: the next handler the loop runs, here a probe queued right behind the resumption, sees none.
+TEST(CoroTaskTest, CurrentTask_TaskSuspendedAgain_LeavesTheLoopUnderNoTask) {
+  continuous_use_test::AppLoop loop;
+  AppLoopExecutor executor(&loop);
+  RootTasks roots;
+  HandedOverOperation first(&executor);
+  HandedOverOperation second(&executor);
+  std::promise<void> done;
+
+  std::promise<void> spawned;
+  loop.Post([&] {
+    roots.Spawn(WaitTwice(&first, &second, &done));
+    spawned.set_value();
+  });
+  spawned.get_future().wait();
+  first.End();  // queues the resumption, which runs up to the second suspension
+  std::promise<CurrentTask::Id> between;
+  loop.Post([&] { between.set_value(CurrentTask::Get()); });
+  EXPECT_EQ(between.get_future().get(), CurrentTask::kNone);
+
+  second.End();
+  ASSERT_EQ(done.get_future().wait_for(std::chrono::seconds(10)), std::future_status::ready);
+  std::promise<std::size_t> left;
+  loop.Post([&] { left.set_value(roots.Size()); });
+  EXPECT_EQ(left.get_future().get(), 0U);
 }
 
 }  // namespace

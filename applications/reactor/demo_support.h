@@ -37,6 +37,12 @@ std::unique_ptr<grpc::ClientContext> CreateClientContext();
 /// @return reference to the registered logger
 spdlog::logger& VariantLogger(const std::string& name);
 
+/// Sets the log pattern of the coroutine applications: the pattern of the callback applications, with the
+/// running coroutine task after the thread id, as [task#N], or [task#-] outside any task. Every coroutine
+/// resumes on the application thread, so the thread id no longer tells two coroutines apart; the task does.
+/// Call it first in main(), before any logger is created, so every logger gets it.
+void SetCoroutineLogPattern();
+
 /// Tears a scenario's reactor down when the scenario is destroyed, whether or not its RPC has ended. An RPC
 /// still in flight is cancelled, and the reactor destroyed only once its OnDone() has run, since gRPC still
 /// calls a reactor until then. Should OnDone() never come, the reactor is leaked rather than freed under
