@@ -114,7 +114,7 @@ add_executable(route_guide_active_reactor_client_coro
     reactor_client_routeguide.h
     coro_task.h
     reactor_coro.h
-    coro_eventloop.h
+    reactor_eventloop.h
     demo_support.h
     demo_support.cpp
     variants/get_feature_pull_coro.h
@@ -140,7 +140,7 @@ add_executable(route_guide_reactor_usecases_coro
     reactor_client_routeguide.h
     coro_task.h
     reactor_coro.h
-    coro_eventloop.h
+    reactor_eventloop.h
     demo_support.h
     demo_support.cpp
     usecases/whats_here_coro.h

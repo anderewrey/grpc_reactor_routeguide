@@ -41,8 +41,8 @@ consumes a reactor, and nothing below that:
 | Generic          | `reactor_client.h`                     | Method Request, Future, Guard | No                     |
 | Service-specific | `reactor_client_routeguide.h`          | Method Request, bound to      | No                     |
 |                  |                                        | RouteGuide                    |                        |
-| Coroutine (new)  | `coro_task.h`, `reactor_coro.h`,       | Future, as an awaitable       | New                    |
-|                  | `coro_eventloop.h`                     |                               |                        |
+| Coroutine (new)  | `coro_task.h`, `reactor_coro.h`, and   | Future, as an awaitable       | New                    |
+|                  | the executor in `reactor_eventloop.h`  |                               |                        |
 | Application      | `variants/`, `usecases/`, and their    | Proxy, Servant                | New `_coro` files only |
 |                  | `_coro` twins                          |                               |                        |
 
@@ -59,18 +59,22 @@ the callback level, see [Scenarios](#scenarios).
 
 Each of the three headers knows one thing more than the level below it, and nothing about the levels beside it:
 
-| Header             | Knows                                                    | Does not know              |
-|--------------------|----------------------------------------------------------|----------------------------|
-| `coro_task.h`      | C++20 coroutines: `Task<T>`, `Spawn()`, and an executor  | gRPC, EventLoop,           |
-|                    | that resumes a handle                                    | RouteGuide                 |
-| `reactor_coro.h`   | The generic reactors of `reactor_client.h`, the task     | EventLoop, RouteGuide      |
-|                    | core, and the buffers, reusing `latest_slot.h`           |                            |
-| `coro_eventloop.h` | EventLoop and coroutine handles: the executor that posts | gRPC, RouteGuide           |
-|                    | a handle and resumes it                                  |                            |
+| Header                | Knows                                                    | Does not know              |
+|-----------------------|----------------------------------------------------------|----------------------------|
+| `coro_task.h`         | C++20 coroutines: `Task<T>`, `Spawn()`, and an executor  | gRPC, EventLoop,           |
+|                       | that resumes a handle                                    | RouteGuide                 |
+| `reactor_coro.h`      | The generic reactors of `reactor_client.h`, the task     | EventLoop, RouteGuide      |
+|                       | core, and the buffers, reusing `latest_slot.h`           |                            |
+| `reactor_eventloop.h` | EventLoop: `EventConnection` for the callback level, and | gRPC, RouteGuide           |
+|                       | the executor that posts a handle and resumes it          |                            |
 
 The awaitables take the executor as a parameter, not EventLoop. Their unit tests can then resume coroutines on the
 single-threaded `AppLoop` task queue of `continuous_use_support.h`, with no EventLoop and no global state, and the
-applications plug in `coro_eventloop.h`.
+applications plug in the EventLoop executor.
+
+The executor lives in `reactor_eventloop.h`, beside `EventConnection`, rather than in a header of its own: one file
+adapts EventLoop for both levels, so replacing EventLoop replaces one adapter. The callback scenarios and each
+application's `main()` still call EventLoop directly, which the coroutine scenarios never do.
 
 The awaitables are templates on the reactor class, such as `routeguide::ListFeatures::ClientReactor<kPush,
 kContinuous>`. Each awaitable constructs its reactor from the arguments the service-specific constructors already
@@ -89,7 +93,7 @@ applications posts it to the event loop:
 EventLoop::TriggerEvent(kResume, handle.address());  // from the gRPC thread
 ```
 
-One handler for `kResume`, registered once by `coro_eventloop.h`, turns the address back into a handle and resumes it,
+One handler for `kResume`, registered once by the executor, turns the address back into a handle and resumes it,
 on the application thread. The executor owns that registration through an `RpcReactor::EventConnection`, created in
 `main()` before any coroutine starts.
 
@@ -334,10 +338,11 @@ Every non-trivial claim needs a test or a demonstrable run:
 
 ## Suggested order
 
-1. `Task<T>`, `Spawn()`, the executor interface and `coro_eventloop.h`, with their unit tests. Done, in the
+1. `Task<T>`, `Spawn()`, the executor interface and the EventLoop executor, with their unit tests. Done, in the
    `RpcReactor::co` namespace: `Spawn()` is a member of `RootTasks`, the owner of the root tasks, and
-   `EventLoopExecutor` takes the application thread as a parameter, the calling thread by default, so its tests can run
-   EventLoop on a thread of their own. [testing.md](/docs/testing.md#coroutine-core-coverage) lists what the tests prove.
+   `EventLoopExecutor`, in `reactor_eventloop.h`, takes the application thread as a parameter, the calling thread by
+   default, so its tests can run EventLoop on a thread of their own.
+   [testing.md](/docs/testing.md#coroutine-core-coverage) lists what the tests prove.
 2. The unary awaitable: `get_feature_pull_coro`, then `whats_here_coro`, to settle `Finish()` and ownership. Done:
    `co::Unary` in `reactor_coro.h`, with both applications. Its context is an optional last constructor argument,
    for a deadline, and its `Finish()` returns a `UnaryResult` of the status and the owned response.

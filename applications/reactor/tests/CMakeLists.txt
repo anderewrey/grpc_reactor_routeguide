@@ -22,7 +22,7 @@ set(REACTOR_TESTS
     latest_slot_test
     continuous_journal_test
     coro_task_test
-    coro_eventloop_test
+    eventloop_executor_test
     reactor_coro_unary_test
 )
 
@@ -57,7 +57,7 @@ target_link_libraries(client_reactor_integration_test
     PRIVATE
         EventLoop::EventLoop
 )
-target_link_libraries(coro_eventloop_test
+target_link_libraries(eventloop_executor_test
     PRIVATE
         EventLoop::EventLoop
 )

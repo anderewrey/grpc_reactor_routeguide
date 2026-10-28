@@ -193,7 +193,7 @@ jobs:
             applications/reactor/tests/latest_slot_test \
             applications/reactor/tests/continuous_journal_test \
             applications/reactor/tests/coro_task_test \
-            applications/reactor/tests/coro_eventloop_test \
+            applications/reactor/tests/eventloop_executor_test \
             applications/reactor/tests/reactor_coro_unary_test \
             applications/reactor/tests/client_reactor_integration_test \
             applications/blocking/route_guide_sync_client \

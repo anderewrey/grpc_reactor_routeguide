@@ -97,9 +97,9 @@ Two test binaries test the core of the coroutine level, which the
 - [coro_task_test.cpp][coro-task-test]: `Task<T>`, `RootTasks` and the `Executor` interface of
   [coro_task.h][coro-task], driven by hand or resumed on the `AppLoop` task queue of
   [continuous_use_support.h][continuous-support]
-- [coro_eventloop_test.cpp][coro-eventloop-test]: `EventLoopExecutor` of [coro_eventloop.h][coro-eventloop], against a
-  real EventLoop in `NON_BLOCK` mode, started once for every test as in the integration test, since both EventLoop and
-  the executor are one per process
+- [eventloop_executor_test.cpp][eventloop-executor-test]: `EventLoopExecutor`, of
+  [reactor_eventloop.h][reactor-eventloop], against a real EventLoop in `NON_BLOCK` mode, started once for every test
+  as in the integration test, since both EventLoop and the executor are one per process
 
 They are described in [coroutine core coverage](#coroutine-core-coverage).
 
@@ -419,7 +419,7 @@ in its heap frame. Under GCC below `-O2`, symmetric transfer alone grows the sta
 that test overflows the stack. A child that ends without suspending therefore lets its awaiter go on without any
 transfer, which the race test checks against a body ending on another thread at the same time.
 
-[coro_eventloop_test.cpp][coro-eventloop-test] tests the executor of the applications against the real EventLoop:
+[eventloop_executor_test.cpp][eventloop-executor-test] tests the executor of the applications against the real EventLoop:
 
 | Test | Checks |
 | ------ | --------- |
@@ -719,9 +719,9 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [journal-test]: /applications/reactor/tests/continuous_journal_test.cpp
 [continuous-support]: /applications/reactor/tests/continuous_use_support.h
 [coro-task-test]: /applications/reactor/tests/coro_task_test.cpp
-[coro-eventloop-test]: /applications/reactor/tests/coro_eventloop_test.cpp
+[eventloop-executor-test]: /applications/reactor/tests/eventloop_executor_test.cpp
 [coro-task]: /applications/reactor/coro_task.h
-[coro-eventloop]: /applications/reactor/coro_eventloop.h
+[reactor-eventloop]: /applications/reactor/reactor_eventloop.h
 [coro-unary-test]: /applications/reactor/tests/reactor_coro_unary_test.cpp
 [reactor-coro]: /applications/reactor/reactor_coro.h
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp

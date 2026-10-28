@@ -14,7 +14,7 @@
 #include <cassert>
 #include <memory>
 
-#include "applications/reactor/coro_eventloop.h"
+#include "applications/reactor/reactor_eventloop.h"
 #include "applications/reactor/variants/get_feature_pull_coro.h"
 #include "applications/reactor/demo_support.h"
 #include "rg_service/rg_db.h"

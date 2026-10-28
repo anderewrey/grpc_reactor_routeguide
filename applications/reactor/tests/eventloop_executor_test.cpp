@@ -3,9 +3,9 @@
 /// Copyright 2026 anderewrey
 ///
 
-/// Tests coro_eventloop.h, the executor of the applications, against the real EventLoop: every resumption
-/// runs on the thread that runs the EventLoop handlers, in the order the handles were posted, after every
-/// event queued before them.
+/// Tests EventLoopExecutor, the executor of the applications in reactor_eventloop.h, against the real
+/// EventLoop: every resumption runs on the thread that runs the EventLoop handlers, in the order the handles
+/// were posted, after every event queued before them.
 ///
 /// EventLoop is a process-wide singleton that cannot restart after Halt(), and the executor is one per
 /// process, so the environment below starts both once for every test.
@@ -21,7 +21,6 @@
 #include <thread>
 #include <vector>
 
-#include "applications/reactor/coro_eventloop.h"
 #include "applications/reactor/coro_task.h"
 #include "applications/reactor/reactor_eventloop.h"
 
