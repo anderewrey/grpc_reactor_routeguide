@@ -37,6 +37,10 @@ use a table, since this is really two parallel facts about two components:
 | Proxy | Returns immediately |
 | Servant | Runs later, on the application thread |
 
+**Write each table row on one line.** Markdown starts a new row at every line, so a cell wrapped onto a second line
+becomes a second, mostly empty row. Lines stay within the 120 columns markdownlint checks, tables included: when a row
+does not fit, tighten its cells, or move the long part after the table, as a sentence, a list or a code block.
+
 **Convey emphasis and warnings with words, not symbols.** No emoji or decorative Unicode symbols in headings or
 text. GitHub's alert blocks (`[!NOTE]`, `[!IMPORTANT]`, `[!WARNING]`, and so on) are the exception: use them for
 callouts, since this project is hosted and read on GitHub, and its Markdown viewer renders them natively.
@@ -63,6 +67,7 @@ This project's existing docs map onto all four:
 | [walkthrough.md](/docs/walkthrough.md) | Tutorial | Pick your reactor and start: one part per RPC shape, built from a demo scenario |
 | [developing.md](/docs/developing.md), [testing.md](/docs/testing.md) | How-to guide | Build, run, and test steps |
 | [reactor_client.md](/applications/reactor/reactor_client.md) | Reference | Every variant side by side, then the class-by-class API |
+| [reactor_coro.md](/applications/reactor/reactor_coro.md) | Reference | The coroutine level: its words, the life of a `co_await`, its rules, and its API |
 | [variants/README.md](/applications/reactor/variants/README.md) | Reference | Every scenario, its variant, and the mechanics it shows |
 | [usecases/README.md](/applications/reactor/usecases/README.md) | Reference | The real-life situation behind each use case, and why its variant fits |
 | [architecture.md](/docs/architecture.md) | Explanation | Design rationale: why this pattern, why these choices |

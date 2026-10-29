@@ -89,6 +89,28 @@ Unlike the four unit test files, this single fixture accumulates one case per re
 instead of splitting into one file per type. Every case exercises the same dispatch path and
 differs only in RPC shape.
 
+### Coroutine core tests
+
+Two test binaries test the core of the coroutine level, which the
+[client coroutines design draft](/docs/client-coroutines-design.md) proposes. Neither needs a gRPC server:
+
+- [coro_task_test.cpp][coro-task-test]: `Task<T>`, `RootTasks`, the `Executor` interface and `ResumeHandover` of
+  [coro_task.h][coro-task], driven by hand or resumed on the `AppLoop` task queue of
+  [continuous_use_support.h][continuous-support]
+- [eventloop_executor_test.cpp][eventloop-executor-test]: `EventLoopExecutor`, of
+  [reactor_eventloop.h][reactor-eventloop], against a real EventLoop in `NON_BLOCK` mode, started once for every test
+  as in the integration test, since both EventLoop and the executor are one per process
+
+They are described in [coroutine core coverage](#coroutine-core-coverage).
+
+### Coroutine awaitable tests
+
+[reactor_coro_unary_test.cpp][coro-unary-test] tests `coro::Unary`, the unary awaitable of
+[reactor_coro.h][reactor-coro], against an in-process server, with each coroutine resumed on the `AppLoop` task queue.
+Its executor counts the coroutines it is handed, so a test can tell whether `Finish()` suspended. The hand-over inside
+the awaitable, between the done callback and `Finish()`, is tested on its own in coro_task_test.cpp, with no RPC and
+no timing. Both are described in [unary awaitable coverage](#unary-awaitable-coverage).
+
 ### Callback application smoke test
 
 [callback_smoke_test.sh][callback-smoke-test] runs the callback example applications themselves,
@@ -105,7 +127,8 @@ run.
 ### Reactor demo applications
 
 The two reactor applications, `route_guide_active_reactor_client` for the variants and
-`route_guide_reactor_usecases` for the use cases, have no tests of their own, and no CTest entry
+`route_guide_reactor_usecases` for the use cases, and their coroutine twins, `route_guide_active_reactor_client_coro`
+and `route_guide_reactor_usecases_coro`, have no tests of their own, and no CTest entry
 runs them: their event loop never stops, so they run by hand, against `route_guide_callback_server`,
 as described in [developing.md](/docs/developing.md#run). Every scenario asserts which thread runs
 each callback and handler. Each use case also asserts what it claims, so a Debug run checks it every
@@ -124,6 +147,8 @@ application says which log lines to compare, such as a `resumed  | #k` line alwa
 | Thread-hopping and dispatch through `EventLoop` | Integration test |
 | Message ownership crossing the thread boundary through `EventLoop` | Integration test |
 | New reactor type | Both: one synchronous unit test file per `Delivery` plus one integration test per `Delivery` |
+| Coroutine task and executor mechanics | Coroutine core tests |
+| An awaitable over a reactor | Coroutine awaitable tests |
 
 ## Test coverage
 
@@ -295,12 +320,14 @@ start with compile-time checks: the write methods do not exist under `kReactorPu
 | `PullsEveryRequest_ThenClosesStream` | Both | One pull per request plus the `std::nullopt` one, all sent, OK status |
 | `EmptySource_ClosesBeforeAnyWrite` | Both | A single pull, no write, OK status |
 | `UnboundSlot_ClosesAtOnce` | Writer | An unbound slot closes the stream at once |
-| `ServerEndsEarly_CompletesWithoutApplicationAction` | Writer | `OnDone` follows the server's error with no |
-| | | application call, and no pull follows the failed write |
+| `ServerEndsEarly_CompletesWithoutApplicationAction` | Writer | `OnDone` follows the server's error unprompted |
 | `ServerFinishesFirst_CompletesWithoutApplicationAction` | Bidi | The same when the server finishes mid-stream |
 | `TryCancelFromWriteDone_StopsPulling` | Both | No pull follows a `TryCancel()` from `write_done` |
 | `TryCancelFromApplication_Completes` | Writer | `TryCancel()` ends an RPC whose source never runs dry |
 | `HeldRead_DoesNotStallPulls` | Bidi | The source runs dry while the first answer is still held |
+
+In `ServerEndsEarly_CompletesWithoutApplicationAction`, `OnDone` needs no application call, and no pull follows the
+failed write.
 
 The writer's first test also checks that each pull follows the `write_done` of the write before it, and that the first
 pull runs on the thread that constructs the reactor.
@@ -365,6 +392,99 @@ Two mutants of `ActiveReadReactor` under `kContinuous` were each caught. Without
 stops after its first message. Taking a hold as `kTurnByTurn` does, the first test aborts, since the stream stalls and
 not even a cancel can end it. Delivery in order, and of every message once, follows from the FIFO queue and from gRPC's
 one read at a time, so the tests assert it rather than mutate it.
+
+### Coroutine core coverage
+
+[coro_task_test.cpp][coro-task-test] tests the task type and its owner. Most tests resume a suspended coroutine by
+hand, and count the live instances of a `Tracked` parameter or local to show which frames still exist.
+
+| Test | Checks |
+| ------ | --------- |
+| `Task_NotAwaited_BodyNeverStarts` | The start is lazy |
+| `Task_Awaited_ReturnsTheValue` | The awaiter gets the value the body returned |
+| `Task_NestedChain_ValuesFlowBackUp` | Each awaiter of a chain of three gets its child's value |
+| `Task_MoveOnlyValue_IsMovedOut` | A `std::unique_ptr` is moved out to the awaiter |
+| `Task_MillionSynchronousAwaits_StackDoesNotGrow` | A million children that never suspend run at one stack depth |
+| `Task_ChildSuspends_ItsEndResumesTheAwaiter` | A child that suspends resumes its awaiter once it ends |
+| `Task_BodyEndsOnAnotherThreadDuringStart_AwaiterResumedOnce` | 1000 bodies end on another thread, racing their start |
+| `Task_DestroyedBeforeStart_DestroysItsFrame` | A task never awaited releases its frame and never runs |
+| `Task_MovedFrom_OwnsNothing` | Only the task moved to destroys the frame |
+| `Task_Finished_FrameLivesUntilTheTaskIsDestroyed` | The caller owns the finished frame until it destroys the task |
+| `RootTasks_DestroyedWithSuspendedChain_DestroysEveryFrame` | The owner releases a suspended chain of two frames |
+| `RootTasks_Spawn_RunsToTheFirstSuspension_ThenReleasesOnCompletion` | `Spawn()` starts at once, the end releases |
+| `RootTasks_SeveralRoots_EachReleasedOnItsOwnCompletion` | Roots ending in any order, or at once, are each released |
+| `Executor_ResumptionsFromOtherThreads_AllRunOnTheAppLoop` | 100 resumptions posted from other threads run on it |
+| `Task_ExceptionEscapesTheBody_LogsAndTerminates` | An escaping exception is logged, then terminates |
+| `CurrentTask_FollowsEachTaskAcrossItsSuspensions_AndIsNoneBetween` | Two tasks keep their own numbers |
+| `CurrentTask_TaskSuspendedAgain_LeavesTheLoopUnderNoTask` | A task suspended again leaves the loop under no task |
+
+`CurrentTask_FollowsEachTaskAcrossItsSuspensions_AndIsNoneBetween` checks that each of two tasks keeps its own number
+across a resumption, and in a task it awaits too. Between them, the loop runs under no task.
+
+The stack test measures the stack position of a plain function each child calls, since a coroutine's own locals live
+in its heap frame. Under GCC below `-O2`, symmetric transfer alone grows the stack by about 128 bytes per await, and
+that test overflows the stack. A child that ends without suspending therefore lets its awaiter go on without any
+transfer, which the race test checks against a body ending on another thread at the same time.
+
+[eventloop_executor_test.cpp][eventloop-executor-test] tests the executor of the applications against the real
+EventLoop:
+
+- `Executor_ResumptionsFromOtherThreads_AllRunOnTheApplicationThread` checks that 100 resumptions posted from other
+  threads run on the EventLoop thread, the tests' application thread.
+- `Executor_Post_ResumesInPostOrder_AfterEveryEventQueuedBefore` checks that resumptions follow the post order, and
+  that an event queued between two posts runs between them.
+
+Five mutants of `coro_task.h` were each caught:
+
+| Mutant | Caught by |
+| ------ | --------- |
+| Transferring to the awaiter even when the body ended inside its start | The stack test, and five more tests |
+| Not destroying a frame with its task | The frame tests |
+| Not destroying the owner's suspended roots | The suspended chain test |
+| Not removing an ended root from its owner | Every spawning test, on the double destruction |
+| A plain `bool` for the start's hand-over flag | ThreadSanitizer, in the race test |
+
+Under the first mutant, the stack test overflows under GCC, and the five other tests fail under AddressSanitizer.
+
+`CurrentTask` gives the task number the coroutine applications log as `[task#N]`. Four mutants of it were each caught
+by one of the two `CurrentTask` tests: not setting it in `Spawn()`, not restoring it in `ResumeHandover::Resumed()`, not
+clearing it when a task suspends through the hand-over, and not clearing it when a root task ends.
+
+### Unary awaitable coverage
+
+[reactor_coro_unary_test.cpp][coro-unary-test] runs `GetFeature` through `coro::Unary`. Its service can hold an answer
+until the test releases it, or until the client cancels, so a coroutine that awaits `Finish()` before the answer is
+known to suspend.
+
+| Test | Checks |
+| ------ | --------- |
+| `GetFeature_PullOk_ReturnsOwnedResponseOnTheLoop` | One resumption, on the loop, with the response swapped out |
+| `GetFeature_PushOk_ReturnsOwnedResponseOnTheLoop` | The same under `kPush`, with the message handed over |
+| `GetFeature_PullServerError_ReturnsTheStatusAndAnEmptyResponse` | A failed RPC is a status, with an empty response |
+| `GetFeature_PushServerError_ReturnsTheStatusAndAnEmptyMessage` | Under `kPush`, the message is never null |
+| `GetFeature_TryCancel_FinishReturnsCancelled` | A cancel ends a held RPC, and `Finish()` returns `CANCELLED` |
+| `GetFeature_FrameDestroyedMidRpc_CancelsAndWaitsForOnDone` | Frees nothing under gRPC, and posts nothing |
+
+Whether `Finish()` suspends depends on whether the RPC ended first, which a test can only arrange by waiting on
+timing. So the hand-over that decides it, `ResumeHandover` of [coro_task.h][coro-task], is tested directly in
+[coro_task_test.cpp][coro-task-test], with an executor that records the coroutines it is given:
+
+| Test | Checks |
+| ------ | --------- |
+| `EndedFirst_DoesNotSuspend_AndPostsNothing` | An operation ended first lets the coroutine go on, and posts nothing |
+| `AwaitedFirst_Suspends_AndTheEndPostsItOnce` | A coroutine awaiting first suspends, and the end posts it once |
+| `Abandoned_TheEndPostsNothing` | Once abandoned, as by a destroyed `Unary`, the end posts nothing |
+
+Six mutants of `coro::Unary` were each caught:
+
+| Mutant | Caught by |
+| ------ | --------- |
+| The destructor not abandoning the waiter, so the done callback posts a destroyed frame | The destroyed frame test |
+| `Abandon()` doing nothing | The abandoned hand-over test, and the destroyed frame test |
+| The destructor not waiting for `OnDone()` before destroying the reactor | The destroyed frame test |
+| Always suspending in `Finish()` | The hand-over test of an operation ended first |
+| Never posting the waiter | The hand-over test of a coroutine awaiting first, and every RPC test that suspends |
+| Not keeping the message the done callback hands over under `kPush` | Both `kPush` tests |
 
 ### Naming convention
 
@@ -607,6 +727,12 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [latest-test]: /applications/reactor/tests/latest_slot_test.cpp
 [journal-test]: /applications/reactor/tests/continuous_journal_test.cpp
 [continuous-support]: /applications/reactor/tests/continuous_use_support.h
+[coro-task-test]: /applications/reactor/tests/coro_task_test.cpp
+[eventloop-executor-test]: /applications/reactor/tests/eventloop_executor_test.cpp
+[coro-task]: /applications/reactor/coro_task.h
+[reactor-eventloop]: /applications/reactor/reactor_eventloop.h
+[coro-unary-test]: /applications/reactor/tests/reactor_coro_unary_test.cpp
+[reactor-coro]: /applications/reactor/reactor_coro.h
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp
 [callback-smoke-test]: /applications/callback/tests/callback_smoke_test.sh
 [test-fixture]: /applications/reactor/tests/route_guide_test_fixture.h

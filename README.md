@@ -64,7 +64,8 @@ patterns, the technology choices, and how to extend the reactor library.
 
 ## Implementation details about the client-side reactors
 
-Refer to [reactor_client.md](/applications/reactor/reactor_client.md)
+Refer to [reactor_client.md](/applications/reactor/reactor_client.md). To consume the same reactors from C++20
+coroutines, refer to [reactor_coro.md](/applications/reactor/reactor_coro.md).
 
 ## Thanks to
 

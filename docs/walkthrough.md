@@ -19,15 +19,17 @@ reactor_client.md, which is also the reference for each class. For the reasoning
 
 Look at your RPC in its `.proto` file: the `stream` keywords decide the reactor.
 
-| Your RPC, in its `.proto` file      | Its shape        | Your reactor         | Read                               |
-|-------------------------------------|------------------|----------------------|------------------------------------|
-| `rpc M(Request) returns (Response)` | Unary            | `ActiveUnaryReactor` | [Part 1](#part-1-a-unary-call)     |
-| `rpc M(Request)`                    | Server-streaming | `ActiveReadReactor`  | [Part 2](#part-2-receive-a-stream) |
-| `returns (stream Response)`         |                  |                      |                                    |
-| `rpc M(stream Request)`             | Client-streaming | `ActiveWriteReactor` | [Part 3](#part-3-send-a-stream)    |
-| `returns (Response)`                |                  |                      |                                    |
-| `rpc M(stream Request)`             | Bidirectional    | `ActiveBidiReactor`  | [Part 4](#part-4-both-directions)  |
-| `returns (stream Response)`         |                  |                      |                                    |
+| Your RPC, in its `.proto` file | Its shape | Your reactor | Read |
+|--------------------------------|-----------|--------------|------|
+| `rpc M(Request) returns (Response)` | Unary | `ActiveUnaryReactor` | [Part 1][part-1] |
+| `rpc M(Request) returns (stream Response)` | Server-streaming | `ActiveReadReactor` | [Part 2][part-2] |
+| `rpc M(stream Request) returns (Response)` | Client-streaming | `ActiveWriteReactor` | [Part 3][part-3] |
+| `rpc M(stream Request) returns (stream Response)` | Bidirectional | `ActiveBidiReactor` | [Part 4][part-4] |
+
+[part-1]: #part-1-a-unary-call
+[part-2]: #part-2-receive-a-stream
+[part-3]: #part-3-send-a-stream
+[part-4]: #part-4-both-directions
 
 Each reactor takes up to three template parameters, and each part tells you which ones yours takes:
 
@@ -166,20 +168,34 @@ class ClientReactor final : public RpcReactor::Client::ActiveUnaryReactor<Respon
 Only two things change from one shape to the next: the base class, and the constructor's body. The base class takes the
 same template parameters as the reactor, in the same order, and so do the `Callbacks` and `ClientReactor` templates.
 
-| Shape            | Base class                                 | Constructor body                        |
-|------------------|--------------------------------------------|-----------------------------------------|
-| Unary            | `ActiveUnaryReactor<ResponseT, kDelivery>` | `stub.async()->M(ctx, &request,`        |
-|                  |                                            | `this->response_.get(), this);`         |
-|                  |                                            | `this->StartCall();`                    |
-| Server-streaming | `ActiveReadReactor<ResponseT, kDelivery,`  | `stub.async()->M(ctx, &request, this);` |
-|                  | `kPacing>`                                 | `this->StartRead(&this->response_);`    |
-|                  |                                            | `this->StartCall();`                    |
-| Client-streaming | `ActiveWriteReactor<RequestT, ResponseT,`  | `stub.async()->M(ctx,`                  |
-|                  | `kDelivery, kSubmission>`                  | `this->response_.get(), this);`         |
-|                  |                                            | `this->StartCall();`                    |
-| Bidirectional    | `ActiveBidiReactor<RequestT, ResponseT,`   | `stub.async()->M(ctx, this);`           |
-|                  | `kDelivery, kSubmission, kPacing>`         | `this->StartRead(&this->response_);`    |
-|                  |                                            | `this->StartCall();`                    |
+| Shape | Base class |
+|-------|------------|
+| Unary | `ActiveUnaryReactor<ResponseT, kDelivery>` |
+| Server-streaming | `ActiveReadReactor<ResponseT, kDelivery, kPacing>` |
+| Client-streaming | `ActiveWriteReactor<RequestT, ResponseT, kDelivery, kSubmission>` |
+| Bidirectional | `ActiveBidiReactor<RequestT, ResponseT, kDelivery, kSubmission, kPacing>` |
+
+The constructor body for each shape:
+
+```cpp
+// Unary
+stub.async()->M(ctx, &request, this->response_.get(), this);
+this->StartCall();
+
+// Server-streaming
+stub.async()->M(ctx, &request, this);
+this->StartRead(&this->response_);
+this->StartCall();
+
+// Client-streaming
+stub.async()->M(ctx, this->response_.get(), this);
+this->StartCall();
+
+// Bidirectional
+stub.async()->M(ctx, this);
+this->StartRead(&this->response_);
+this->StartCall();
+```
 
 Here `ctx` is `this->context_.get()`. `this->StartCall()` must come last: it is the reactor's own `StartCall()`, which
 takes the holds the writing reactors need, or pulls their first request, before it starts the RPC. A reading reactor
@@ -442,14 +458,11 @@ and skips its 36 unnamed ones, and logs each skipped one as `skipped  | #j unnam
 `kPerMessage` decides for each message. The two other pacings take one of its branches for every message, and the
 compiler then enforces the decision:
 
-| `ReadPacing`  | `read_ok` returns | Your handler calls                 | Choose it when                       |
-|---------------|-------------------|------------------------------------|--------------------------------------|
-| `kContinuous` | Nothing           | Nothing: no message is held        | Every message is consumed as it      |
-|               |                   |                                    | arrives, and the stream never waits  |
-| `kPerMessage` | `bool`            | `GetResponse()` or `ResumeRead()`, | The answer depends on the message    |
-|               |                   | once per kept message              |                                      |
-| `kTurnByTurn` | Nothing           | `GetResponse()` or `ResumeRead()`, | The stream waits after every message |
-|               |                   | once per message                   |                                      |
+| `ReadPacing` | `read_ok` returns | Your handler calls | Choose it when |
+|--------------|-------------------|--------------------|----------------|
+| `kContinuous` | Nothing | Nothing: no message is held | Messages are consumed on arrival, and the stream never waits |
+| `kPerMessage` | `bool` | `GetResponse()` or `ResumeRead()`, once per kept message | The answer varies per message |
+| `kTurnByTurn` | Nothing | `GetResponse()` or `ResumeRead()`, once per message | The stream waits after every message |
 
 Under `kContinuous` with `kPull`, nothing is held, so the lent message is gone once `read_ok` returns: consume it, or
 copy it, inside the callback. A call the pacing rules out does not compile. In
@@ -702,12 +715,15 @@ location. This part follows
 
 ### Step 1: choose all three
 
-| Choice       | For               | First answer                                                                |
-|--------------|-------------------|-----------------------------------------------------------------------------|
-| `Delivery`   | Received messages | `kPull`, as in [Part 2](#step-1-choose-the-delivery-and-the-pacing)         |
-| `Submission` | Sent requests     | `kReactorPulls` if every request is ready at once, else                     |
-|              |                   | `kApplicationPushes`, as in [Part 3](#step-1-choose-who-sends-each-request) |
-| `ReadPacing` | The read side     | The default, `kPerMessage`                                                  |
+| Choice | For | First answer |
+|--------|-----|--------------|
+| `Delivery` | Received messages | `kPull`, as in [Part 2](#step-1-choose-the-delivery-and-the-pacing) |
+| `Submission` | Sent requests | `kReactorPulls` or `kApplicationPushes`, as in [Part 3][p3s1] |
+| `ReadPacing` | The read side | The default, `kPerMessage` |
+
+For `Submission`, choose `kReactorPulls` if every request is ready at once, and `kApplicationPushes` otherwise.
+
+[p3s1]: #step-1-choose-who-sends-each-request
 
 ```cpp
 using Delivery = routeguide::RouteChat::Delivery;
@@ -721,13 +737,12 @@ The parameters come in that order, and only the pacing has a default, so this ty
 
 All of them come from the two parts before:
 
-| Slot                   | Write it as in                                                            |
-|------------------------|---------------------------------------------------------------------------|
-| `read_ok`              | [Part 2, Step 2](#step-2-write-read_ok)                                   |
-| `read_nok`, `done`     | [Part 2, Step 3](#step-3-write-read_nok-and-done)                         |
-| `write_done`           | [Part 3](#step-3-if-your-application-pushes-pump-one-write-at-a-time)     |
-| `next_request`         | [Part 3, Step 2](#step-2-if-the-reactor-pulls-write-next_request), under  |
-|                        | `kReactorPulls` only                                                      |
+| Slot | Write it as in |
+|------|----------------|
+| `read_ok` | [Part 2, Step 2](#step-2-write-read_ok) |
+| `read_nok`, `done` | [Part 2, Step 3](#step-3-write-read_nok-and-done) |
+| `write_done` | [Part 3](#step-3-if-your-application-pushes-pump-one-write-at-a-time) |
+| `next_request` | [Part 3, Step 2](#step-2-if-the-reactor-pulls-write-next_request), under `kReactorPulls` only |
 
 Create the reactor without a request, which the write side sends:
 
@@ -811,6 +826,7 @@ The sequence diagrams are under
 |------------------------------------------------------|--------------------------------------------------------------|
 | Compare every variant, and what each one asks of you | [Reactors and their variants][variants] in reactor_client.md |
 | Look up a class, a callback, or a sequence diagram   | [reactor_client.md](/applications/reactor/reactor_client.md) |
+| Consume a reactor from a coroutine instead           | [reactor_coro.md](/applications/reactor/reactor_coro.md)     |
 | Understand why each choice and each hold exists      | [architecture.md](/docs/architecture.md)                     |
 | See how the tests cover every variant                | [testing.md](/docs/testing.md)                               |
 

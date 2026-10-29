@@ -12,6 +12,8 @@ Checks: >
   portability-*,
   readability-*,
   clang-analyzer-*,
+  cppcoreguidelines-avoid-reference-coroutine-parameters,
+  cppcoreguidelines-avoid-capturing-lambda-coroutines,
   -readability-magic-numbers,
   -readability-identifier-length,
   -misc-non-private-member-variables-in-classes,
@@ -20,7 +22,8 @@ Checks: >
   -misc-unused-using-decls,
   -portability-avoid-pragma-once,
   -readability-braces-around-statements,
-  -performance-enum-size
+  -performance-enum-size,
+  -readability-static-accessed-through-instance
 # reactor_client.h's protected reactor members are intentional (see architecture.md), not a defect.
 # misc-include-cleaner is disabled: it flagged umbrella-header symbol use as 63 of 99 diagnostics.
 # misc-override-with-different-visibility is disabled: the Active*Reactor classes' gRPC overrides are
@@ -34,6 +37,14 @@ Checks: >
 # accepted style in this codebase; braces are still used freely where they aid readability.
 # performance-enum-size is disabled: shrinking an enum's underlying type below int is not worth
 # the noise outside of embedded/memory-constrained targets, which this project is not.
+# The two cppcoreguidelines-* checks catch the coroutine level's dangling-parameter traps: a
+# reference parameter, or a lambda capture, outlives its referent once the coroutine suspends.
+# Coroutines take their arguments by value instead (see docs/client-coroutines-design.md).
+# readability-static-accessed-through-instance is disabled: a coroutine promise's and awaiter's
+# members that use no state (await_ready(), initial_suspend(), ...) are static, as
+# readability-convert-member-functions-to-static asks, and the compiler calls them through an
+# object at every co_await. The check reports those calls, which appear nowhere in the source, at
+# the co_await's line: 27 reports in coro_task_test.cpp alone, under clang-tidy 21, 22 and 23.
 # clang-analyzer-* and bugprone-* both target similar defect classes (e.g. use-after-free); kept as
 # occasional double-reporting, not disabled, since no concrete pair of checks is confirmed to
 # always co-fire on the same code.

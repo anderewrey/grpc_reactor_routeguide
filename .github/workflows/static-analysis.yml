@@ -27,9 +27,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # Pinned: cmake-lint (cmakelang 0.6.13, its last release) builds an re.Scanner with capturing
+      # groups, which Python 3.15 rejects, so the hook crashes on every CMake file under '3.x'.
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.x'
+          python-version: '3.14'
       - uses: pre-commit/action@v3.0.1
 
   # Builds once and shares compile_commands.json plus the generated protobuf/gRPC headers with
@@ -46,7 +48,7 @@ jobs:
       - name: Install build dependencies
         run: |
           apk add --no-cache \
-            cmake ninja git clang gcc binutils \
+            cmake ninja git curl zip unzip tar clang gcc binutils \
             protobuf-dev \
             grpc-dev \
             abseil-cpp-dev \
@@ -60,17 +62,18 @@ jobs:
 
       - uses: actions/checkout@v5
 
-      # See ci.yml's build-test-alpine job for the same EventLoop fork pin and rationale.
-      - name: Build and install EventLoop
+      # From vcpkg/ports/eventloop, the one place that names the EventLoop version, as ci.yml's
+      # build-test-alpine job does, whose comments explain the -musl and system-binaries choices.
+      - name: Build and install EventLoop via vcpkg
+        env:
+          VCPKG_FORCE_SYSTEM_BINARIES: "1"
         run: |
-          git clone https://github.com/anderewrey/EventLoop.git /tmp/EventLoop
-          cd /tmp/EventLoop
-          git checkout d5d29a0349f3159067df0c3ff2741f1e984679f0
-          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DCMAKE_CXX_COMPILER=clang++
-          cmake --build build
-          cmake --install build
-          rm -rf /tmp/EventLoop
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          /tmp/vcpkg/bootstrap-vcpkg.sh -musl -disableMetrics
+          /tmp/vcpkg/vcpkg install eventloop --classic --triplet=x64-linux-clang-release \
+            --overlay-triplets=vcpkg/triplets --overlay-ports=vcpkg/ports
+          cp -r /tmp/vcpkg/packages/eventloop_x64-linux-clang-release/* /usr/local/
+          rm -rf /tmp/vcpkg
 
       - name: Configure
         run: |
@@ -116,7 +119,7 @@ jobs:
       - name: Install dependencies
         run: |
           apk add --no-cache \
-            cmake ninja git g++ ${{ matrix.packages }} \
+            cmake ninja git curl zip unzip tar g++ ${{ matrix.packages }} \
             protobuf-dev \
             grpc-dev \
             abseil-cpp-dev \
@@ -130,19 +133,19 @@ jobs:
 
       - uses: actions/checkout@v5
 
-      # See ci.yml's build-test-alpine job for the same EventLoop fork pin and rationale. Built
-      # with g++ regardless of matrix.tool: only its headers are needed here, not a matching
-      # compiler, so there is nothing clang-tidy-specific about this step.
-      - name: Build and install EventLoop
+      # The same port as the build job above. Built with g++ regardless of matrix.tool: only its
+      # headers are needed here, not a matching compiler, so there is nothing clang-tidy-specific
+      # about this step.
+      - name: Build and install EventLoop via vcpkg
+        env:
+          VCPKG_FORCE_SYSTEM_BINARIES: "1"
         run: |
-          git clone https://github.com/anderewrey/EventLoop.git /tmp/EventLoop
-          cd /tmp/EventLoop
-          git checkout d5d29a0349f3159067df0c3ff2741f1e984679f0
-          cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DCMAKE_CXX_COMPILER=g++
-          cmake --build build
-          cmake --install build
-          rm -rf /tmp/EventLoop
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          /tmp/vcpkg/bootstrap-vcpkg.sh -musl -disableMetrics
+          /tmp/vcpkg/vcpkg install eventloop --classic --triplet=x64-linux-gcc-release \
+            --overlay-triplets=vcpkg/triplets --overlay-ports=vcpkg/ports
+          cp -r /tmp/vcpkg/packages/eventloop_x64-linux-gcc-release/* /usr/local/
+          rm -rf /tmp/vcpkg
 
       - uses: actions/download-artifact@v4
         with:
@@ -165,13 +168,15 @@ jobs:
       # findings. -i build skips the generated protobuf/gRPC sources as primary check targets;
       # preprocessorErrorDirective is scoped to build/* (protoc's own version-guard #error, reached
       # transitively through an #include there) so a real #error in this project's own code would
-      # still surface.
+      # still surface. --library=googletest describes gtest's macros, such as TEST(), which cppcheck
+      # cannot expand on its own since it does not read the system headers that define them.
       - name: Run cppcheck
         if: matrix.tool == 'cppcheck'
         run: |
           cppcheck --project=build/compile_commands.json \
             -j "$(nproc)" \
             --enable=warning,performance,portability \
+            --library=googletest \
             --suppress=missingIncludeSystem \
             --suppress=preprocessorErrorDirective:build/* \
             --inline-suppr \
