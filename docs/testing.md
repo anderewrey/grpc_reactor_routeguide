@@ -295,12 +295,14 @@ start with compile-time checks: the write methods do not exist under `kReactorPu
 | `PullsEveryRequest_ThenClosesStream` | Both | One pull per request plus the `std::nullopt` one, all sent, OK status |
 | `EmptySource_ClosesBeforeAnyWrite` | Both | A single pull, no write, OK status |
 | `UnboundSlot_ClosesAtOnce` | Writer | An unbound slot closes the stream at once |
-| `ServerEndsEarly_CompletesWithoutApplicationAction` | Writer | `OnDone` follows the server's error with no |
-| | | application call, and no pull follows the failed write |
+| `ServerEndsEarly_CompletesWithoutApplicationAction` | Writer | `OnDone` follows the server's error unprompted |
 | `ServerFinishesFirst_CompletesWithoutApplicationAction` | Bidi | The same when the server finishes mid-stream |
 | `TryCancelFromWriteDone_StopsPulling` | Both | No pull follows a `TryCancel()` from `write_done` |
 | `TryCancelFromApplication_Completes` | Writer | `TryCancel()` ends an RPC whose source never runs dry |
 | `HeldRead_DoesNotStallPulls` | Bidi | The source runs dry while the first answer is still held |
+
+In `ServerEndsEarly_CompletesWithoutApplicationAction`, `OnDone` needs no application call, and no pull follows the
+failed write.
 
 The writer's first test also checks that each pull follows the `write_done` of the write before it, and that the first
 pull runs on the thread that constructs the reactor.

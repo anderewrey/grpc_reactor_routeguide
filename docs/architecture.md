@@ -38,14 +38,14 @@ On the two reading reactors, what remains is who arms the read that follows. A s
 `ReadPacing`, answers it, independently of `Delivery`. Its modes sit on one scale of how much the stream waits for the
 application, and `kPerMessage`, in the middle, is the default:
 
-| `ReadPacing`  | Who arms the next read                                 | Hold                                       |
-|---------------|--------------------------------------------------------|--------------------------------------------|
-| `kContinuous` | The reactor, as the last action of the same reaction   | None: the next read cannot complete while  |
-|               |                                                        | that reaction runs                         |
-| `kPerMessage` | Either one, as the `read_ok` callback decides for each | One per message, whether kept or declined  |
-|               | message                                                |                                            |
-| `kTurnByTurn` | The application, through `GetResponse()` or            | One per message, which keeps the RPC alive |
-|               | `ResumeRead()`, from outside any reaction              | across that gap                            |
+| `ReadPacing` | Who arms the next read | Hold |
+|--------------|------------------------|------|
+| `kContinuous` | The reactor, as the last action of the same reaction | None |
+| `kPerMessage` | Either one, as the `read_ok` callback decides for each message | One per message, kept or declined |
+| `kTurnByTurn` | The application, with `GetResponse()` or `ResumeRead()`, outside any reaction | One per message |
+
+- `kContinuous` needs no hold, because the next read cannot complete while that reaction runs.
+- Under `kTurnByTurn`, each hold keeps the RPC alive across the gap between reactions.
 
 Why these two choices, and why only these, follows from one model, described under
 [The model behind the reactors' choices](#the-model-behind-the-reactors-choices).
@@ -271,16 +271,14 @@ answers each with a choice rather than a fixed design. `Delivery` answers the fi
 the delivery question are correct. They cost different things, and which cost an RPC can afford is a property of
 that RPC, not of the library.
 
-| Constraint                                       | Points to | Because                                         |
-|--------------------------------------------------|-----------|-------------------------------------------------|
-| The event queue cannot take owned payloads       | `kPull`   | The event carries the reactor: nothing leaks or |
-| (shared event names, `Halt()` on exit)           |           | is freed twice                                  |
-| Messages are consumed on the gRPC thread, inside | `kPull`   | The callback reads the message in place, with   |
-| the reaction                                     |           | no allocation                                   |
-| A message must outlive the next read, or be      | `kPush`   | Each message is its own object, not a read      |
-| handed on to another component                   |           | target the next read overwrites                 |
-| The application thread processes every message,  | `kPush`   | The message leaves the reactor at once, so no   |
-| later and at its own pace                        |           | reactor keeps cross-thread response state       |
+- The event queue cannot take owned payloads (shared event names, `Halt()` on exit). This points to `kPull`: the
+  event carries the reactor, so nothing leaks or is freed twice.
+- Messages are consumed on the gRPC thread, inside the reaction. This points to `kPull`: the callback reads the
+  message in place, with no allocation.
+- A message must outlive the next read, or be handed on to another component. This points to `kPush`: each message
+  is its own object, not a read target the next read overwrites.
+- The application thread processes every message, later and at its own pace. This points to `kPush`: the message
+  leaves the reactor at once, so no reactor keeps cross-thread response state.
 
 Pulling keeps the message in the reactor's read target, which costs nothing per message: the callback reads it in
 place, and `GetResponse()` swaps it out without a copy. The price is that the message lives in a buffer the next
@@ -305,19 +303,16 @@ A unary or client-streaming RPC delivers one terminal response, together with `O
 a stream that never waits for its consumer, does not exist there, because the RPC is already over when the response
 arrives. What remains is a single question: who owns the response while it waits in the event queue.
 
-| Constraint                                          | Points to | Because                                      |
-|-----------------------------------------------------|-----------|----------------------------------------------|
-| The event queue cannot take owned payloads          | `kPull`   | The event carries the reactor, so nothing    |
-| (shared event names, `Halt()` on exit, a handler    |           | can leak or be freed twice                   |
-| that can throw before it reclaims)                  |           |                                              |
-| The response must outlive the reactor, or be handed | `kPush`   | The handler already owns it, so it moves on  |
-| on to another component                             |           | without a copy                               |
-| A failed RPC must not look like a response          | `kPull`   | `GetResponse()` returns false unless the     |
-|                                                     |           | status is OK                                 |
-| The handler must always receive a message object    | `kPush`   | The pointer is never null, and a failed RPC  |
-|                                                     |           | yields an empty message                      |
-| Handlers may run on another thread than the one     | `kPull`   | The event carries the reactor, so a handler  |
-| that creates the reactor                            |           | never depends on the slot being assigned yet |
+- The event queue cannot take owned payloads (shared event names, `Halt()` on exit, a handler that can throw
+  before it reclaims). This points to `kPull`: the event carries the reactor, so nothing can leak or be freed twice.
+- The response must outlive the reactor, or be handed on to another component. This points to `kPush`: the
+  handler already owns it, so it moves on without a copy.
+- A failed RPC must not look like a response. This points to `kPull`: `GetResponse()` returns false unless the
+  status is OK.
+- The handler must always receive a message object. This points to `kPush`: the pointer is never null, and a
+  failed RPC yields an empty message.
+- Handlers may run on another thread than the one that creates the reactor. This points to `kPull`: the event
+  carries the reactor, so a handler never depends on the slot being assigned yet.
 
 Under `kPush` the handler still has to check `Status()` before trusting the content, since an empty message is also
 what a failed RPC produces.
@@ -357,12 +352,13 @@ The two other modes are the two ends of the scale, fixed for the whole RPC. `Rea
 re-arm inside the reaction, so the stream never waits for the application. What it costs depends on the delivery
 approach:
 
-| Delivery | Cost                         | Cause                                   | Accepted because              |
-|----------|------------------------------|-----------------------------------------|-------------------------------|
-| `kPush`  | The queue is unbounded       | EventLoop has no backpressured delivery | The request bounds the volume |
-| `kPush`  | `Halt()` leaks messages      | `Halt()` discards rather than drains    | The demo's loop never halts   |
-| `kPull`  | Keeping a whole message      | The next read overwrites the lent       | The callback consumes the     |
-|          | takes a deep copy            | message                                 | message in place instead      |
+| Delivery | Cost | Cause | Accepted because |
+|----------|------|-------|------------------|
+| `kPush` | The queue is unbounded | EventLoop has no backpressured delivery | The request bounds the volume |
+| `kPush` | `Halt()` leaks messages | `Halt()` discards rather than drains | The demo's loop never halts |
+
+Under `kPull`, keeping a whole message takes a deep copy, because the next read overwrites the lent message. This
+cost is accepted because the callback consumes the message in place instead.
 
 Neither push cost is acceptable for a stream whose volume the peer controls, which is what `ReadPacing::kTurnByTurn`
 is for. There the application arms the next read through `GetResponse()` or `ResumeRead()`, so exactly one message
@@ -390,14 +386,12 @@ constraints.
 The two fixed modes are for a design that has already made that decision. They add no behaviour. What they add is
 the decision fixed in the type, where the compiler enforces it and rules out the mistakes it leaves no room for:
 
-| Guarantee                   | `kContinuous`         | `kPerMessage`                    | `kTurnByTurn`          |
-|-----------------------------|-----------------------|----------------------------------|------------------------|
-| Holds taken                 | None                  | One per message, declined or not | One per message        |
-| Release call owed           | None, and none exists | One per kept message only        | One per message        |
-| A handler bug can strand it | No                    | Yes: a missed release, or a      | Yes: a missed release  |
-|                             |                       | `true` returned by mistake       |                        |
-| A stray release can misfire | Cannot be written     | Yes, see below                   | No, while each handler |
-|                             |                       |                                  | releases once          |
+| Guarantee | `kContinuous` | `kPerMessage` | `kTurnByTurn` |
+|-----------|---------------|---------------|---------------|
+| Holds taken | None | One per message, declined or not | One per message |
+| Release call owed | None, and none exists | One per kept message only | One per message |
+| A handler bug can strand it | No | Yes: a missed release, or a `true` returned by mistake | Yes: a missed release |
+| A stray release can misfire | Cannot be written | Yes, see below | No, while each handler releases once |
 
 The stray release is the subtle one. `GetResponse()` and `ResumeRead()` release whichever message is held at that
 moment, not a particular one. Under `kTurnByTurn` every message is held, so a handler that calls one of them once is
@@ -434,23 +428,19 @@ nothing can change it while a reaction reads it.
 A streaming RPC delivers many messages, so both choices apply, and the six combinations each fit a different kind
 of consumer:
 
-| Constraint                                     | Points to              | Because                                    |
-|------------------------------------------------|------------------------|--------------------------------------------|
-| Each message is consumed inside the reaction:  | `kPull`, `kContinuous` | The callback reads the lent message in     |
-| an aggregate, a latest-value-wins snapshot, or |                        | place, with no allocation and no hold      |
-| a filter that drops what it does not need      |                        |                                            |
-| Messages are filtered on the gRPC thread: some | `kPull`, `kPerMessage` | A declined message costs no allocation and |
-| kept for the application, the others declined  |                        | no event, and a kept one is swapped out    |
-|                                                |                        | without a copy                             |
-| One message in flight, with no ownership rules | `kPull`, `kTurnByTurn` | The stream waits for `GetResponse()`, and  |
-| for the application                            |                        | the event carries only the reactor         |
-| The consumer defers its processing, and the    | `kPush`, `kContinuous` | Each message leaves the reactor at once,   |
-| stream must never wait for it                  |                        | at the cost of an unbounded queue          |
-| The stream should run freely until the         | `kPush`, `kPerMessage` | The callback holds only while the backlog  |
-| application falls behind                       |                        | is above a threshold: adaptive             |
-|                                                |                        | backpressure                               |
-| One message in flight, and each message must   | `kPush`, `kTurnByTurn` | The stream is bounded, and every message   |
-| outlive the next read                          |                        | is its own object                          |
+- `kPull`, `kContinuous`: each message is consumed inside the reaction, as an aggregate, a latest-value-wins
+  snapshot, or a filter that drops what it does not need. The callback reads the lent message in place, with no
+  allocation and no hold.
+- `kPull`, `kPerMessage`: messages are filtered on the gRPC thread, some kept for the application and the others
+  declined. A declined message costs no allocation and no event, and a kept one is swapped out without a copy.
+- `kPull`, `kTurnByTurn`: one message is in flight, with no ownership rules for the application. The stream waits
+  for `GetResponse()`, and the event carries only the reactor.
+- `kPush`, `kContinuous`: the consumer defers its processing, and the stream must never wait for it. Each message
+  leaves the reactor at once, at the cost of an unbounded queue.
+- `kPush`, `kPerMessage`: the stream should run freely until the application falls behind. The callback holds only
+  while the backlog is above a threshold: adaptive backpressure.
+- `kPush`, `kTurnByTurn`: one message is in flight, and each message must outlive the next read. The stream is
+  bounded, and every message is its own object.
 
 Under `kPull` with `kContinuous`, a callback that wants to keep a whole message pays a deep copy for it. Once most
 messages are kept whole, `kPush` serves the same consumer without the copy.
@@ -727,12 +717,19 @@ project-specific settings:
 
 | Class | RPC Pattern | Template Parameters |
 | ------- | ------------- | --------------------- |
-| `ActiveUnaryReactor<ResponseT, kDelivery>` | Unary | Response type, `Delivery` |
-| `ActiveReadReactor<ResponseT, kDelivery, kPacing>` | Server-streaming | Response type, `Delivery`, `ReadPacing` |
-| `ActiveWriteReactor<RequestT, ResponseT, kDelivery, kSubmission>` | Client-streaming | Request and response |
-| | | types, `Delivery`, `Submission` |
-| `ActiveBidiReactor<RequestT, ResponseT, kDelivery, kSubmission, kPacing>` | Bidirectional | Request and response |
-| | | types, `Delivery`, `Submission`, `ReadPacing` |
+| `ActiveUnaryReactor` | Unary | Response type, `Delivery` |
+| `ActiveReadReactor` | Server-streaming | Response type, `Delivery`, `ReadPacing` |
+| `ActiveWriteReactor` | Client-streaming | Request and response types, `Delivery`, `Submission` |
+| `ActiveBidiReactor` | Bidirectional | Request and response types, `Delivery`, `Submission`, `ReadPacing` |
+
+The template parameters come in this order:
+
+```cpp
+ActiveUnaryReactor<ResponseT, kDelivery>
+ActiveReadReactor<ResponseT, kDelivery, kPacing>
+ActiveWriteReactor<RequestT, ResponseT, kDelivery, kSubmission>
+ActiveBidiReactor<RequestT, ResponseT, kDelivery, kSubmission, kPacing>
+```
 
 `Delivery` has no default, so every instantiation names its approach, and neither has `Submission`, which the two
 writing reactors take for their outgoing direction. The two reading reactors also take `ReadPacing` as a template
