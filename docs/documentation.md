@@ -67,6 +67,7 @@ This project's existing docs map onto all four:
 | [walkthrough.md](/docs/walkthrough.md) | Tutorial | Pick your reactor and start: one part per RPC shape, built from a demo scenario |
 | [developing.md](/docs/developing.md), [testing.md](/docs/testing.md) | How-to guide | Build, run, and test steps |
 | [reactor_client.md](/applications/reactor/reactor_client.md) | Reference | Every variant side by side, then the class-by-class API |
+| [reactor_coro.md](/applications/reactor/reactor_coro.md) | Reference | The coroutine level: its words, the life of a `co_await`, its rules, and its API |
 | [variants/README.md](/applications/reactor/variants/README.md) | Reference | Every scenario, its variant, and the mechanics it shows |
 | [usecases/README.md](/applications/reactor/usecases/README.md) | Reference | The real-life situation behind each use case, and why its variant fits |
 | [architecture.md](/docs/architecture.md) | Explanation | Design rationale: why this pattern, why these choices |

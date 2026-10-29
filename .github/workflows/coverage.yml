@@ -192,6 +192,9 @@ jobs:
             applications/reactor/tests/reactor_teardown_test \
             applications/reactor/tests/latest_slot_test \
             applications/reactor/tests/continuous_journal_test \
+            applications/reactor/tests/coro_task_test \
+            applications/reactor/tests/eventloop_executor_test \
+            applications/reactor/tests/reactor_coro_unary_test \
             applications/reactor/tests/client_reactor_integration_test \
             applications/blocking/route_guide_sync_client \
             applications/blocking/route_guide_sync_server \
@@ -199,6 +202,8 @@ jobs:
             applications/callback/route_guide_callback_server \
             applications/reactor/route_guide_active_reactor_client \
             applications/reactor/route_guide_reactor_usecases \
+            applications/reactor/route_guide_active_reactor_client_coro \
+            applications/reactor/route_guide_reactor_usecases_coro \
           ; do
             object_args="$object_args -object=build/$path"
           done

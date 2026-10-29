@@ -826,6 +826,7 @@ The sequence diagrams are under
 |------------------------------------------------------|--------------------------------------------------------------|
 | Compare every variant, and what each one asks of you | [Reactors and their variants][variants] in reactor_client.md |
 | Look up a class, a callback, or a sequence diagram   | [reactor_client.md](/applications/reactor/reactor_client.md) |
+| Consume a reactor from a coroutine instead           | [reactor_coro.md](/applications/reactor/reactor_coro.md)     |
 | Understand why each choice and each hold exists      | [architecture.md](/docs/architecture.md)                     |
 | See how the tests cover every variant                | [testing.md](/docs/testing.md)                               |
 

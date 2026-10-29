@@ -59,6 +59,15 @@ diff variants/route_chat_pull_per_message_producer.cpp usecases/guided_tour_brie
 diff variants/get_feature_pull.cpp usecases/whats_here.cpp                          # fills the card
 ```
 
+A coroutine use case, run by `route_guide_reactor_usecases_coro`, has two such diffs: against its callback twin, what
+a coroutine changes for the same situation, and against its coroutine variant, what the application adds:
+
+```bash
+cd applications/reactor
+diff usecases/whats_here.cpp usecases/whats_here_coro.cpp                # one coroutine instead of a handler
+diff variants/get_feature_pull_coro.cpp usecases/whats_here_coro.cpp     # fills the card
+```
+
 The first two are described in the reference, under
 [Keeping only the newest message](/applications/reactor/reactor_client.md#keeping-only-the-newest-message) and
 [Handling every message without slowing the stream](/applications/reactor/reactor_client.md#handling-every-message-without-slowing-the-stream),
