@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -45,11 +46,10 @@ using std::chrono::system_clock;
 namespace {
 std::thread::id main_thread = std::this_thread::get_id();
 FeatureList feature_list_;
-}  // anonymous namespace
 
 class RouteGuideImpl final : public RouteGuide::Service {
  public:
-  Status GetFeature(ServerContext* context, const Point* point,
+  Status GetFeature(ServerContext* /*context*/, const Point* point,
                     Feature* feature) override {
     auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kGetFeature);
     logger.info("ENTER    |");
@@ -60,7 +60,7 @@ class RouteGuideImpl final : public RouteGuide::Service {
     return Status::OK;
   }
 
-  Status ListFeatures(ServerContext* context,
+  Status ListFeatures(ServerContext* /*context*/,
                       const Rectangle* rectangle,
                       ServerWriter<Feature>* writer) override {
     auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kListFeatures);
@@ -76,7 +76,7 @@ class RouteGuideImpl final : public RouteGuide::Service {
     return Status::OK;
   }
 
-  Status RecordRoute(ServerContext* context, ServerReader<Point>* reader,
+  Status RecordRoute(ServerContext* /*context*/, ServerReader<Point>* reader,
                      RouteSummary* summary) override {
     auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kRecordRoute);
     logger.info("ENTER    |");
@@ -90,7 +90,8 @@ class RouteGuideImpl final : public RouteGuide::Service {
     while (reader->Read(&point)) {
       logger.info("REQUEST  | Point: {}", protobuf_utils::ToString(point));
       point_count++;
-      if (const auto name = rg_utils::GetFeatureName(point, feature_list_); name && strlen(name) > 0) {
+      if (const auto* const name = rg_utils::GetFeatureName(point, feature_list_);
+          name != nullptr && strlen(name) > 0) {
         feature_count++;
       }
       if (point_count != 1) {
@@ -101,22 +102,22 @@ class RouteGuideImpl final : public RouteGuide::Service {
     const auto end_time = system_clock::now();
     summary->set_point_count(point_count);
     summary->set_feature_count(feature_count);
-    summary->set_distance(distance);
+    summary->set_distance(static_cast<int32_t>(distance));
     const auto secs = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count();
-    summary->set_elapsed_time(secs);
+    summary->set_elapsed_time(static_cast<int32_t>(secs));
     logger.info("RESPONSE | RouteSummary: {}", protobuf_utils::ToString(*summary));
     logger.info("EXIT     |");
     return Status::OK;
   }
 
-  Status RouteChat(ServerContext* context,
+  Status RouteChat(ServerContext* /*context*/,
                    ServerReaderWriter<RouteNote, RouteNote>* stream) override {
     auto& logger = routeguide::logger::Get(routeguide::RpcMethods::kRouteChat);
     logger.info("ENTER    |");
     RouteNote note;
     while (stream->Read(&note)) {
       logger.info("REQUEST  | RouteNote: {}", protobuf_utils::ToString(note));
-      std::unique_lock lock(mu_);
+      const std::lock_guard lock(mu_);
       for (const RouteNote& n : received_notes_) {
         if (n.location() == note.location()) {
           logger.info("RESPONSE | RouteNote: {}", protobuf_utils::ToString(n));
@@ -148,10 +149,12 @@ void RunServer() {
   server->Wait();
 }
 
+}  // anonymous namespace
+
 int main(int argc, char** argv) {
   assert(main_thread == std::this_thread::get_id());
   spdlog::set_pattern("[%H:%M:%S.%f][%n][%t][%^%L%$] %v");
-  auto logger_Main = spdlog::stdout_color_mt("Main");
+  const auto logger_Main = spdlog::stdout_color_mt("Main");
   spdlog::set_default_logger(logger_Main);
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
