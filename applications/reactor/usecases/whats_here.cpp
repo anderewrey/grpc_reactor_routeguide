@@ -31,7 +31,7 @@ WhatsHere::~WhatsHere() {
   TearDownReactor(reactor_, logger_);
 }
 
-void WhatsHere::Start(routeguide::Point point) {
+void WhatsHere::Start(const routeguide::Point& point) {
   using ResponseT = routeguide::GetFeature::ResponseT;
   if (reactor_) {
     logger_.info("         | reactor[{}] already in execution, ignoring: {}", fmt::ptr(reactor_.get()),

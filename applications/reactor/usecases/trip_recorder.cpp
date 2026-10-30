@@ -42,7 +42,7 @@ TripRecorder::~TripRecorder() {
   TearDownReactor(reactor_, logger_);
 }
 
-void TripRecorder::Start(routeguide::Rectangle rect) {
+void TripRecorder::Start(const routeguide::Rectangle& rect) {
   using ResponseT = routeguide::ListFeatures::ResponseT;
   if (reactor_) {
     logger_.info("         | reactor[{}] already in execution, ignoring: {}", fmt::ptr(reactor_.get()),
