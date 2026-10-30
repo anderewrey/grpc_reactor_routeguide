@@ -129,7 +129,7 @@ class ResumeHandover {
   /// has resumed. Called before whatever starts that operation, never after: the operation can end on
   /// another thread as soon as it starts, and an end that finds the hand-over still ended posts nothing.
   void Rearm() noexcept {
-    [[maybe_unused]] void* const last = slot_.exchange(nullptr, std::memory_order_acq_rel);
+    [[maybe_unused]] const void* const last = slot_.exchange(nullptr, std::memory_order_acq_rel);
     assert(last == kEnded && "Rearm() follows the end of the last operation");
   }
 

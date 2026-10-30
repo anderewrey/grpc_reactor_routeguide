@@ -79,7 +79,7 @@ class StreamService final : public routeguide::RouteGuide::CallbackService {
   }
 
   grpc::ServerWriteReactor<routeguide::Feature>* ListFeatures(grpc::CallbackServerContext* context,
-                                                              const routeguide::Rectangle*) override {
+                                                              const routeguide::Rectangle* /*request*/) override {
     class Stream : public grpc::ServerWriteReactor<routeguide::Feature> {
      public:
       Stream(StreamService* service, grpc::CallbackServerContext* context) : service_(service), context_(context) {
@@ -212,7 +212,7 @@ Task<> ReadUntilCancelled(Executor* executor, routeguide::RouteGuide::Stub* stub
 /// Suspends forever: the frame is only ever destroyed.
 struct Forever {
   static bool await_ready() noexcept { return false; }
-  static void await_suspend(std::coroutine_handle<>) noexcept {}
+  static void await_suspend(std::coroutine_handle<> /*waiter*/) noexcept {}
   static void await_resume() noexcept {}
 };
 
@@ -329,7 +329,8 @@ class ReactorCoroReaderTest : public RouteGuideTestFixtureBase<StreamService> {
   CountingExecutor executor_{&loop_};
 };
 
-const std::vector<std::string> kThreeNames{"feature 1", "feature 2", "feature 3"};
+/// The names of the three features the service sends after Send(3).
+std::vector<std::string> ThreeNames() { return {"feature 1", "feature 2", "feature 3"}; }
 
 /// @test Under kPull, Read() gives every message, swapped out of the reactor, in order and on the loop, then
 /// nothing at the end of the stream, and nothing again after, and Finish() gives OK.
@@ -337,7 +338,7 @@ TEST_F(ReactorCoroReaderTest, ListFeatures_PullReadsEveryMessage_ThenNothing_The
   test_service_.Send(3);
   const Seen seen = ReadWholeStream<Delivery::kPull>();
 
-  EXPECT_EQ(seen.names, kThreeNames);
+  EXPECT_EQ(seen.names, ThreeNames());
   EXPECT_EQ(seen.threads, std::vector<std::thread::id>(3, LoopThread()));
   EXPECT_TRUE(seen.read_after_end_gave_nothing);
   EXPECT_TRUE(seen.status.ok());
@@ -348,7 +349,7 @@ TEST_F(ReactorCoroReaderTest, ListFeatures_PushReadsEveryMessage_ThenNothing_The
   test_service_.Send(3);
   const Seen seen = ReadWholeStream<Delivery::kPush>();
 
-  EXPECT_EQ(seen.names, kThreeNames);
+  EXPECT_EQ(seen.names, ThreeNames());
   EXPECT_EQ(seen.threads, std::vector<std::thread::id>(3, LoopThread()));
   EXPECT_TRUE(seen.read_after_end_gave_nothing);
   EXPECT_TRUE(seen.status.ok());
