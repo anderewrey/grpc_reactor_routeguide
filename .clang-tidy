@@ -25,7 +25,8 @@ Checks: >
   -performance-enum-size,
   -readability-static-accessed-through-instance,
   -portability-template-virtual-member-function,
-  -readability-trailing-comma
+  -readability-trailing-comma,
+  -readability-redundant-qualified-alias
 # reactor_client.h's protected reactor members are intentional (see architecture.md), not a defect.
 # misc-include-cleaner is disabled: it flagged umbrella-header symbol use as 63 of 99 diagnostics.
 # misc-override-with-different-visibility is disabled: the Active*Reactor classes' gRPC overrides are
@@ -49,12 +50,16 @@ Checks: >
 # the co_await's line: 27 reports in coro_task_test.cpp alone, under clang-tidy 21, 22 and 23.
 # portability-template-virtual-member-function is disabled: it guards against compilers, such as
 # MSVC, that instantiate every virtual member of a class template, and this project builds only with
-# GCC and Clang. It reports gRPC's generated service templates in route_guide.grpc.pb.h, once per
-# file that instantiates them, even with ExcludeHeaderFilterRegex below.
+# GCC and Clang. It reports the reactor templates in reactor_client.h (clang-tidy 23) and gRPC's
+# generated service templates (older versions, even with ExcludeHeaderFilterRegex below).
 # readability-trailing-comma (clang-tidy 23) is disabled: it asks for a comma after the last element
 # of a multi-line braced init, and here that element is often a lambda, as in
 # EventConnection connection{kRun, [&](...) {...}}, where a comma after its closing brace reads as a
 # stray token.
+# readability-redundant-qualified-alias (clang-tidy 23) is disabled: it would turn
+# `using Delivery = RpcReactor::Client::Delivery;` into a using-declaration, but such aliases sit in
+# lists beside aliases that rename (`using Bidi = grpc::ClientBidiReactor<...>;`), and one form for
+# the whole list reads better than two.
 # applications/reactor/tests/.clang-tidy also disables readability-function-cognitive-complexity
 # there, for gtest bodies: see that file.
 # clang-analyzer-* and bugprone-* both target similar defect classes (e.g. use-after-free); kept as
