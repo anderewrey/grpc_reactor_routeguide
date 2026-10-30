@@ -250,7 +250,7 @@ class Reader {
   ~Reader() {
     read_.Abandon();
     done_.Abandon();
-    DestroyAfterOnDone(reactor_, kOnDoneTimeout);
+    reactor_.reset();
   }
 
   Reader(const Reader&) = delete;
@@ -313,7 +313,7 @@ class Reader {
       };
     }
     cbs.read_nok = [this](auto*) { read_.Complete(executor_); };
-    cbs.done = [this](auto*, const grpc::Status&) { done_.Complete(executor_); };
+    cbs.done = [this](auto*, const grpc::Status&) { read_.Complete(executor_); };
     return cbs;
   }
 
