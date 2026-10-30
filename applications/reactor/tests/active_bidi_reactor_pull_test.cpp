@@ -126,8 +126,8 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
         }
 
         // Get location key
-        auto location = std::make_pair(incoming_note_.location().latitude(),
-                                       incoming_note_.location().longitude());
+        const auto location = std::make_pair(incoming_note_.location().latitude(),
+                                             incoming_note_.location().longitude());
 
         // Get all previously stored notes at this location
         auto& notes_at_location = notes_by_location_[location];
@@ -716,14 +716,14 @@ TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_MultipleConcurrent_AllComplete
   // still running: on a timeout, cancel every stream and wait for all of them before failing.
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   bool timed_out = false;
-  for (auto& future : futures) {
+  for (const auto& future : futures) {
     timed_out |= future.wait_until(deadline) != std::future_status::ready;
   }
   if (timed_out) {
     for (auto& stream : streams) {
       stream.reactor->TryCancel();
     }
-    for (auto& future : futures) {
+    for (const auto& future : futures) {
       if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
         std::fprintf(stderr, "A cancelled RouteChat stream never completed, aborting\n");
         std::abort();
@@ -899,7 +899,7 @@ TYPED_TEST(ActiveBidiReactorHeldPacingTest, RouteChat_ReleasedAfterCloseRequestS
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  auto wait_for_received = [&mutex, &cv, &messages](size_t expected) {
+  const auto wait_for_received = [&mutex, &cv, &messages](size_t expected) {
     std::unique_lock<std::mutex> lock(mutex);
     return cv.wait_for(lock, std::chrono::seconds(5), [&messages, expected] { return messages.size() == expected; });
   };
@@ -1407,14 +1407,14 @@ TEST_F(ActiveBidiReactorTest, RouteChat_MultipleConcurrent_AllComplete) {
   // still running: on a timeout, cancel every stream and wait for all of them before failing.
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   bool timed_out = false;
-  for (auto& future : futures) {
+  for (const auto& future : futures) {
     timed_out |= future.wait_until(deadline) != std::future_status::ready;
   }
   if (timed_out) {
     for (auto& stream : streams) {
       stream.reactor->TryCancel();
     }
-    for (auto& future : futures) {
+    for (const auto& future : futures) {
       if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
         std::fprintf(stderr, "A cancelled RouteChat stream never completed, aborting\n");
         std::abort();

@@ -126,8 +126,8 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
         }
 
         // Get location key
-        auto location = std::make_pair(incoming_note_.location().latitude(),
-                                       incoming_note_.location().longitude());
+        const auto location = std::make_pair(incoming_note_.location().latitude(),
+                                             incoming_note_.location().longitude());
 
         // Get all previously stored notes at this location
         auto& notes_at_location = notes_by_location_[location];
@@ -710,14 +710,14 @@ TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_MultipleConcurrent_AllComplete
   // still running: on a timeout, cancel every stream and wait for all of them before failing.
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   bool timed_out = false;
-  for (auto& future : futures) {
+  for (const auto& future : futures) {
     timed_out |= future.wait_until(deadline) != std::future_status::ready;
   }
   if (timed_out) {
     for (auto& stream : streams) {
       stream.reactor->TryCancel();
     }
-    for (auto& future : futures) {
+    for (const auto& future : futures) {
       if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
         std::fprintf(stderr, "A cancelled RouteChat stream never completed, aborting\n");
         std::abort();
@@ -895,11 +895,11 @@ TYPED_TEST(ActiveBidiReactorHeldPacingTest, RouteChat_ReadHoldDoesNotBlockWrites
   std::future<grpc::Status> done_future = done_promise.get_future();
 
   // Waits for the next echo to be delivered, without resuming: the test thread owns the re-arm.
-  auto wait_for_received = [&mutex, &cv, &received](int expected) {
+  const auto wait_for_received = [&mutex, &cv, &received](int expected) {
     std::unique_lock<std::mutex> lock(mutex);
     return cv.wait_for(lock, std::chrono::seconds(5), [&received, expected] { return received == expected; });
   };
-  auto wait_for_write = [&mutex, &cv, &write_ready]() {
+  const auto wait_for_write = [&mutex, &cv, &write_ready] {
     std::unique_lock<std::mutex> lock(mutex);
     const bool ready = cv.wait_for(lock, std::chrono::seconds(5), [&write_ready] { return write_ready; });
     write_ready = false;
@@ -989,7 +989,7 @@ TYPED_TEST(ActiveBidiReactorHeldPacingTest, RouteChat_ReleasedAfterCloseRequestS
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  auto wait_for_received = [&mutex, &cv, &messages](size_t expected) {
+  const auto wait_for_received = [&mutex, &cv, &messages](size_t expected) {
     std::unique_lock<std::mutex> lock(mutex);
     return cv.wait_for(lock, std::chrono::seconds(5), [&messages, expected] { return messages.size() == expected; });
   };
@@ -1221,7 +1221,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ConcurrentClaimants_KeepTheHoldAccountin
   // Each writer keeps writing until the server has ended the read stream, and a little after, so the
   // writers are still claiming while OnReadDone(false) claims to release.
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  auto writer = [&reactor, &accepted, &location, &read_ended, deadline] {
+  const auto writer = [&reactor, &accepted, &location, &read_ended, deadline] {
     int after_end = 0;
     while (after_end < 100 && std::chrono::steady_clock::now() < deadline) {
       if (reactor->SendRequest(rg_utils::MakeRouteNote("concurrent", 920, ++location))) ++accepted;

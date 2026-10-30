@@ -201,7 +201,8 @@ TEST_F(ReactorTeardownTest, Unary_FromDoneCallback_ReturnsAtOnce) {
   cbs.done = [&result](auto* base, const grpc::Status&, std::unique_ptr<routeguide::Feature>) {
     result.set_value(static_cast<Reactor*>(base)->CancelAndWait(std::chrono::milliseconds(0)));
   };
-  auto reactor = std::make_unique<Reactor>(*stub_, CreateClientContext(), rg_utils::MakePoint(1, 1), std::move(cbs));
+  const auto reactor =
+      std::make_unique<Reactor>(*stub_, CreateClientContext(), rg_utils::MakePoint(1, 1), std::move(cbs));
   auto future = result.get_future();
   ASSERT_EQ(future.wait_for(kTimeout), std::future_status::ready);
 
