@@ -35,9 +35,13 @@ for client in $clients; do
     digest_of "$client" "$server" || continue
     if [ -z "$first" ]; then
       first=$file
-    elif ! cmp -s "$first" "$file"; then
+    elif [ "$(cat "$first")" != "$(cat "$file")" ]; then
+      # Not cmp or diff: the openSUSE container has no diffutils.
       fail "$client: digest against $server differs from $(basename "$first")"
-      diff "$first" "$file"
+      echo "----- $(basename "$first") -----"
+      cat "$first"
+      echo "----- $(basename "$file") -----"
+      cat "$file"
     fi
   done
 done
