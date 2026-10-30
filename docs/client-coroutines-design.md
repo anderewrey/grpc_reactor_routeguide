@@ -1,7 +1,7 @@
 # Client coroutines: design draft
 
 > [!NOTE]
-> This is a design draft, built step by step. Steps 1 and 2 of the [suggested order](#suggested-order) exist, and
+> This is a design draft, built step by step. Steps 1 to 3 of the [suggested order](#suggested-order) exist, and
 > [reactor_coro.md](/applications/reactor/reactor_coro.md) is their reference. Once the level is built and its claims
 > are proven by tests and runs, this draft's reasoning moves into [architecture.md](/docs/architecture.md), and this
 > file goes away.
@@ -347,7 +347,21 @@ Every non-trivial claim needs a test or a demonstrable run:
    `coro::Unary` in `reactor_coro.h`, with both applications. Its context is an optional last constructor argument,
    for a deadline, and its `Finish()` returns a `UnaryResult` of the status and the owned response.
    [testing.md](/docs/testing.md#unary-awaitable-coverage) lists what the tests prove.
-3. The reader without a buffer: both `turn_by_turn_coro` variants, then `turn_by_turn_guidance_coro`.
+3. The reader without a buffer: both `turn_by_turn_coro` variants, then `turn_by_turn_guidance_coro`. Done:
+   `coro::Reader` in `reactor_coro.h`. Its `Read()` gives `std::optional<ResponseT>` under `kPull` and
+   `std::unique_ptr<ResponseT>` under `kPush`, both empty at the end of the stream, and its `Finish()` gives the
+   `grpc::Status`, once `Read()` has given nothing: while the reactor holds a message, the RPC cannot end. To stop
+   early, a coroutine calls `TryCancel()`, then reads until `Read()` gives nothing.
+   `ResumeHandover` became re-armable rather than one per read: whatever ends a read on a gRPC thread must find the
+   hand-over already in place, so the reader would keep one per read as a member anyway, and one re-armed with
+   `Rearm()`, which asserts that the last read has ended, says the same with less. It is re-armed before the call that
+   arms the next read, `GetResponse()` or `ResumeRead()`, since that read can end on another thread before the call
+   returns. `OnDone()` has a hand-over of its own, as it can come before the coroutine has resumed from the last read.
+   `turn_by_turn_guidance_coro` waits for its driver, which the callback twin does with an EventLoop timer. Since a
+   scenario never calls EventLoop, `EventLoopExecutor` gained `After(delay)`, a static awaitable over that timer,
+   which `live_route_recording_coro` will reuse. The `Executor` interface is unchanged: a scenario that waits for
+   time names the EventLoop adapter, and only that.
+   [testing.md](/docs/testing.md#reader-coverage) lists what the tests prove.
 4. The buffered readers: their three variants, then `trip_recorder_coro`, `live_vehicle_position_coro` and
    `offline_map_download_coro`.
 5. The writers: their two variants, then `live_route_recording_coro` and `gpx_track_upload_coro`.

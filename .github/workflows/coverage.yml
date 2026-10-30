@@ -195,6 +195,7 @@ jobs:
             applications/reactor/tests/coro_task_test \
             applications/reactor/tests/eventloop_executor_test \
             applications/reactor/tests/reactor_coro_unary_test \
+            applications/reactor/tests/reactor_coro_reader_test \
             applications/reactor/tests/client_reactor_integration_test \
             applications/blocking/route_guide_sync_client \
             applications/blocking/route_guide_sync_server \

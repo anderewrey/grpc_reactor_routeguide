@@ -15,6 +15,7 @@
 #include <memory>
 
 #include "applications/reactor/reactor_eventloop.h"
+#include "applications/reactor/usecases/turn_by_turn_guidance_coro.h"
 #include "applications/reactor/usecases/whats_here_coro.h"
 #include "applications/reactor/demo_support.h"
 #include "rg_service/rg_utils.h"
@@ -32,9 +33,14 @@
  *
  * - rg_demo::usecase::coro::WhatsHere, GetFeature under kPull through coro::Unary: someone taps the map, and a
  *   card shows the name of the place there, or that nothing named is there.
+ * - rg_demo::usecase::coro::TurnByTurnGuidance, ListFeatures under kPush and kTurnByTurn through coro::Reader: a
+ *   guidance screen shows one stop at a time, and the coroutine reads the next one only once it has awaited the
+ *   driver's confirmation.
  *
- * Reading the output: WhatsHere logs the answer, then the card, as its callback twin does, every line on the
- * application thread.
+ * Reading the output: WhatsHere logs the answer, then the card, as its callback twin does. TurnByTurnGuidance
+ * logs a "resumed  | #k driver confirmed" line once the driver confirms stop #k, and RESPONSE #k+1 never comes
+ * before it, then "stream ended after N messages", the number of stops its callback twin shows. Every line is
+ * on the application thread.
  *
  * See docs/client-coroutines-design.md for the design of the coroutine level, and usecases/README.md for the
  * situation behind each use case.
@@ -57,12 +63,17 @@ int main(int argc, char** argv) {
 
   // The use case roster. The stub and the executor above must outlive every one of them.
   rg_demo::usecase::coro::WhatsHere whats_here{executor, *stub};
+  rg_demo::usecase::coro::TurnByTurnGuidance turn_by_turn_guidance{executor, *stub};
 
   // A known place, Patriots Path, as route_guide_reactor_usecases asks about.
   const auto patriots_path = rg_utils::MakePoint(407838351, -746143763);
+  // The route's stops, the features of the rectangle route_guide_reactor_usecases reads.
+  const auto rect = rg_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000);
 
   spdlog::info("-------------- Use case: what's here (GetFeature kPull, coroutine) --------------");
   whats_here.Start(patriots_path);
+  spdlog::info("-------------- Use case: turn-by-turn guidance (ListFeatures kPush kTurnByTurn, coroutine) -------");
+  turn_by_turn_guidance.Start(rect);
   EventLoop::Run();  // Scheduler component: Continuously processes queued events on main application thread
   spdlog::info("-------------- LEAVING APPLICATION --------------");
   return 0;

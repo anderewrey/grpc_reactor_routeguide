@@ -117,11 +117,15 @@ with a `_coro` suffix, and runs in an application of its own:
 | Coroutine variant | `route_guide_active_reactor_client_coro` | One scenario per awaitable |
 | Coroutine use case | `route_guide_reactor_usecases_coro` | One per use case with its code on the application thread |
 
-| Scenario                | Awaitable                          | Diff against                                    |
-|-------------------------|------------------------------------|-------------------------------------------------|
-| `get_feature_pull_coro` | `coro::Unary`: `co_await Finish()` | `get_feature_pull`, its callback parent         |
-| `whats_here_coro`       | `coro::Unary`: `co_await Finish()` | `whats_here`, its callback twin                 |
-| `whats_here_coro`       | `coro::Unary`: `co_await Finish()` | `get_feature_pull_coro`, the variant it clones  |
+| Scenario | Awaitable | Diff against |
+|----------|-----------|--------------|
+| `get_feature_pull_coro` | `coro::Unary`: `co_await Finish()` | `get_feature_pull`, its callback parent |
+| `list_features_pull_turn_by_turn_coro` | `coro::Reader`: `co_await Read()`, reading ahead | Its callback parent |
+| `list_features_push_turn_by_turn_coro` | `coro::Reader`: `co_await Read()`, reading when asked | Its callback parent |
+| `whats_here_coro` | `coro::Unary`: `co_await Finish()` | `whats_here`, its callback twin |
+| `whats_here_coro` | `coro::Unary`: `co_await Finish()` | `get_feature_pull_coro`, the variant it clones |
+| `turn_by_turn_guidance_coro` | `coro::Reader`: `co_await Read()`, reading when asked | Its callback twin |
+| `turn_by_turn_guidance_coro` | `coro::Reader`: `co_await Read()`, reading when asked | The push variant it clones |
 
 Against its parent, a coroutine scenario changes the style only: the same reactor configuration, consumed by one
 coroutine instead of handlers. Against its coroutine variant, a coroutine use case changes the use only.

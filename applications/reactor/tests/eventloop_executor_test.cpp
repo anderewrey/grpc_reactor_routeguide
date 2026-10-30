@@ -5,7 +5,7 @@
 
 /// Tests EventLoopExecutor, the executor of the applications in reactor_eventloop.h, against the real
 /// EventLoop: every resumption runs on the thread that runs the EventLoop handlers, in the order the handles
-/// were posted, after every event queued before them.
+/// were posted, after every event queued before them, and After() resumes a coroutine once its delay is over.
 ///
 /// EventLoop is a process-wide singleton that cannot restart after Halt(), and the executor is one per
 /// process, so the environment below starts both once for every test.
@@ -27,6 +27,7 @@
 namespace {
 
 using RpcReactor::EventConnection;
+using RpcReactor::coro::CurrentTask;
 using RpcReactor::coro::EventLoopExecutor;
 using RpcReactor::coro::Executor;
 using RpcReactor::coro::RootTasks;
@@ -145,6 +146,41 @@ TEST(CoroEventLoopTest, Executor_Post_ResumesInPostOrder_AfterEveryEventQueuedBe
   // OnLoop's own event queues after the three, so it sees them all handled.
   EXPECT_EQ(OnLoop([&] { return log; }), (std::vector<std::string>{"second", "marker", "first"}));
   EXPECT_EQ(OnLoop([&] { return roots.Size(); }), 0U);
+}
+
+/// What a coroutine saw of its wait.
+struct Waited {
+  std::chrono::steady_clock::duration elapsed{};
+  std::thread::id resumed_on;
+  CurrentTask::Id task = CurrentTask::kNone;
+};
+
+Task<> WaitFor(std::chrono::milliseconds delay, Waited* waited, std::promise<void>* done) {
+  const auto start = std::chrono::steady_clock::now();
+  co_await EventLoopExecutor::After(delay);
+  waited->elapsed = std::chrono::steady_clock::now() - start;
+  waited->resumed_on = std::this_thread::get_id();
+  waited->task = CurrentTask::Get();
+  done->set_value();
+}
+
+/// @test After() resumes the coroutine once its delay is over, not sooner, on the application thread, and under
+/// its own task number, which the loop does not run meanwhile.
+TEST(CoroEventLoopTest, After_ResumesOnTheApplicationThread_OnceTheDelayIsOver) {
+  constexpr auto kDelay = std::chrono::milliseconds(50);
+  RootTasks roots;
+  Waited waited;
+  std::promise<void> done;
+
+  const auto id = OnLoop([&] { return roots.Spawn(WaitFor(kDelay, &waited, &done)); });
+  EXPECT_EQ(OnLoop([] { return CurrentTask::Get(); }), CurrentTask::kNone);
+  ASSERT_EQ(done.get_future().wait_for(kTimeout), std::future_status::ready);
+  EXPECT_EQ(OnLoop([&] { return roots.Size(); }), 0U);
+
+  EXPECT_GE(waited.elapsed, kDelay);
+  EXPECT_EQ(waited.resumed_on, EventLoopEnvironment::app_thread);
+  EXPECT_NE(id, CurrentTask::kNone);
+  EXPECT_EQ(waited.task, id);
 }
 
 }  // namespace

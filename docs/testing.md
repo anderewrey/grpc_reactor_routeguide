@@ -111,6 +111,10 @@ Its executor counts the coroutines it is handed, so a test can tell whether `Fin
 the awaitable, between the done callback and `Finish()`, is tested on its own in coro_task_test.cpp, with no RPC and
 no timing. Both are described in [unary awaitable coverage](#unary-awaitable-coverage).
 
+[reactor_coro_reader_test.cpp][coro-reader-test] tests `coro::Reader`, the reader without a buffer, the same way. The
+re-armed hand-over inside it is tested on its own in coro_task_test.cpp. Both are described in
+[reader coverage](#reader-coverage).
+
 ### Callback application smoke test
 
 [callback_smoke_test.sh][callback-smoke-test] runs the callback example applications themselves,
@@ -433,6 +437,8 @@ EventLoop:
   threads run on the EventLoop thread, the tests' application thread.
 - `Executor_Post_ResumesInPostOrder_AfterEveryEventQueuedBefore` checks that resumptions follow the post order, and
   that an event queued between two posts runs between them.
+- `After_ResumesOnTheApplicationThread_OnceTheDelayIsOver` checks that `After()` resumes a coroutine no sooner than
+  its delay, on the EventLoop thread, and under its own task number, which the loop does not run meanwhile.
 
 Five mutants of `coro_task.h` were each caught:
 
@@ -485,6 +491,67 @@ Six mutants of `coro::Unary` were each caught:
 | Always suspending in `Finish()` | The hand-over test of an operation ended first |
 | Never posting the waiter | The hand-over test of a coroutine awaiting first, and every RPC test that suspends |
 | Not keeping the message the done callback hands over under `kPush` | Both `kPush` tests |
+
+### Reader coverage
+
+[reactor_coro_reader_test.cpp][coro-reader-test] runs `ListFeatures` through `coro::Reader`, under both deliveries.
+Its service streams numbered features, then finishes OK, fails after a given number, or holds the stream until the
+client cancels it, so a coroutine waiting in `Read()` is known to wait.
+
+| Test | Checks |
+| ------ | --------- |
+| `ListFeatures_PullReadsEveryMessage_ThenNothing_ThenFinishOk` | Each message owned, in order, on the loop, then none |
+| `ListFeatures_PushReadsEveryMessage_ThenNothing_ThenFinishOk` | The same under `kPush`, each message handed over |
+| `ListFeatures_EmptyStream_FirstReadGivesNothing` | An empty stream ends at the first `Read()` |
+| `ListFeatures_PullServerErrorMidStream_ReadsWhatCameThenFinishGivesTheError` | An error is a status |
+| `ListFeatures_PushServerErrorMidStream_ReadsWhatCameThenFinishGivesTheError` | The same, `kPush` |
+| `ListFeatures_PullReadsAhead_TheNextMessageArrivesDuringAPause` | Taking a message arms the next read at once |
+| `ListFeatures_PushReadsOnlyWhenAsked_NothingArrivesDuringAPause` | Nothing is read until the next `Read()` |
+| `ListFeatures_PullTryCancel_WaitingReadGivesNothing_FinishGivesCancelled` | A cancel ends a waiting `Read()` |
+| `ListFeatures_PushTryCancel_WaitingReadGivesNothing_FinishGivesCancelled` | The same under `kPush` |
+| `ListFeatures_FrameDestroyedWhileReadWaits_CancelsAndWaitsForOnDone` | Frees nothing under gRPC, and posts nothing |
+| `ListFeatures_FrameDestroyedWithAMessageHeld_ReleasesTheHold` | A held message no longer stalls the teardown |
+
+The two read-ahead tests tell the deliveries apart. The coroutine reads one message, pauses the loop thread for 200
+milliseconds, cancels, then reads what is left. Under `kPull`, the second message arrived during the pause, since
+taking the first one armed its read, so it is still given after the cancel. Under `kPush`, nothing was read during
+the pause, so the read the next `Read()` arms fails, and gives nothing. The pause is the only timing any reader test
+relies on, and only `kPull`'s outcome depends on it.
+
+The last test destroys a frame suspended outside `Read()`, while the reactor holds the stream for the message it gave
+under `kPush`. No read is armed then, and the hold suppresses `OnDone()`, so the destruction must release it. Otherwise
+it waits the 5 seconds of `kOnDoneTimeout`, then leaks the reactor, which the test's time limit and LeakSanitizer
+report.
+
+Whether a `Read()` suspends depends on whether its read ended first, which a test can only arrange by waiting on
+timing. So the re-armed hand-over is tested directly in [coro_task_test.cpp][coro-task-test]:
+
+| Test | Checks |
+| ------ | --------- |
+| `Rearmed_EachAwaitSuspends_AndEachEndPostsItOnce` | Three waits in a row each suspend, and each end posts once |
+| `Rearmed_EndedFirstThenAwaitedFirst_EachDecidedOnItsOwn` | Each wait decides whether to suspend on its own |
+| `CurrentTask_RearmedHandover_RestoresTheTaskAtEachResumption` | Each resumption runs the task, none between |
+
+A `Rearm()` that does nothing, leaving the hand-over ended, was caught by both re-armed hand-over tests: the second wait
+goes on without suspending, and its end posts nothing.
+
+Seven mutants of `coro::Reader` and `EventLoopExecutor::After()` were each caught, run in CI against the in-process
+server:
+
+| Mutant | Caught by |
+| ------ | --------- |
+| No `Rearm()` before `ResumeRead()`, under `kPush` | Both `kPush` tests that read the whole stream |
+| `Rearm()` after `GetResponse()` instead of before, under `kPull` | `PullReadsEveryMessage`, waiting for a lost end |
+| Arming the next read as the message is taken, under `kPush` | `PushReadsOnlyWhenAsked` |
+| The destructor not abandoning the read hand-over | `FrameDestroyedWhileReadWaits`, on the extra post and ASan |
+| `OnDone()` ending the read hand-over instead of its own | Every test that awaits `Finish()` |
+| The destructor destroying the reactor without waiting for `OnDone()` | `FrameDestroyedWithAMessageHeld`, under ASan |
+| `After()` not restoring the task number | `After_ResumesOnTheApplicationThread_OnceTheDelayIsOver` |
+
+The second mutant opens a window, between `GetResponse()` arming the next read and the late `Rearm()`, in which an end
+of read is lost. A test catches it only when a message arrives in that window, which no test can arrange without
+timing: it failed in the run above, and may pass in another. Re-arming first is what closes the window, and the
+re-armed hand-over tests show that an end which comes before the await is kept.
 
 ### Naming convention
 
@@ -732,6 +799,7 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [coro-task]: /applications/reactor/coro_task.h
 [reactor-eventloop]: /applications/reactor/reactor_eventloop.h
 [coro-unary-test]: /applications/reactor/tests/reactor_coro_unary_test.cpp
+[coro-reader-test]: /applications/reactor/tests/reactor_coro_reader_test.cpp
 [reactor-coro]: /applications/reactor/reactor_coro.h
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp
 [callback-smoke-test]: /applications/callback/tests/callback_smoke_test.sh
