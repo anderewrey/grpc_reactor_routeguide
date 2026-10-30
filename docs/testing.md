@@ -345,15 +345,23 @@ application tearing down would never release, and checks that `CancelAndWait()` 
 | `Unary_FromDoneCallback_ReturnsAtOnce` | The `OnDone()` the call is made from |
 | `Read_PullHeldMessageNeverPulled` | A message held under `kPull` and `kTurnByTurn` |
 | `Read_PushKeptMessageNeverResumed` | A message kept under `kPush` and `kPerMessage` |
+| `Read_MessageHeldAfterTheCancel` | A message kept after the cancel looked for holds, see below |
 | `Write_IdleWriteSideNeverClosed` | The write-flow hold of an idle writer |
 | `Write_ReactorPullsEndlessSource` | Nothing to release: a source that never runs dry |
 | `Bidi_HeldEchoNeverResumed` | A held echo, and the idle-window hold with no read armed |
 | `Bidi_KeptEchoNeverPulled` | The same under `kPull` and `kPerMessage` |
+| `Bidi_EchoHeldAfterTheCancel` | An echo held after the cancel looked for holds, see below |
 | `Bidi_ReactorPullsEndlessSource` | Nothing to release: a source that never runs dry |
 
 Four mutants of `CancelAndWait()` were each caught. Without the held-message release, the four held-message tests time
 out. With the writer cancelling only its context, the idle-writer test times out. Without the idle-window release, the
 two bidi held-message tests time out. Without the wait, AddressSanitizer reports the use-after-free in the first test.
+
+The two `...AfterTheCancel` tests land `CancelAndWait()` on a message whose `OnReadDone()` has begun but not yet
+published its hold. A test-local reactor, built as the RouteGuide one is, stops its first `OnReadDone(true)` at a gate
+before the base class sees the message. The test calls `CancelAndWait()` once, without waiting, so it finds nothing to
+release, then opens the gate: `read_ok` keeps the message, and the test waits for `OnDone()` through the done callback.
+A second `CancelAndWait()` would release the late hold itself and hide the bug.
 
 ### Latest-only coverage
 

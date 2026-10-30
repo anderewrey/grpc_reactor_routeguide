@@ -160,6 +160,83 @@ class ReactorTeardownTest : public RouteGuideTestFixtureBase<TeardownService> {
   }
 };
 
+/// Stops the first OnReadDone(true) on its gRPC thread before the reactor sees it, until the test opens it.
+/// This is how a test lands CancelAndWait() on a message that is received but not yet held.
+class ReadGate {
+ public:
+  /// Called by the reactor's OnReadDone() override, before the base class handles the read.
+  void Pass(bool ok) {
+    if (!ok || first_passed_.exchange(true)) return;
+    entered_.set_value();
+    open_.wait();
+  }
+  /// @return true once a gRPC thread waits at the gate
+  bool WaitEntered() { return entered_future_.wait_for(kTimeout) == std::future_status::ready; }
+  void Open() { opener_.set_value(); }
+
+ private:
+  std::atomic<bool> first_passed_{false};
+  std::promise<void> entered_;
+  std::future<void> entered_future_{entered_.get_future()};
+  std::promise<void> opener_;
+  std::shared_future<void> open_{opener_.get_future().share()};
+};
+
+/// ListFeatures under kPush and kPerMessage, built as routeguide::ListFeatures::ClientReactor is, with its
+/// read reactions passed through a ReadGate.
+class GatedListFeatures final
+    : public RpcReactor::Client::ActiveReadReactor<routeguide::Feature, Delivery::kPush> {
+  using Base = RpcReactor::Client::ActiveReadReactor<routeguide::Feature, Delivery::kPush>;
+
+ public:
+  GatedListFeatures(routeguide::RouteGuide::Stub& stub, std::unique_ptr<grpc::ClientContext> context,
+                    const routeguide::Rectangle& request, routeguide::ListFeatures::Callbacks<Delivery::kPush>&& cbs,
+                    ReadGate& gate)
+      : Base(std::move(context), std::move(cbs)), gate_(gate) {
+    stub.async()->ListFeatures(this->context_.get(), &request, this);
+    this->StartRead(&this->response_);
+    this->StartCall();
+  }
+
+ protected:
+  void OnReadDone(bool ok) override {
+    gate_.Pass(ok);
+    Base::OnReadDone(ok);
+  }
+
+ private:
+  ReadGate& gate_;
+};
+
+/// RouteChat under kPush, kApplicationPushes and kTurnByTurn, built as routeguide::RouteChat::ClientReactor
+/// is, with its read reactions passed through a ReadGate.
+class GatedRouteChat final
+    : public RpcReactor::Client::ActiveBidiReactor<routeguide::RouteNote, routeguide::RouteNote, Delivery::kPush,
+                                                   Submission::kApplicationPushes, ReadPacing::kTurnByTurn> {
+  using Base = RpcReactor::Client::ActiveBidiReactor<routeguide::RouteNote, routeguide::RouteNote, Delivery::kPush,
+                                                     Submission::kApplicationPushes, ReadPacing::kTurnByTurn>;
+
+ public:
+  using Callbacks = routeguide::RouteChat::Callbacks<Delivery::kPush, Submission::kApplicationPushes,
+                                                     ReadPacing::kTurnByTurn>;
+  GatedRouteChat(routeguide::RouteGuide::Stub& stub, std::unique_ptr<grpc::ClientContext> context,
+                 Callbacks&& cbs, ReadGate& gate)
+      : Base(std::move(context), std::move(cbs)), gate_(gate) {
+    stub.async()->RouteChat(this->context_.get(), this);
+    this->StartRead(&this->response_);
+    this->StartCall();
+  }
+
+ protected:
+  void OnReadDone(bool ok) override {
+    gate_.Pass(ok);
+    Base::OnReadDone(ok);
+  }
+
+ private:
+  ReadGate& gate_;
+};
+
 // =============================================================================
 // ActiveUnaryReactor
 // =============================================================================
@@ -241,6 +318,29 @@ TEST_F(ReactorTeardownTest, Read_PushKeptMessageNeverResumed) {
   EXPECT_TRUE(reactor->CancelAndWait(kTimeout)) << "The kept message's hold kept OnDone() from running";
 }
 
+/// @test A message received just as CancelAndWait() runs: its OnReadDone() has begun but not yet published
+/// the hold, so CancelAndWait() finds nothing to release, and read_ok then keeps the message. Nobody tearing
+/// down will resume it, so its hold must still be released once the callback returns.
+TEST_F(ReactorTeardownTest, Read_MessageHeldAfterTheCancel) {
+  ReadGate gate;
+  std::promise<void> done;
+  routeguide::ListFeatures::Callbacks<Delivery::kPush> cbs;
+  cbs.read_ok = [](auto*, std::unique_ptr<routeguide::Feature>) { return true; };  // kept, and never resumed
+  cbs.done = [&done](auto*, const grpc::Status&) { done.set_value(); };
+  const auto request = rg_utils::MakeRectangle(0, 0, 1, 1);
+  auto reactor = std::make_unique<GatedListFeatures>(*stub_, CreateClientContext(), request, std::move(cbs), gate);
+  ASSERT_TRUE(gate.WaitEntered());
+
+  // Once, and without waiting: a second call would release the hold the late message publishes.
+  EXPECT_FALSE(reactor->CancelAndWait(std::chrono::milliseconds(0))) << "OnDone() ran during a reaction";
+  gate.Open();
+
+  if (done.get_future().wait_for(kTimeout) != std::future_status::ready) {
+    (void)reactor.release();  // OnDone() never ran: destroying it would be the use-after-free
+    FAIL() << "The hold of the message read after the cancel kept OnDone() from running";
+  }
+}
+
 // =============================================================================
 // ActiveWriteReactor
 // =============================================================================
@@ -310,6 +410,28 @@ TEST_F(ReactorTeardownTest, Bidi_KeptEchoNeverPulled) {
   ASSERT_EQ(held.get_future().wait_for(kTimeout), std::future_status::ready);
 
   EXPECT_TRUE(reactor->CancelAndWait(kTimeout)) << "A read or idle-window hold kept OnDone() from running";
+}
+
+/// @test The same on a bidi reactor under kPush and kTurnByTurn, for an echo received as CancelAndWait()
+/// runs.
+TEST_F(ReactorTeardownTest, Bidi_EchoHeldAfterTheCancel) {
+  ReadGate gate;
+  std::promise<void> done;
+  GatedRouteChat::Callbacks cbs;
+  cbs.read_ok = [](Bidi*, std::unique_ptr<routeguide::RouteNote>) {};  // held, and never resumed
+  cbs.done = [&done](Bidi*, const grpc::Status&) { done.set_value(); };
+  auto reactor = std::make_unique<GatedRouteChat>(*stub_, CreateClientContext(), std::move(cbs), gate);
+  ASSERT_TRUE(reactor->SendRequest(rg_utils::MakeRouteNote("echo me", 1, 1)));
+  ASSERT_TRUE(gate.WaitEntered());
+
+  // Once, and without waiting: a second call would release the hold the late echo publishes.
+  EXPECT_FALSE(reactor->CancelAndWait(std::chrono::milliseconds(0))) << "OnDone() ran during a reaction";
+  gate.Open();
+
+  if (done.get_future().wait_for(kTimeout) != std::future_status::ready) {
+    (void)reactor.release();  // OnDone() never ran: destroying it would be the use-after-free
+    FAIL() << "The hold of the echo read after the cancel kept OnDone() from running";
+  }
 }
 
 /// @test A bidi reactor under kReactorPulls whose source never runs dry, its read side reading on.
