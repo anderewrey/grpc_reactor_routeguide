@@ -535,6 +535,24 @@ timing. So the re-armed hand-over is tested directly in [coro_task_test.cpp][cor
 A `Rearm()` that does nothing, leaving the hand-over ended, was caught by both re-armed hand-over tests: the second wait
 goes on without suspending, and its end posts nothing.
 
+Seven mutants of `coro::Reader` and `EventLoopExecutor::After()` were each caught, run in CI against the in-process
+server:
+
+| Mutant | Caught by |
+| ------ | --------- |
+| No `Rearm()` before `ResumeRead()`, under `kPush` | Both `kPush` tests that read the whole stream |
+| `Rearm()` after `GetResponse()` instead of before, under `kPull` | `PullReadsEveryMessage`, waiting for a lost end |
+| Arming the next read as the message is taken, under `kPush` | `PushReadsOnlyWhenAsked` |
+| The destructor not abandoning the read hand-over | `FrameDestroyedWhileReadWaits`, on the extra post and ASan |
+| `OnDone()` ending the read hand-over instead of its own | Every test that awaits `Finish()` |
+| The destructor destroying the reactor without waiting for `OnDone()` | `FrameDestroyedWithAMessageHeld`, under ASan |
+| `After()` not restoring the task number | `After_ResumesOnTheApplicationThread_OnceTheDelayIsOver` |
+
+The second mutant opens a window, between `GetResponse()` arming the next read and the late `Rearm()`, in which an end
+of read is lost. A test catches it only when a message arrives in that window, which no test can arrange without
+timing: it failed in the run above, and may pass in another. Re-arming first is what closes the window, and the
+re-armed hand-over tests show that an end which comes before the await is kept.
+
 ### Naming convention
 
 Test names have three underscore-separated segments: `RpcMethod_Scenario_Result`. The first and
