@@ -124,13 +124,45 @@ Both applications use the fixed port 50051, so the test holds a CTest `RESOURCE_
 server is killed at the end, so its exit-time checks (LeakSanitizer, coverage profiles) do not
 run.
 
+### Smoke matrix
+
+The [smoke matrix][smoke-matrix-cmake] runs every client application against every server application:
+`route_guide_sync_client`, `route_guide_callback_client`, the two reactor applications and their two coroutine twins,
+against `route_guide_sync_server` and `route_guide_callback_server`, twelve CTest entries named
+`smoke_matrix.<client>.<server>`, then one comparison, `smoke_matrix.compare`. Every job that runs `ctest` runs them,
+the sanitizer jobs included.
+
+Each cell, [smoke_matrix_cell.sh][smoke-matrix-cell], starts a fresh server, runs the client to its end, and fails on
+a non-zero exit status, a sanitizer report from either process, or a failed RPC status in the client's log. It then
+writes the client's digest: one line per logger, with the number of messages the scenario received, counted from its
+`read_ok` and `skipped` lines when it logs any, else from its `RESPONSE` lines. The RouteChat loggers are summed into
+one `chat` line. The server answers each note with the notes already left at its location, by any RPC, so what one
+chat scenario receives depends on how the concurrent ones interleave, while the sum does not, on a fresh server.
+
+[smoke_matrix_compare.sh][smoke-matrix-compare] then checks that:
+
+- each client's digest is the same against both servers;
+- each logger of a coroutine twin application, named after its callback parent's logger with a `.coro` suffix, such
+  as `GetFeature.pull.coro` for `GetFeature.pull`, counts what the parent's logger counts, against the same server.
+  Every `.coro` logger must find its parent, and every twin application must have one.
+
+A scenario added to an application, a coroutine twin included, needs nothing in the matrix. A new application is one
+line in `SMOKE_SERVERS` or `SMOKE_CLIENTS`, and a new twin application one more line in `SMOKE_TWINS`. One limit: a
+coroutine twin of a RouteChat scenario is summed into its application's `chat` line, which is compared across servers
+only, since the twin and the parent applications run different numbers of concurrent chats.
+
+The cells hold the same `RESOURCE_LOCK` on port 50051 as the callback smoke test, so they run one at a time. The
+servers are killed at the end of each cell, so their exit-time checks do not run, while every client runs to its end,
+LeakSanitizer and coverage profiles included.
+
 ### Reactor demo applications
 
 The two reactor applications, `route_guide_active_reactor_client` for the variants and
 `route_guide_reactor_usecases` for the use cases, and their coroutine twins, `route_guide_active_reactor_client_coro`
-and `route_guide_reactor_usecases_coro`, have no tests of their own, and no CTest entry
-runs them: their event loop never stops, so they run by hand, against `route_guide_callback_server`,
-as described in [developing.md](/docs/developing.md#run). Every scenario asserts which thread runs
+and `route_guide_reactor_usecases_coro`, have no unit tests of their own: the [smoke matrix](#smoke-matrix) runs them.
+Each scenario holds an `rg_demo::Activity` from its `Start()` until its last handler has destroyed its reactor, or its
+coroutine has ended, and `rg_demo::RunUntilDone()` halts the event loop once none is left, so each application exits
+on its own, every reactor destroyed after its `OnDone()`. Every scenario asserts which thread runs
 each callback and handler. Each use case also asserts what it claims, so a Debug run checks it every
 time. For example, `turn_by_turn_guidance` asserts that no stop is read before the previous one was
 confirmed, and `live_route_recording` that the summary counts every point the GPS produced. The
@@ -735,5 +767,8 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [reactor-coro]: /applications/reactor/reactor_coro.h
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp
 [callback-smoke-test]: /applications/callback/tests/callback_smoke_test.sh
+[smoke-matrix-cmake]: /applications/tests/CMakeLists.txt
+[smoke-matrix-cell]: /applications/tests/smoke_matrix_cell.sh
+[smoke-matrix-compare]: /applications/tests/smoke_matrix_compare.sh
 [test-fixture]: /applications/reactor/tests/route_guide_test_fixture.h
 [pacing-support]: /applications/reactor/tests/read_pacing_test_support.h
