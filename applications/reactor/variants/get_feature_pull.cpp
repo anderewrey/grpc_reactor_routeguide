@@ -48,12 +48,15 @@ void GetFeature::Start(routeguide::Point point) {
 
   // (Point 1.1) Create reactor
   reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), point, std::move(cbs));
+  activity_ = Activity::Begin();
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
 }
 
 void GetFeature::OnDone(const EventLoop::Event* event) {
   // (Point 3.5) ProceedEvent: OnDone
   assert(OnApplicationThread());
+  // Ends the scenario when this handler returns, after the reactor is destroyed.
+  const Activity activity{std::move(activity_)};
   // The event data is the reactor, which still holds the response
   const auto* reactor = static_cast<ClientReactor*>(event->getData());
   // The slot is populated by now: it is assigned on this same thread, and a second Start() is

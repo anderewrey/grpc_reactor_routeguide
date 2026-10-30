@@ -59,6 +59,7 @@ class GetFeature {
 
   routeguide::RouteGuide::Stub& stub_;
   std::unique_ptr<ClientReactor> reactor_;
+  Activity activity_;
   spdlog::logger& logger_{VariantLogger("GetFeature.pull")};
 
   // Declared last, so destruction deregisters the handler before anything it reaches is gone. The

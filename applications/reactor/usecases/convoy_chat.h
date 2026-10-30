@@ -87,6 +87,7 @@ class ConvoyChat {
 
   routeguide::RouteGuide::Stub& stub_;
   std::unique_ptr<ClientReactor> reactor_;
+  Activity activity_;
 
   // All of these belong to the application thread. The drivers take their next note from the script,
   // and the queue keeps the typed notes waiting for a write.

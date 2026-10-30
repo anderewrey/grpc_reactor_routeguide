@@ -14,6 +14,7 @@
 #include <cassert>
 #include <cstddef>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "applications/reactor/demo_support.h"
@@ -196,8 +197,11 @@ int main(int argc, char** argv) {
   // The use cases that wait on time, for a driver, a GPS or people typing, start in a second wave. Their
   // timers fire on the application thread, which the use cases above keep busy for a few hundred
   // milliseconds with their slow handlers, so started at once, their events would all fire late, and
-  // together. A timed event of its own starts them once that thread is free.
+  // together. A timed event of its own starts them once that thread is free. The wave is an activity of its
+  // own until then, so the loop does not halt should the first wave end before it starts.
+  rg_demo::Activity second_wave_pending = rg_demo::Activity::Begin();
   const RpcReactor::EventConnection second_wave{kSecondWave, [&](const EventLoop::Event*) {
+    const rg_demo::Activity started{std::move(second_wave_pending)};
     spdlog::info("-------------- Use case: turn-by-turn guidance (ListFeatures kPush kTurnByTurn) --------------");
     turn_by_turn_guidance.Start(rect);
     spdlog::info("-------------- Use case: live route recording (RecordRoute kPush kApplicationPushes) ------------");
@@ -206,7 +210,7 @@ int main(int argc, char** argv) {
     convoy_chat.Start(convoy_notes);
   }};
   EventLoop::TriggerEvent(kSecondWave, kSecondWaveMs);
-  EventLoop::Run();  // Scheduler component: Continuously processes queued events on main application thread
+  rg_demo::RunUntilDone();  // Scheduler component: processes queued events on this thread until every scenario ends
   spdlog::info("-------------- LEAVING APPLICATION --------------");
   return 0;
 }

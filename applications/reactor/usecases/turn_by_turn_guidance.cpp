@@ -75,6 +75,7 @@ void TurnByTurnGuidance::Start(routeguide::Rectangle rect) {
 
   // (Point 1.1) Create reactor
   reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), rect, std::move(cbs));
+  activity_ = Activity::Begin();
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
 }
 
@@ -125,6 +126,8 @@ void TurnByTurnGuidance::OnReadNOk(const EventLoop::Event* event) {
 void TurnByTurnGuidance::OnDone(const EventLoop::Event* event) {
   // (Point 4.9) ProceedEvent: OnDone
   assert(OnApplicationThread());
+  // Ends the scenario when this handler returns, after the reactor is destroyed.
+  const Activity activity{std::move(activity_)};
   const auto* reactor = static_cast<ClientReactor*>(event->getData());
   assert(reactor == reactor_.get());
   // (Point 4.10) update application with status

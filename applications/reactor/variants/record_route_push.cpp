@@ -61,6 +61,7 @@ void RecordRoute::Start(std::vector<routeguide::Point> points) {
 
   // (Point 1.1) Create reactor
   reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), std::move(cbs));
+  activity_ = Activity::Begin();
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
   SendNextPoint();
 }
@@ -82,6 +83,8 @@ void RecordRoute::OnWriteDone(const EventLoop::Event* event) {
 void RecordRoute::OnDone(const EventLoop::Event* event) {
   // ProceedEvent: OnDone
   assert(OnApplicationThread());
+  // Ends the scenario when this handler returns, after the reactor is destroyed.
+  const Activity activity{std::move(activity_)};
   // The event data is the response, not the reactor: reclaim the released ownership
   const std::unique_ptr<routeguide::RecordRoute::ResponseT> response{
       static_cast<routeguide::RecordRoute::ResponseT*>(event->getData())};
