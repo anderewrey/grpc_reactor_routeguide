@@ -248,6 +248,7 @@ class Reader {
   /// Cancels an RPC still in flight, and destroys the reactor once its OnDone() has run. A message the
   /// reactor still holds is released, without arming a read.
   ~Reader() {
+    read_.Abandon();
     done_.Abandon();
     DestroyAfterOnDone(reactor_, kOnDoneTimeout);
   }
@@ -337,8 +338,7 @@ class Reader {
       if (reactor_->GetResponse(response)) return MessageT{std::move(response)};
     } else {
       if (pushed_) {
-        read_.Rearm();
-        if (!reactor_->ResumeRead()) ended_ = true;
+        held_ = true;
         return std::move(pushed_);
       }
     }
