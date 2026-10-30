@@ -23,7 +23,9 @@ Checks: >
   -portability-avoid-pragma-once,
   -readability-braces-around-statements,
   -performance-enum-size,
-  -readability-static-accessed-through-instance
+  -readability-static-accessed-through-instance,
+  -portability-template-virtual-member-function,
+  -readability-trailing-comma
 # reactor_client.h's protected reactor members are intentional (see architecture.md), not a defect.
 # misc-include-cleaner is disabled: it flagged umbrella-header symbol use as 63 of 99 diagnostics.
 # misc-override-with-different-visibility is disabled: the Active*Reactor classes' gRPC overrides are
@@ -45,6 +47,16 @@ Checks: >
 # readability-convert-member-functions-to-static asks, and the compiler calls them through an
 # object at every co_await. The check reports those calls, which appear nowhere in the source, at
 # the co_await's line: 27 reports in coro_task_test.cpp alone, under clang-tidy 21, 22 and 23.
+# portability-template-virtual-member-function is disabled: it guards against compilers, such as
+# MSVC, that instantiate every virtual member of a class template, and this project builds only with
+# GCC and Clang. It reports gRPC's generated service templates in route_guide.grpc.pb.h, once per
+# file that instantiates them, even with ExcludeHeaderFilterRegex below.
+# readability-trailing-comma (clang-tidy 23) is disabled: it asks for a comma after the last element
+# of a multi-line braced init, and here that element is often a lambda, as in
+# EventConnection connection{kRun, [&](...) {...}}, where a comma after its closing brace reads as a
+# stray token.
+# applications/reactor/tests/.clang-tidy also disables readability-function-cognitive-complexity
+# there, for gtest bodies: see that file.
 # clang-analyzer-* and bugprone-* both target similar defect classes (e.g. use-after-free); kept as
 # occasional double-reporting, not disabled, since no concrete pair of checks is confirmed to
 # always co-fire on the same code.

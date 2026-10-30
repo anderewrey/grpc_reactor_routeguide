@@ -631,7 +631,7 @@ annotates diagnostics without failing the job, and a `workflow_dispatch` run fai
 diagnostic for a deliberate, whole-repo pass. clang-tidy only analyses `applications/`; the
 supporting `common/`, `protobuf_utils/` and `rg_service/` directories are left out. See
 `static-analysis.yml` for why it is a separate workflow, and `.clang-tidy` for clang-tidy's check
-selection.
+selection; `applications/reactor/tests/.clang-tidy` adjusts it for the gtest bodies there.
 
 ## Adding new tests
 
