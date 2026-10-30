@@ -16,6 +16,8 @@
 
 #include "applications/reactor/reactor_eventloop.h"
 #include "applications/reactor/variants/get_feature_pull_coro.h"
+#include "applications/reactor/variants/list_features_pull_turn_by_turn_coro.h"
+#include "applications/reactor/variants/list_features_push_turn_by_turn_coro.h"
 #include "applications/reactor/demo_support.h"
 #include "rg_service/rg_db.h"
 #include "rg_service/rg_utils.h"
@@ -35,15 +37,22 @@
  * - EventLoop = Scheduler + Activation Queue, unchanged: coro::EventLoopExecutor posts each coroutine to resume
  *   as an event, and its one handler resumes it on the application thread
  * - A scenario's coroutine = Servant, as one function instead of one handler per event
- * - The awaited Finish() = Future
+ * - The awaited Read() and Finish() = Future
  *
  * - rg_demo::pull::coro::GetFeature, GetFeature under kPull through coro::Unary: one request, and the coroutine
  *   resumes with the status and the response once OnDone() has run.
+ * - rg_demo::pull::turn_by_turn::coro::ListFeatures, ListFeatures under kPull and kTurnByTurn through
+ *   coro::Reader: each Read() swaps the next message out of the reactor, which arms the following read at once.
+ * - rg_demo::push::turn_by_turn::coro::ListFeatures, ListFeatures under kPush and kTurnByTurn through
+ *   coro::Reader: each Read() takes the message handed over, and only the next Read() arms the following read.
  *
  * Reading the output: each scenario logs "rpc started" when its coroutine has sent the request, then, once
- * resumed, the RESPONSE line and "rpc ended". The thread id in the log pattern shows every line on the
- * application thread, where the callback variant also logs a gRPC-thread line: here no scenario code runs
- * there.
+ * resumed, its RESPONSE lines and "rpc ended". The thread id in the log pattern shows every line on the
+ * application thread, where the callback variants also log gRPC-thread lines, such as read_ok: here no
+ * scenario code runs there. A reader logs "stream ended after N messages", the total its callback parent
+ * counts with its RESPONSE lines. Under kPush, each "resumed  | #k" line comes before RESPONSE #k+1, since
+ * nothing is read until the coroutine asks; under kPull no such line exists, as the read is armed when the
+ * message is taken.
  *
  * See docs/client-coroutines-design.md for the design of the coroutine level.
  ************************/
@@ -66,11 +75,19 @@ int main(int argc, char** argv) {
 
   // The scenario roster. The stub and the executor above must outlive every one of them.
   rg_demo::pull::coro::GetFeature get_feature_pull{executor, *stub};
+  rg_demo::pull::turn_by_turn::coro::ListFeatures list_features_pull_turn_by_turn{executor, *stub};
+  rg_demo::push::turn_by_turn::coro::ListFeatures list_features_push_turn_by_turn{executor, *stub};
 
+  // The same input as route_guide_active_reactor_client, so each run compares with its parent's.
+  const auto rect = rg_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000);
   const auto point = rg_utils::GetRandomPoint(feature_list);
 
   // Every scenario is started before the loop runs, so all of the RPCs are in flight together. Nothing below
   // blocks: each Start() returns at its coroutine's first suspension.
+  spdlog::info("-------------- ListFeatures kPull kTurnByTurn, coroutine --------------");
+  list_features_pull_turn_by_turn.Start(rect);
+  spdlog::info("-------------- ListFeatures kPush kTurnByTurn, coroutine --------------");
+  list_features_push_turn_by_turn.Start(rect);
   spdlog::info("-------------- GetFeature kPull, coroutine --------------");
   get_feature_pull.Start(point);
   EventLoop::Run();  // Scheduler component: Continuously processes queued events on main application thread

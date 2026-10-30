@@ -119,6 +119,10 @@ add_executable(route_guide_active_reactor_client_coro
     demo_support.cpp
     variants/get_feature_pull_coro.h
     variants/get_feature_pull_coro.cpp
+    variants/list_features_pull_turn_by_turn_coro.h
+    variants/list_features_pull_turn_by_turn_coro.cpp
+    variants/list_features_push_turn_by_turn_coro.h
+    variants/list_features_push_turn_by_turn_coro.cpp
 )
 
 target_include_directories(route_guide_active_reactor_client_coro

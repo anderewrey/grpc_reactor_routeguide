@@ -94,7 +94,8 @@ class CurrentTask {
 /// It also carries the current task across the suspension, for the logs: Suspend() records it, and clears it
 /// when the coroutine suspends, since the thread goes back to code outside the task. Resumed() restores it.
 ///
-/// Single-shot: once ended, it stays ended.
+/// Once ended, it stays ended until Rearm() starts the next operation, so one hand-over serves every wait of
+/// a coroutine that awaits operations one after the other, such as each read of a stream.
 class ResumeHandover {
  public:
   /// Called by the awaitable's await_suspend(), on the application thread.
@@ -123,6 +124,14 @@ class ResumeHandover {
   /// Called by the awaitable's destructor, before it cancels its operation: an end that comes from then on
   /// posts nothing, since the coroutine it would resume is being destroyed.
   void Abandon() noexcept { slot_.exchange(kEnded, std::memory_order_acq_rel); }
+
+  /// Starts the next operation, on the application thread, once the last one has ended and its coroutine
+  /// has resumed. Called before whatever starts that operation, never after: the operation can end on
+  /// another thread as soon as it starts, and an end that finds the hand-over still ended posts nothing.
+  void Rearm() noexcept {
+    [[maybe_unused]] void* const last = slot_.exchange(nullptr, std::memory_order_acq_rel);
+    assert(last == kEnded && "Rearm() follows the end of the last operation");
+  }
 
  private:
   // Any address no coroutine frame can have.

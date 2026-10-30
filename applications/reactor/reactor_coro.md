@@ -7,8 +7,9 @@ exists, and why each choice was made, is in the [design draft](/docs/client-coro
 
 > [!NOTE]
 > The level is built step by step, as the design draft's
-> [suggested order](/docs/client-coroutines-design.md#suggested-order) lists. Today it has the task core and the unary
-> awaitable. The readers, the writers and the bidirectional join come next, and each adds its section here.
+> [suggested order](/docs/client-coroutines-design.md#suggested-order) lists. Today it has the task core, the unary
+> awaitable and the reader without a buffer. The buffered readers, the writers and the bidirectional join come next,
+> and each adds its section here.
 
 ## The words you need
 
@@ -32,7 +33,7 @@ The level has two headers of its own, and shares the EventLoop adapter with the 
 | Header | Knows | Holds |
 |--------|-------|-------|
 | [coro_task.h](/applications/reactor/coro_task.h) | C++20 coroutines only | `Task`, `RootTasks`, `Executor`, `ResumeHandover`, `CurrentTask` |
-| [reactor_coro.h](/applications/reactor/reactor_coro.h) | The generic reactors, the task core | `Unary`, `UnaryResult`, `DestroyAfterOnDone()` |
+| [reactor_coro.h](/applications/reactor/reactor_coro.h) | Generic reactors, task core | `Unary`, `UnaryResult`, `Reader`, `DestroyAfterOnDone()` |
 | [reactor_eventloop.h](/applications/reactor/reactor_eventloop.h) | EventLoop | `EventLoopExecutor`, beside the callback level's `EventConnection` |
 
 Everything is in the `RpcReactor::coro` namespace. A helper used by one class only is a private member of that class,
@@ -74,7 +75,7 @@ The coroutine level changes how the application consumes a reactor, and nothing 
 | Proxy | A scenario's `Start()` creates the reactor | A scenario's `Start()` spawns its coroutine |
 | Method Request | The reactor | The same reactor, inside an awaitable |
 | Scheduler, Activation Queue | EventLoop | EventLoop, which `EventLoopExecutor` posts to |
-| Future | `Status()` and `GetResponse()`, queried by a handler | The awaitable: `co_await Finish()` |
+| Future | `Status()` and `GetResponse()`, queried by a handler | The awaitable: `co_await Read()` or `Finish()` |
 | Servant | One handler per event | One coroutine per RPC |
 
 ## Rules a coroutine follows
@@ -82,8 +83,9 @@ The coroutine level changes how the application consumes a reactor, and nothing 
 - **Arguments by value.** A coroutine outlives the call that started it, so a reference argument dangles once it
   suspends. clang-tidy enforces it with `cppcoreguidelines-avoid-reference-coroutine-parameters` and
   `cppcoreguidelines-avoid-capturing-lambda-coroutines`.
-- **One awaiter.** A `Task` is awaited once at most, and a `Unary`'s `Finish()` exactly once. Asserts in
-  `Task::operator co_await()` and `Unary::Finish()` enforce both.
+- **One awaiter.** A `Task` is awaited once at most, and a `Unary`'s or a `Reader`'s `Finish()` exactly once. Asserts
+  in `Task::operator co_await()` and in each `Finish()` enforce it. A `Reader`'s `Read()` is awaited one at a time,
+  which the shape of the code enforces: a coroutine cannot await a second one before the first resumes it.
 - **Errors are values.** A failed RPC is its `grpc::Status`, never an exception. An exception that escapes a coroutine
   body is a bug: it is logged, and the process terminates.
 - **Frames end on the application thread.** `RootTasks` spawns, resumes and destroys its tasks on the application
@@ -156,8 +158,8 @@ every handle twice. EventLoop's queue is FIFO, so a coroutine's resumptions run 
 ### `ResumeHandover`
 
 The hand-over between the thread that ends an operation and the coroutine awaiting it, which every awaitable uses.
-Lock-free, and single-shot: once ended, it stays ended. A reader that waits for several messages will need one per
-wait, or a re-armable variant.
+Lock-free. Once ended, it stays ended until `Rearm()` starts the next operation, so one hand-over serves a coroutine
+that awaits operations one after the other, such as each read of a stream.
 
 | Member | Called by | Use |
 |--------|-----------|-----|
@@ -165,6 +167,12 @@ wait, or a re-armable variant.
 | `Complete(executor)` | Whatever ends the operation, on any thread | Posts the waiting coroutine, if any |
 | `Abandon()` | The awaitable's destructor | Makes a later `Complete()` post nothing |
 | `Resumed()` | The awaitable's `await_resume()`, first | Restores the task number for the logs |
+| `Rearm()` | The awaitable, before it starts the next operation | Starts afresh, once the last operation has ended |
+
+`Rearm()` comes before whatever starts the next operation, never after: the operation can end on another thread as
+soon as it starts, and an end that finds the hand-over still ended posts nothing, which leaves the coroutine suspended
+for good. An assert checks that the last operation has ended. Each `Suspend()` records the task again, so each
+resumption restores it.
 
 ### `CurrentTask`
 
@@ -191,6 +199,46 @@ and `Delivery` decides how:
 | `kPull` | `ResponseT` | Swapped out of the reactor by `GetResponse()`, empty unless the status is OK |
 | `kPush` | `std::unique_ptr<ResponseT>` | Handed over by the done callback, never null, empty on a failed RPC |
 
+### `Reader<ReactorT>`
+
+A server-streaming RPC a coroutine reads one message at a time, with no buffer. `ReactorT` is a service-specific
+reactor deriving from `ActiveReadReactor` under `ReadPacing::kTurnByTurn`, such as
+`routeguide::ListFeatures::ClientReactor<Delivery::kPush, ReadPacing::kTurnByTurn>`. Another pacing does not compile.
+
+```cpp
+coro::Reader<routeguide::ListFeatures::ClientReactor<Delivery::kPush, ReadPacing::kTurnByTurn>> reader{
+    executor, stub, rect};
+while (auto feature = co_await reader.Read()) Show(*feature);
+const grpc::Status status = co_await reader.Finish();
+```
+
+| Member | Use |
+|--------|-----|
+| `Reader(executor, stub, request, context)` | Sends the request, and arms the first read. The context is optional |
+| `co_await Read()` | Resumes with the next message, owned, or with nothing once the stream has ended |
+| `co_await Finish()` | Once `Read()` has given nothing: resumes once the RPC has ended, with its `grpc::Status` |
+| `TryCancel()` | Cancels an RPC still in flight: `Read()` then gives nothing, and `Finish()` gives `CANCELLED` |
+| Destructor | Cancels an RPC in flight, releases a message still held, destroys the reactor after `OnDone()` |
+
+Non-copyable and non-movable, since the reactor's callbacks refer to it. A `Read()` awaited again after the end gives
+nothing at once. `Finish()` asserts that `Read()` has given nothing: while the reactor holds a message, the RPC cannot
+end. To stop early, call `TryCancel()`, then read until `Read()` gives nothing.
+
+Every message is owned by the coroutine, and `Delivery` decides how, and when the next one is read:
+
+| Delivery | `Read()` gives | How it becomes owned | Next read armed |
+|----------|----------------|----------------------|-----------------|
+| `kPull` | `std::optional<ResponseT>` | Swapped out of the reactor by `GetResponse()` | At once, by `GetResponse()` |
+| `kPush` | `std::unique_ptr<ResponseT>` | Handed over by the read callback | By the next `Read()`: `ResumeRead()` |
+
+So under `kPull` the next message can arrive while the coroutine works on this one, and under `kPush` nothing is read
+until the coroutine asks for it, which is what a reader that waits for a person needs.
+
+Inside, the reader has two hand-overs. One is re-armed for each read, and ended by `read_ok` or `read_nok`. The other
+is ended by `OnDone()`, which can come before the coroutine has resumed from its last read, so it cannot share the
+first one. The read hand-over is re-armed before the call that arms the next read: in `Read()` under `kPush`, before
+`ResumeRead()`, and as the message is taken under `kPull`, before `GetResponse()`.
+
 ### `DestroyAfterOnDone(reactor, timeout)`
 
 Cancels a reactor's RPC, and destroys the reactor once its `OnDone()` has run. Should `OnDone()` not come within the
@@ -201,7 +249,7 @@ timeout, it leaks the reactor rather than freeing it under gRPC, and returns fal
 
 - [Coroutine scenarios](/applications/reactor/variants/README.md#coroutine-scenarios) lists every coroutine scenario,
   and the two diffs each has.
-- [Coroutine core coverage](/docs/testing.md#coroutine-core-coverage) and
-  [unary awaitable coverage](/docs/testing.md#unary-awaitable-coverage) list what each test proves, and the mutants
-  each caught.
+- [Coroutine core coverage](/docs/testing.md#coroutine-core-coverage),
+  [unary awaitable coverage](/docs/testing.md#unary-awaitable-coverage) and
+  [reader coverage](/docs/testing.md#reader-coverage) list what each test proves, and the mutants each caught.
 - [The design draft](/docs/client-coroutines-design.md) explains why each choice was made.
