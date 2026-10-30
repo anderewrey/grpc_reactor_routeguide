@@ -47,16 +47,17 @@ bool OnApplicationThread() {
   return application_thread == std::this_thread::get_id();
 }
 
-void Activity::Begin() {
+Activity Activity::Begin() {
   assert(OnApplicationThread());
-  if (active_) return;
-  active_ = true;
+  Activity activity;
+  activity.active_ = true;
   ++activities_in_progress;
+  return activity;
 }
 
-void Activity::End() {
-  assert(OnApplicationThread());
+void Activity::End() noexcept {
   if (!active_) return;
+  assert(OnApplicationThread());
   active_ = false;
   if (--activities_in_progress == 0 && running_until_done) EventLoop::Halt();
 }

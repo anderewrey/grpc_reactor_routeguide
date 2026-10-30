@@ -88,7 +88,7 @@ void OfflineMapDownload::Start(routeguide::Rectangle rect) {
 
   // (Point 1.1) Create reactor
   reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), rect, std::move(cbs));
-  activity_.Begin();
+  activity_ = Activity::Begin();
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
 }
 
@@ -137,6 +137,8 @@ void OfflineMapDownload::OnReadNOk(const EventLoop::Event* event) {
 void OfflineMapDownload::OnDone(const EventLoop::Event* event) {
   // (Point 4.9) ProceedEvent: OnDone
   assert(OnApplicationThread());
+  // Ends the scenario when this handler returns, after the reactor is destroyed.
+  const Activity activity{std::move(activity_)};
   const auto* reactor = static_cast<ClientReactor*>(event->getData());
   assert(reactor == reactor_.get());
   // (Point 4.10) update application with status. The handler of the last place runs before this one, and
@@ -147,7 +149,6 @@ void OfflineMapDownload::OnDone(const EventLoop::Event* event) {
   logger_.info("         | reactor[{}] ended", fmt::ptr(reactor));
   // (Point 4.11) Destroy reactor
   reactor_.reset();
-  activity_.End();
 }
 
 }  // namespace rg_demo::usecase

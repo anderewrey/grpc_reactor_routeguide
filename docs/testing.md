@@ -162,9 +162,18 @@ LeakSanitizer and coverage profiles included.
 The two reactor applications, `route_guide_active_reactor_client` for the variants and
 `route_guide_reactor_usecases` for the use cases, and their coroutine twins, `route_guide_active_reactor_client_coro`
 and `route_guide_reactor_usecases_coro`, have no unit tests of their own: the [smoke matrix](#smoke-matrix) runs them.
-Each scenario holds an `rg_demo::Activity` from its `Start()` until its last handler has destroyed its reactor, or its
-coroutine has ended, and `rg_demo::RunUntilDone()` halts the event loop once none is left, so each application exits
-on its own, every reactor destroyed after its `OnDone()`. Every scenario asserts which thread runs
+Each application exits on its own: `rg_demo::RunUntilDone()` halts the event loop once no `rg_demo::Activity` is
+left, every reactor destroyed after its `OnDone()`. An `Activity` is a move-only token, and the scenario hands the one
+`Activity::Begin()` returns in `Start()` to whatever owns its end, so it ends on every path out:
+
+- a callback scenario keeps it in a member, and its last handler moves it into a local, `const Activity
+  activity{std::move(activity_)};`, which ends the scenario when the handler returns, after the reactor is destroyed;
+- a coroutine scenario passes it to its coroutine as a by-value parameter, `Run(point, Activity::Begin())`, which the
+  frame holds until the coroutine ends, so it needs no line at the end at all.
+
+A scenario that never takes its `Activity` back keeps the application running until CTest's 300 s timeout, and one
+that never begins it lets the application halt before it ends, which `smoke_matrix.compare` reports as short counts.
+Every scenario asserts which thread runs
 each callback and handler. Each use case also asserts what it claims, so a Debug run checks it every
 time. For example, `turn_by_turn_guidance` asserts that no stop is read before the previous one was
 confirmed, and `live_route_recording` that the summary counts every point the GPS produced. The

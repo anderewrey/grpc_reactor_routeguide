@@ -14,6 +14,7 @@
 #include <cassert>
 #include <cstddef>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "applications/reactor/demo_support.h"
@@ -198,16 +199,15 @@ int main(int argc, char** argv) {
   // milliseconds with their slow handlers, so started at once, their events would all fire late, and
   // together. A timed event of its own starts them once that thread is free. The wave is an activity of its
   // own until then, so the loop does not halt should the first wave end before it starts.
-  rg_demo::Activity second_wave_pending;
-  second_wave_pending.Begin();
+  rg_demo::Activity second_wave_pending = rg_demo::Activity::Begin();
   const RpcReactor::EventConnection second_wave{kSecondWave, [&](const EventLoop::Event*) {
+    const rg_demo::Activity started{std::move(second_wave_pending)};
     spdlog::info("-------------- Use case: turn-by-turn guidance (ListFeatures kPush kTurnByTurn) --------------");
     turn_by_turn_guidance.Start(rect);
     spdlog::info("-------------- Use case: live route recording (RecordRoute kPush kApplicationPushes) ------------");
     live_route_recording.Start(drive);
     spdlog::info("-------------- Use case: convoy chat (RouteChat kPush kApplicationPushes kContinuous) -----------");
     convoy_chat.Start(convoy_notes);
-    second_wave_pending.End();
   }};
   EventLoop::TriggerEvent(kSecondWave, kSecondWaveMs);
   rg_demo::RunUntilDone();  // Scheduler component: processes queued events on this thread until every scenario ends

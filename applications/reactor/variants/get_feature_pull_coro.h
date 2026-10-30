@@ -48,11 +48,11 @@ class GetFeature {
  private:
   /// Servant component, as one function: sends the request, awaits the end of the RPC, and logs the answer.
   /// @param point to look up, taken by value since the coroutine outlives the call to Start()
-  RpcReactor::coro::Task<> Run(routeguide::Point point);
+  /// @param activity the scenario in progress, which the frame holds until the coroutine ends
+  RpcReactor::coro::Task<> Run(routeguide::Point point, Activity activity);
 
   RpcReactor::coro::Executor& executor_;
   routeguide::RouteGuide::Stub& stub_;
-  Activity activity_;
   spdlog::logger& logger_{VariantLogger("GetFeature.pull.coro")};
 
   // Declared last, so a coroutine still suspended is destroyed before anything it reaches is gone.

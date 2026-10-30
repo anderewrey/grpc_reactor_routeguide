@@ -47,13 +47,15 @@ void GetFeature::Start(routeguide::Point point) {
 
   // (Point 1.1) Create reactor
   reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), point, std::move(cbs));
-  activity_.Begin();
+  activity_ = Activity::Begin();
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
 }
 
 void GetFeature::OnDone(const EventLoop::Event* event) {
   // (Point 3.5) ProceedEvent: OnDone
   assert(OnApplicationThread());
+  // Ends the scenario when this handler returns, after the reactor is destroyed.
+  const Activity activity{std::move(activity_)};
   // The event data is the response, not the reactor: reclaim the released ownership
   const std::unique_ptr<routeguide::GetFeature::ResponseT> response{
       static_cast<routeguide::GetFeature::ResponseT*>(event->getData())};
@@ -70,7 +72,6 @@ void GetFeature::OnDone(const EventLoop::Event* event) {
   logger_.info("         | reactor[{}] ended", fmt::ptr(reactor_.get()));
   // (Point 3.7) Destroy reactor
   reactor_.reset();
-  activity_.End();
 }
 
 }  // namespace rg_demo::push

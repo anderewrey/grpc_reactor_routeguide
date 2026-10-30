@@ -61,7 +61,7 @@ void RecordRoute::Start(std::vector<routeguide::Point> points) {
 
   // (Point 1.1) Create reactor
   reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), std::move(cbs));
-  activity_.Begin();
+  activity_ = Activity::Begin();
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
   SendNextPoint();
 }
@@ -83,6 +83,8 @@ void RecordRoute::OnWriteDone(const EventLoop::Event* event) {
 void RecordRoute::OnDone(const EventLoop::Event* event) {
   // ProceedEvent: OnDone
   assert(OnApplicationThread());
+  // Ends the scenario when this handler returns, after the reactor is destroyed.
+  const Activity activity{std::move(activity_)};
   // The event data is the reactor, which still holds the response
   const auto* reactor = static_cast<ClientReactor*>(event->getData());
   // The slot is populated by now, for the same reason as the GetFeature scenarios.
@@ -98,7 +100,6 @@ void RecordRoute::OnDone(const EventLoop::Event* event) {
   }
   logger_.info("         | reactor[{}] ended", fmt::ptr(reactor));
   reactor_.reset();
-  activity_.End();
 }
 
 void RecordRoute::SendNextPoint() {
