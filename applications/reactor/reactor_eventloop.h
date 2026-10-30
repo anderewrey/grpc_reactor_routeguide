@@ -125,7 +125,7 @@ class EventLoopExecutor final : public Executor {
         EventLoop::TriggerEvent(kResumeEvent, static_cast<std::size_t>(delay_.count()), waiter.address());
         return true;
       }
-      static void await_resume() noexcept {}
+      void await_resume() const noexcept { handover_.Resumed(); }
 
      private:
       std::chrono::milliseconds delay_;

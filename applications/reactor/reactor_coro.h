@@ -322,6 +322,7 @@ class Reader {
   void ArmNextRead() {
     if (!held_) return;
     held_ = false;
+    read_.Rearm();
     // false once the stream is over, so no read is armed, and none will end
     if (!reactor_->ResumeRead()) ended_ = true;
   }
@@ -332,10 +333,9 @@ class Reader {
     if (ended_) return MessageT{};  // await_ready() said so: no suspension to resume from
     read_.Resumed();
     if constexpr (kPull) {
-      ResponseT response;
-      const bool got = reactor_->GetResponse(response);
       read_.Rearm();
-      if (got) return MessageT{std::move(response)};
+      ResponseT response;
+      if (reactor_->GetResponse(response)) return MessageT{std::move(response)};
     } else {
       if (pushed_) {
         held_ = true;
