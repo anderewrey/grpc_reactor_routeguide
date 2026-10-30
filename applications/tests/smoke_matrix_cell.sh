@@ -11,9 +11,11 @@
 #
 # The digest has one line per logger, "<logger> <messages>", where messages counts the messages the scenario
 # received: its read_ok and skipped lines when it logs any, which the callback reactors log from the gRPC thread
-# for every message, else its RESPONSE lines. The RouteChat loggers are summed into one "chat" line: the reference
-# server answers each note with the notes already left at its location, by any RPC, so the replies one chat
-# scenario gets depend on how the concurrent ones interleave, while their sum does not, on a fresh server.
+# for every message, else its RESPONSE lines. The RouteChat loggers make one "chat" line instead. The servers answer
+# each note with the notes already left at its location, by any RPC, and route_guide_callback_server takes those
+# and stores the new note under two separate locks, so concurrent chats can miss each other's notes there: what
+# they receive depends on how they interleave. With one chat scenario, the line counts its replies, "chat <n>";
+# with several, only how many ran, "chat <n> scenarios".
 #
 # Usage: smoke_matrix_cell.sh <server> <client> <digest>
 
@@ -87,13 +89,17 @@ check_sanitizers "$work/server.log"
 awk -F '\\]\\[' -v chat="$chat_loggers" '
   NF > 2 {
     logger = $2
-    if (logger ~ chat) logger = "chat"
+    if (logger ~ chat) chats[logger] = 1
     if ($0 ~ /(read_ok|skipped)  \|/) received[logger]++
     else if ($0 ~ /RESPONSE \|/) responses[logger]++
   }
   END {
-    for (l in received) print l, received[l]
-    for (l in responses) if (!(l in received)) print l, responses[l]
+    n = 0
+    for (l in chats) n++
+    for (l in received) if (!(l in chats)) print l, received[l]
+    for (l in responses) if (!(l in received) && !(l in chats)) print l, responses[l]
+    if (n == 1) for (l in chats) print "chat", (l in received) ? received[l] : responses[l] + 0
+    if (n > 1) print "chat", n, "scenarios"
   }' "$log" | LC_ALL=C sort > "$work/digest"
 [ -s "$work/digest" ] || fail "no scenario received anything"
 mv "$work/digest" "$digest"

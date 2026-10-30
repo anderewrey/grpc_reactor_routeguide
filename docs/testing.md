@@ -135,9 +135,11 @@ the sanitizer jobs included.
 Each cell, [smoke_matrix_cell.sh][smoke-matrix-cell], starts a fresh server, runs the client to its end, and fails on
 a non-zero exit status, a sanitizer report from either process, or a failed RPC status in the client's log. It then
 writes the client's digest: one line per logger, with the number of messages the scenario received, counted from its
-`read_ok` and `skipped` lines when it logs any, else from its `RESPONSE` lines. The RouteChat loggers are summed into
-one `chat` line. The server answers each note with the notes already left at its location, by any RPC, so what one
-chat scenario receives depends on how the concurrent ones interleave, while the sum does not, on a fresh server.
+`read_ok` and `skipped` lines when it logs any, else from its `RESPONSE` lines. The RouteChat loggers make one `chat`
+line instead. Both servers answer each note with the notes already left at its location, by any RPC, but
+`route_guide_callback_server` takes those notes and stores the new one under two separate locks, so concurrent chats
+can miss each other's notes there, and what they receive depends on how they interleave. With one chat scenario, the
+line counts its replies; with several, it counts only the chat scenarios that ran.
 
 [smoke_matrix_compare.sh][smoke-matrix-compare] then checks that:
 
@@ -148,8 +150,8 @@ chat scenario receives depends on how the concurrent ones interleave, while the 
 
 A scenario added to an application, a coroutine twin included, needs nothing in the matrix. A new application is one
 line in `SMOKE_SERVERS` or `SMOKE_CLIENTS`, and a new twin application one more line in `SMOKE_TWINS`. One limit: a
-coroutine twin of a RouteChat scenario is summed into its application's `chat` line, which is compared across servers
-only, since the twin and the parent applications run different numbers of concurrent chats.
+coroutine twin of a RouteChat scenario goes into its application's `chat` line, which is compared across servers
+only, not with its parent.
 
 The cells hold the same `RESOURCE_LOCK` on port 50051 as the callback smoke test, so they run one at a time. The
 servers are killed at the end of each cell, so their exit-time checks do not run, while every client runs to its end,
