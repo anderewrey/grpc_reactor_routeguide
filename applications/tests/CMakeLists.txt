@@ -22,7 +22,7 @@ set(SMOKE_TWINS
     route_guide_reactor_usecases_coro=route_guide_reactor_usecases
 )
 
-set(smoke_dir ${CMAKE_CURRENT_BINARY_DIR}/smoke_matrix)
+set(SMOKE_DIR ${CMAKE_CURRENT_BINARY_DIR}/smoke_matrix)
 
 # Every server binds, and every client dials, the fixed port 50051, hence the lock shared with
 # callback_smoke_test. The cells are the fixture of the comparison, so running it alone runs them first.
@@ -30,12 +30,12 @@ foreach(server IN LISTS SMOKE_SERVERS)
   foreach(client IN LISTS SMOKE_CLIENTS)
     string(REGEX REPLACE "^route_guide_" "" client_name ${client})
     string(REGEX REPLACE "^route_guide_(.*)_server$" "\\1" server_name ${server})
-    set(test_name smoke_matrix.${client_name}.${server_name})
-    add_test(NAME ${test_name}
+    set(SMOKE_TEST smoke_matrix.${client_name}.${server_name})
+    add_test(NAME ${SMOKE_TEST}
         COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/smoke_matrix_cell.sh
-            $<TARGET_FILE:${server}> $<TARGET_FILE:${client}> ${smoke_dir}/${client}@${server}.digest
+            $<TARGET_FILE:${server}> $<TARGET_FILE:${client}> ${SMOKE_DIR}/${client}@${server}.digest
     )
-    set_tests_properties(${test_name} PROPERTIES
+    set_tests_properties(${SMOKE_TEST} PROPERTIES
         TIMEOUT 300
         RESOURCE_LOCK routeguide_port_50051
         FIXTURES_SETUP smoke_matrix
@@ -49,7 +49,7 @@ string(JOIN " " smoke_clients ${SMOKE_CLIENTS})
 string(JOIN " " smoke_twins ${SMOKE_TWINS})
 add_test(NAME smoke_matrix.compare
     COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/smoke_matrix_compare.sh
-        ${smoke_dir} "${smoke_servers}" "${smoke_clients}" "${smoke_twins}"
+        ${SMOKE_DIR} "${smoke_servers}" "${smoke_clients}" "${smoke_twins}"
 )
 set_tests_properties(smoke_matrix.compare PROPERTIES
     FIXTURES_REQUIRED smoke_matrix
