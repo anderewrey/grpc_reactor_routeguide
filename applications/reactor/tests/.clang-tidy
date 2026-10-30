@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 anderewrey
+
+# The repository's .clang-tidy, less one check for the tests here.
+# readability-function-cognitive-complexity is disabled: a gtest body is a straight sequence of
+# EXPECT_*/ASSERT_* calls, and each macro expands to branches that the check counts, so nearly every
+# TEST body exceeds its threshold without any real branching of its own. Splitting a test into helper
+# functions to please it would hide what the test checks. The check stays on for the code under test.
+InheritParentConfig: true
+Checks: >
+  -readability-function-cognitive-complexity

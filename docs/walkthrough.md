@@ -91,7 +91,7 @@ class GetFeature {
 
  public:
   explicit GetFeature(routeguide::RouteGuide::Stub& stub);
-  void Start(routeguide::Point point);           // creates the reactor, and returns at once
+  void Start(const routeguide::Point& point);    // creates the reactor, and returns at once
 
  private:
   void OnDone(const EventLoop::Event* event);    // a handler, on the application thread

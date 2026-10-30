@@ -42,7 +42,6 @@ using routeguide::RouteSummary;
 namespace {
 std::thread::id main_thread = std::this_thread::get_id();
 FeatureList feature_list_;
-}  // anonymous namespace
 
 namespace rg_logger = routeguide::logger;
 
@@ -52,8 +51,8 @@ class RouteGuideClient {
       : stub_(RouteGuide::NewStub(channel)) {}
 
   void GetFeature() {
-    auto get_feature = [stub_ = stub_.get(), &logger = rg_logger::Get(routeguide::RpcMethods::kGetFeature)]
-                        (const Point& point, Feature& feature) {
+    const auto get_feature = [stub_ = stub_.get(), &logger = rg_logger::Get(routeguide::RpcMethods::kGetFeature)]
+                              (const Point& point, Feature& feature) {
       logger.info("ENTER    |");
       ClientContext context;
       logger.info("REQUEST  | Point: {}", protobuf_utils::ToString(point));
@@ -121,11 +120,11 @@ class RouteGuideClient {
     logger.info("ENTER    |");
     ClientContext context;
     auto stream = stub_->RouteChat(&context);
-    std::thread writer([stream = stream.get(), &logger]() {
-      std::vector notes{rg_utils::MakeRouteNote("First message", 1, 1),
-                        rg_utils::MakeRouteNote("Second message", 2, 2),
-                        rg_utils::MakeRouteNote("Third message", 3, 3),
-                        rg_utils::MakeRouteNote("First message again", 1, 1)};
+    std::thread writer([stream = stream.get(), &logger] {
+      const std::vector notes{rg_utils::MakeRouteNote("First message", 1, 1),
+                              rg_utils::MakeRouteNote("Second message", 2, 2),
+                              rg_utils::MakeRouteNote("Third message", 3, 3),
+                              rg_utils::MakeRouteNote("First message again", 1, 1)};
       for (const RouteNote& note : notes) {
       logger.info("REQUEST  | RouteNote: {}", protobuf_utils::ToString(note));
         stream->Write(note);
@@ -151,10 +150,12 @@ class RouteGuideClient {
   std::unique_ptr<RouteGuide::Stub> stub_;
 };
 
+}  // anonymous namespace
+
 int main(int argc, char** argv) {
   assert(main_thread == std::this_thread::get_id());
   spdlog::set_pattern("[%H:%M:%S.%f][%n][%t][%^%L%$] %v");
-  auto logger_Main = spdlog::stdout_color_mt("Main");
+  const auto logger_Main = spdlog::stdout_color_mt("Main");
   spdlog::set_default_logger(logger_Main);
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);

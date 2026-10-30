@@ -117,7 +117,7 @@ class DoneLatch {
   /// Called as OnDone()'s last action, through the caller's own copy of the latch.
   void Signal() {
     {
-      std::lock_guard lock(mutex_);
+      const std::lock_guard lock(mutex_);
       done_ = true;
     }
     cv_.notify_all();
@@ -135,7 +135,7 @@ class DoneLatch {
   std::mutex mutex_;
   std::condition_variable cv_;
   bool done_{false};
-  std::atomic<std::thread::id> on_done_thread_{};
+  std::atomic<std::thread::id> on_done_thread_;
 };
 }  // namespace detail
 
@@ -755,7 +755,7 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// @param request message to send, moved into the reactor
   /// @return true if the write was initiated, false if rejected (write pending, write side closed, or
   ///         the RPC is over or cancelled)
-  bool SendRequest(RequestT&& request) requires(kPushes) {
+  bool SendRequest(RequestT&& request) requires kPushes {
     // Winning the claim is what makes the StartWrite() below safe from any thread: the write-flow hold
     // stays outstanding while the claim is held, so the call cannot be destroyed under it. A lost claim
     // means the write side is already ended, or another call is using it at this very moment.
@@ -784,7 +784,7 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// @param request last message to send, moved into the reactor
   /// @return true if the write was initiated, false if rejected (write pending, write side closed, or
   ///         the RPC is over or cancelled, in which case the write flow ends anyway)
-  bool SendLastRequest(RequestT&& request) requires(kPushes) {
+  bool SendLastRequest(RequestT&& request) requires kPushes {
     if (!ClaimWriteFlow()) return false;  // Same claim, same reasoning, as SendRequest()
     if (write_pending_) {
       ReturnWriteFlow();
@@ -809,7 +809,7 @@ class ActiveWriteReactor : public grpc::ClientWriteReactor<RequestT> {
   /// @return true if the close was initiated. false if rejected: a write is pending (wait for
   ///         OnWriteDone() and retry), the write side is already closed, or the RPC is over or
   ///         cancelled, in which case the write flow ends anyway and OnDone() follows.
-  bool CloseRequestStream() requires(kPushes) {
+  bool CloseRequestStream() requires kPushes {
     if (!ClaimWriteFlow()) return false;  // Already closed, or another call is using the write side
     if (write_pending_) {  // Wait for the in-flight write to complete first
       ReturnWriteFlow();
@@ -1138,7 +1138,7 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// @param request message to send, moved into the reactor
   /// @return true if the write was initiated, false if rejected (stream closed, write pending,
   ///         or the RPC has already finished/is finishing)
-  bool SendRequest(RequestT&& request) requires(kPushes) {
+  bool SendRequest(RequestT&& request) requires kPushes {
     if (writes_done_) return false;  // Stream already closed, by this same thread
     // Winning the claim is what makes the StartWrite() below safe from the application thread: the
     // idle-window hold is outstanding across it, so OnDone() cannot be tearing down the state the
@@ -1172,7 +1172,7 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// @param request last message to send, moved into the reactor
   /// @return true if the write was initiated, false if rejected (stream closed, write pending,
   ///         or the RPC has already finished/is finishing)
-  bool SendLastRequest(RequestT&& request) requires(kPushes) {
+  bool SendLastRequest(RequestT&& request) requires kPushes {
     if (writes_done_) return false;  // Stream already closed, by this same thread
     bool idle = true;                // Same claim, same reasoning, as SendRequest()
     if (!write_idle_.compare_exchange_strong(idle, false)) return false;
@@ -1197,7 +1197,7 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   /// @return true if the close was initiated, false if rejected (already closed, write pending,
   ///         or the RPC has already finished/is finishing). Callers should wait for OnWriteDone()
   ///         and retry.
-  bool CloseRequestStream() requires(kPushes) {
+  bool CloseRequestStream() requires kPushes {
     if (writes_done_) return false;  // Already closed
     // StartWritesDone() is an application-thread call like the writes, so it needs the same claim.
     bool idle = true;

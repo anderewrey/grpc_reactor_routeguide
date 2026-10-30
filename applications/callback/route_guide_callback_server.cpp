@@ -44,7 +44,6 @@ using std::chrono::system_clock;
 namespace {
 std::thread::id main_thread = std::this_thread::get_id();
 FeatureList feature_list_;
-}  // anonymous namespace
 
 class RouteGuideImpl final : public RouteGuide::CallbackService {
  public:
@@ -62,7 +61,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
     return reactor;
   }
 
-  grpc::ServerWriteReactor<Feature>* ListFeatures(CallbackServerContext* context,
+  grpc::ServerWriteReactor<Feature>* ListFeatures(CallbackServerContext* /*context*/,
                                                   const Rectangle* rectangle) override {
     class Lister : public grpc::ServerWriteReactor<Feature> {
      public:
@@ -115,7 +114,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
     return new Lister(*rectangle, feature_list_);
   }
 
-  grpc::ServerReadReactor<Point>* RecordRoute(CallbackServerContext* context,
+  grpc::ServerReadReactor<Point>* RecordRoute(CallbackServerContext* /*context*/,
                                               RouteSummary* summary) override {
     class Recorder : public grpc::ServerReadReactor<Point> {
      public:
@@ -133,7 +132,8 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
         if (ok) {
           logger_.info("REQUEST  | Point: {}", protobuf_utils::ToString(point_));
           point_count_++;
-          if (const auto name = rg_utils::GetFeatureName(point_, feature_list_); name && strlen(name) > 0) {
+          if (const auto* const name = rg_utils::GetFeatureName(point_, feature_list_);
+              name != nullptr && strlen(name) > 0) {
             feature_count_++;
           }
           if (point_count_ != 1) {
@@ -146,8 +146,8 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
           summary_.set_feature_count(feature_count_);
           summary_.set_distance(static_cast<int32_t>(distance_));
           using namespace std::chrono;
-          auto secs = duration_cast<seconds>(system_clock::now() - start_time_).count();
-          summary_.set_elapsed_time(secs);
+          const auto secs = duration_cast<seconds>(system_clock::now() - start_time_).count();
+          summary_.set_elapsed_time(static_cast<int32_t>(secs));
           logger_.info("RESPONSE | RouteSummary: {}", protobuf_utils::ToString(summary_));
           Finish(Status::OK);
         }
@@ -167,7 +167,7 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
     return new Recorder(*summary, feature_list_);
   }
 
-  grpc::ServerBidiReactor<RouteNote, RouteNote>* RouteChat(CallbackServerContext* context) override {
+  grpc::ServerBidiReactor<RouteNote, RouteNote>* RouteChat(CallbackServerContext* /*context*/) override {
     class Chatter : public grpc::ServerBidiReactor<RouteNote, RouteNote> {
      public:
       Chatter(std::mutex& mu, std::vector<RouteNote>& received_notes)
@@ -252,10 +252,12 @@ void RunServer() {
   server->Wait();
 }
 
+}  // anonymous namespace
+
 int main(int argc, char** argv) {
   assert(main_thread == std::this_thread::get_id());
   spdlog::set_pattern("[%H:%M:%S.%f][%n][%t][%^%L%$] %v");
-  auto logger_Main = spdlog::stdout_color_mt("Main");
+  const auto logger_Main = spdlog::stdout_color_mt("Main");
   spdlog::set_default_logger(logger_Main);
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
