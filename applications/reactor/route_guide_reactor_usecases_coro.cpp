@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
 
   spdlog::info("-------------- Use case: what's here (GetFeature kPull, coroutine) --------------");
   whats_here.Start(patriots_path);
-  EventLoop::Run();  // Scheduler component: Continuously processes queued events on main application thread
+  rg_demo::RunUntilDone();  // Scheduler component: processes queued events on this thread until every scenario ends
   spdlog::info("-------------- LEAVING APPLICATION --------------");
   return 0;
 }

@@ -77,6 +77,7 @@ class LiveVehiclePosition {
 
   routeguide::RouteGuide::Stub& stub_;
   std::unique_ptr<ClientReactor> reactor_;
+  Activity activity_;
 
   // Written by read_ok on the gRPC thread, and taken by the handlers on the application thread.
   RpcReactor::LatestSlot<Fix> latest_;

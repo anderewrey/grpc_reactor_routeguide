@@ -78,6 +78,7 @@ void RouteChat::Start(std::vector<routeguide::RouteNote> notes) {
 
   // (Point 1.1) Create reactor
   reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), std::move(cbs));
+  activity_.Begin();
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
   SendNextNote();
 }
@@ -129,6 +130,7 @@ void RouteChat::OnDone(const EventLoop::Event* event) {
                status.error_message());
   logger_.info("         | reactor[{}] ended", fmt::ptr(reactor));
   reactor_.reset();
+  activity_.End();
 }
 
 void RouteChat::SendNextNote() {

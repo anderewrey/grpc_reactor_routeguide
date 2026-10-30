@@ -43,6 +43,33 @@ spdlog::logger& VariantLogger(const std::string& name);
 /// Call it first in main(), before any logger is created, so every logger gets it.
 void SetCoroutineLogPattern();
 
+/// Marks one scenario as in progress, from Begin() to End() or its destruction, for RunUntilDone(). A
+/// scenario begins it in Start() and ends it once its work is over: after its last handler has destroyed
+/// the reactor, or at the end of its coroutine. The calls run on the application thread, and repeated
+/// calls do nothing.
+class Activity {
+ public:
+  Activity() = default;
+  ~Activity() { End(); }
+
+  Activity(const Activity&) = delete;
+  Activity& operator=(const Activity&) = delete;
+  Activity(Activity&&) = delete;
+  Activity& operator=(Activity&&) = delete;
+
+  void Begin();
+  void End();
+
+ private:
+  bool active_{false};
+};
+
+/// Runs the EventLoop on the calling thread, the application thread, until no Activity is in progress, then
+/// halts it and returns. Returns at once when none is. An event already queued when the last Activity ends
+/// still runs, while a timed event still pending is dropped: hence the rule that a scenario ends its
+/// Activity only once it has nothing left to wait for.
+void RunUntilDone();
+
 /// Tears a scenario's reactor down when the scenario is destroyed, whether or not its RPC has ended. An RPC
 /// still in flight is cancelled, and the reactor destroyed only once its OnDone() has run, since gRPC still
 /// calls a reactor until then. Should OnDone() never come, the reactor is leaked rather than freed under

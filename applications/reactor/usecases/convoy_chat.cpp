@@ -90,6 +90,7 @@ void ConvoyChat::Start(std::vector<routeguide::RouteNote> notes) {
 
   // (Point 1.1) Create reactor
   reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), std::move(cbs));
+  activity_.Begin();
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
   // Lets the drivers type: one timed event per note, delivered on this thread. Nothing is sent before
   // the first note is typed, and the read side runs meanwhile.
@@ -154,6 +155,7 @@ void ConvoyChat::OnDone(const EventLoop::Event* event) {
   logger_.info("totals   | {} notes typed, {} notes shown", typed_, handled_seq_);
   logger_.info("         | reactor[{}] ended", fmt::ptr(reactor));
   reactor_.reset();
+  activity_.End();
 }
 
 void ConvoyChat::SendNextNote() {

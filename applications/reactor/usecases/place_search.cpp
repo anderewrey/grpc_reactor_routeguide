@@ -76,6 +76,7 @@ void PlaceSearch::Start(routeguide::Rectangle rect) {
 
   // (Point 1.1) Create reactor
   reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), rect, std::move(cbs));
+  activity_.Begin();
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
 }
 
@@ -122,6 +123,7 @@ void PlaceSearch::OnDone(const EventLoop::Event* event) {
   logger_.info("         | reactor[{}] ended", fmt::ptr(reactor));
   // (Point 4.11) Destroy reactor
   reactor_.reset();
+  activity_.End();
 }
 
 }  // namespace rg_demo::usecase

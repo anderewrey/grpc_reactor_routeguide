@@ -58,6 +58,7 @@ class WhatsHere {
 
   routeguide::RouteGuide::Stub& stub_;
   std::unique_ptr<ClientReactor> reactor_;
+  Activity activity_;
   spdlog::logger& logger_{VariantLogger("WhatsHere")};
 
   // Declared last, so destruction deregisters the handler before anything it reaches is gone. The

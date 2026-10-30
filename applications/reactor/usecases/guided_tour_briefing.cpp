@@ -91,6 +91,7 @@ void GuidedTourBriefing::Start(std::vector<routeguide::RouteNote> notes) {
 
   // (Point 1.1) Create reactor. Its constructor already pulled the first note, on this thread.
   reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), std::move(cbs));
+  activity_.Begin();
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
 }
 
@@ -157,6 +158,7 @@ void GuidedTourBriefing::OnDone(const EventLoop::Event* event) {
   assert(handled_seq_ == seen_.size());
   logger_.info("         | reactor[{}] ended", fmt::ptr(reactor));
   reactor_.reset();
+  activity_.End();
 }
 
 }  // namespace rg_demo::usecase

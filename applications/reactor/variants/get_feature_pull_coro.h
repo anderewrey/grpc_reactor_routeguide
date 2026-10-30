@@ -52,6 +52,7 @@ class GetFeature {
 
   RpcReactor::coro::Executor& executor_;
   routeguide::RouteGuide::Stub& stub_;
+  Activity activity_;
   spdlog::logger& logger_{VariantLogger("GetFeature.pull.coro")};
 
   // Declared last, so a coroutine still suspended is destroyed before anything it reaches is gone.

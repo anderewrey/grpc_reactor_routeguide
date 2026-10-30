@@ -65,6 +65,7 @@ class RecordRoute {
 
   routeguide::RouteGuide::Stub& stub_;
   std::unique_ptr<ClientReactor> reactor_;
+  Activity activity_;
   std::vector<routeguide::Point> pending_;
   spdlog::logger& logger_{VariantLogger("RecordRoute.pull")};
 

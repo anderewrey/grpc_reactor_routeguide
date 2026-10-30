@@ -63,6 +63,7 @@ void GpxTrackUpload::Start(std::vector<routeguide::Point> track) {
 
   // (Point 1.1) Create reactor. Its constructor already pulled the first point, on this thread.
   reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), std::move(cbs));
+  activity_.Begin();
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
 }
 
@@ -108,6 +109,7 @@ void GpxTrackUpload::OnDone(const EventLoop::Event* event) {
   }
   logger_.info("         | reactor[{}] ended", fmt::ptr(reactor));
   reactor_.reset();
+  activity_.End();
 }
 
 }  // namespace rg_demo::usecase

@@ -75,6 +75,7 @@ class LiveRouteRecording {
 
   routeguide::RouteGuide::Stub& stub_;
   std::unique_ptr<ClientReactor> reactor_;
+  Activity activity_;
   // All of these belong to the application thread. The GPS takes its next fix from the drive, the queue
   // keeps the points waiting for a write, and the history keeps the summaries of past drives.
   std::vector<routeguide::Point> drive_;

@@ -61,6 +61,7 @@ void RecordRoute::Start(std::vector<routeguide::Point> points) {
 
   // (Point 1.1) Create reactor
   reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), std::move(cbs));
+  activity_.Begin();
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
   SendNextPoint();
 }
@@ -97,6 +98,7 @@ void RecordRoute::OnDone(const EventLoop::Event* event) {
   }
   logger_.info("         | reactor[{}] ended", fmt::ptr(reactor));
   reactor_.reset();
+  activity_.End();
 }
 
 void RecordRoute::SendNextPoint() {

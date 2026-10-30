@@ -74,6 +74,7 @@ void LiveRouteRecording::Start(std::vector<routeguide::Point> drive) {
 
   // (Point 1.1) Create reactor
   reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), std::move(cbs));
+  activity_.Begin();
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
   // Switches the GPS on: one timed event per fix, delivered on this thread. Nothing is sent before the
   // first fix, and nothing here waits for it.
@@ -130,6 +131,7 @@ void LiveRouteRecording::OnDone(const EventLoop::Event* event) {
   }
   logger_.info("         | reactor[{}] ended", fmt::ptr(reactor_.get()));
   reactor_.reset();
+  activity_.End();
 }
 
 void LiveRouteRecording::SendNextPoint() {

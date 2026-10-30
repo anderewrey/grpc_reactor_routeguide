@@ -48,6 +48,7 @@ void GetFeature::Start(routeguide::Point point) {
 
   // (Point 1.1) Create reactor
   reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), point, std::move(cbs));
+  activity_.Begin();
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
 }
 
@@ -73,6 +74,7 @@ void GetFeature::OnDone(const EventLoop::Event* event) {
   logger_.info("         | reactor[{}] ended", fmt::ptr(reactor));
   // (Point 3.8) Destroy reactor
   reactor_.reset();
+  activity_.End();
 }
 
 }  // namespace rg_demo::pull

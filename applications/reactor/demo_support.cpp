@@ -5,10 +5,12 @@
 
 #include "applications/reactor/demo_support.h"
 
+#include <EventLoop.h>
 #include <spdlog/pattern_formatter.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
+#include <cassert>
 #include <ctime>
 #include <memory>
 #include <string>
@@ -21,6 +23,10 @@ namespace rg_demo {
 namespace {
 // Captured at static initialization, which runs before main() and on the thread that entered it.
 const std::thread::id application_thread = std::this_thread::get_id();
+
+// The Activity objects in progress, and whether RunUntilDone() runs the loop. Application thread only.
+unsigned activities_in_progress = 0;
+bool running_until_done = false;
 
 // The %k flag of the coroutine applications' pattern: the coroutine task the logging thread runs.
 class TaskFlag final : public spdlog::custom_flag_formatter {
@@ -39,6 +45,28 @@ class TaskFlag final : public spdlog::custom_flag_formatter {
 
 bool OnApplicationThread() {
   return application_thread == std::this_thread::get_id();
+}
+
+void Activity::Begin() {
+  assert(OnApplicationThread());
+  if (active_) return;
+  active_ = true;
+  ++activities_in_progress;
+}
+
+void Activity::End() {
+  assert(OnApplicationThread());
+  if (!active_) return;
+  active_ = false;
+  if (--activities_in_progress == 0 && running_until_done) EventLoop::Halt();
+}
+
+void RunUntilDone() {
+  assert(OnApplicationThread());
+  if (activities_in_progress == 0) return;
+  running_until_done = true;
+  EventLoop::Run();
+  running_until_done = false;
 }
 
 std::unique_ptr<grpc::ClientContext> CreateClientContext() {
