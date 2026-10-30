@@ -124,6 +124,8 @@ with a `_coro` suffix, and runs in an application of its own:
 | `list_features_push_turn_by_turn_coro` | `coro::Reader`: `co_await Read()`, reading when asked | Its callback parent |
 | `whats_here_coro` | `coro::Unary`: `co_await Finish()` | `whats_here`, its callback twin |
 | `whats_here_coro` | `coro::Unary`: `co_await Finish()` | `get_feature_pull_coro`, the variant it clones |
+| `turn_by_turn_guidance_coro` | `coro::Reader`: `co_await Read()`, reading when asked | Its callback twin |
+| `turn_by_turn_guidance_coro` | `coro::Reader`: `co_await Read()`, reading when asked | The push variant it clones |
 
 Against its parent, a coroutine scenario changes the style only: the same reactor configuration, consumed by one
 coroutine instead of handlers. Against its coroutine variant, a coroutine use case changes the use only.

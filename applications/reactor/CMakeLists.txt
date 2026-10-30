@@ -147,6 +147,8 @@ add_executable(route_guide_reactor_usecases_coro
     reactor_eventloop.h
     demo_support.h
     demo_support.cpp
+    usecases/turn_by_turn_guidance_coro.h
+    usecases/turn_by_turn_guidance_coro.cpp
     usecases/whats_here_coro.h
     usecases/whats_here_coro.cpp
 )

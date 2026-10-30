@@ -150,10 +150,16 @@ The executor of the applications, in [reactor_eventloop.h](/applications/reactor
 |--------|-----|
 | Constructor | Registers the one handler of `kResumeEvent`, for the application thread, by default the calling one |
 | `Post(handle)` | Triggers `kResumeEvent` with the handle's address |
+| `co_await After(delay)` | Static: resumes the coroutine once an EventLoop timer of that delay has fired |
 | Its handler | Asserts it runs on the application thread, then resumes the handle |
 
 One per process, created in `main()` before any coroutine starts: an assert refuses a second one, which would resume
 every handle twice. EventLoop's queue is FIFO, so a coroutine's resumptions run in the order they were posted.
+
+`After()` is how a coroutine waits for time, such as for a driver to confirm a stop, so a scenario never calls
+EventLoop itself. Its timer triggers `kResumeEvent` too, so it needs the process's executor, and the suspension goes
+through a `ResumeHandover`, which carries the task number across it. Like any resumption still to come, the timer
+must not outlive the frame: destroy the frame only once the event loop no longer runs.
 
 ### `ResumeHandover`
 

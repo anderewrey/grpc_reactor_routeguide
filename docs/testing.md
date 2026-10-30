@@ -437,6 +437,8 @@ EventLoop:
   threads run on the EventLoop thread, the tests' application thread.
 - `Executor_Post_ResumesInPostOrder_AfterEveryEventQueuedBefore` checks that resumptions follow the post order, and
   that an event queued between two posts runs between them.
+- `After_ResumesOnTheApplicationThread_OnceTheDelayIsOver` checks that `After()` resumes a coroutine no sooner than
+  its delay, on the EventLoop thread, and under its own task number, which the loop does not run meanwhile.
 
 Five mutants of `coro_task.h` were each caught:
 
