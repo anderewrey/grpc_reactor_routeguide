@@ -53,15 +53,15 @@ class TeardownService final : public routeguide::RouteGuide::CallbackService {
 
   /// Waits for every delayed GetFeature answer, so none outlives the server.
   void JoinAnswers() {
-    std::lock_guard lock(mutex_);
+    const std::lock_guard lock(mutex_);
     for (auto& answer : answers_) answer.join();
     answers_.clear();
   }
 
-  grpc::ServerUnaryReactor* GetFeature(grpc::CallbackServerContext* context, const routeguide::Point*,
-                                       routeguide::Feature*) override {
+  grpc::ServerUnaryReactor* GetFeature(grpc::CallbackServerContext* context, const routeguide::Point* /*point*/,
+                                       routeguide::Feature* /*response*/) override {
     auto* reactor = context->DefaultReactor();
-    std::lock_guard lock(mutex_);
+    const std::lock_guard lock(mutex_);
     answers_.emplace_back([reactor] {
       std::this_thread::sleep_for(std::chrono::milliseconds(300));
       reactor->Finish(grpc::Status::OK);
@@ -69,8 +69,8 @@ class TeardownService final : public routeguide::RouteGuide::CallbackService {
     return reactor;
   }
 
-  grpc::ServerWriteReactor<routeguide::Feature>* ListFeatures(grpc::CallbackServerContext*,
-                                                              const routeguide::Rectangle*) override {
+  grpc::ServerWriteReactor<routeguide::Feature>* ListFeatures(grpc::CallbackServerContext* /*context*/,
+                                                              const routeguide::Rectangle* /*rect*/) override {
     class Reactor : public grpc::ServerWriteReactor<routeguide::Feature> {
      public:
       Reactor() { Next(); }
@@ -98,8 +98,8 @@ class TeardownService final : public routeguide::RouteGuide::CallbackService {
     return new Reactor();
   }
 
-  grpc::ServerReadReactor<routeguide::Point>* RecordRoute(grpc::CallbackServerContext*,
-                                                          routeguide::RouteSummary*) override {
+  grpc::ServerReadReactor<routeguide::Point>* RecordRoute(grpc::CallbackServerContext* /*context*/,
+                                                          routeguide::RouteSummary* /*summary*/) override {
     class Reactor : public grpc::ServerReadReactor<routeguide::Point> {
      public:
       Reactor() { StartRead(&point_); }
@@ -119,7 +119,7 @@ class TeardownService final : public routeguide::RouteGuide::CallbackService {
   }
 
   grpc::ServerBidiReactor<routeguide::RouteNote, routeguide::RouteNote>* RouteChat(
-      grpc::CallbackServerContext*) override {
+      grpc::CallbackServerContext* /*context*/) override {
     class Reactor : public grpc::ServerBidiReactor<routeguide::RouteNote, routeguide::RouteNote> {
      public:
       Reactor() { StartRead(&note_); }

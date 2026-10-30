@@ -428,7 +428,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_FailedRpc_DeliversNonNullEmptyResponse
   test_service_.SetErrorResponse(grpc::StatusCode::PERMISSION_DENIED, "Denied");
 
   std::promise<void> done_promise;
-  std::future<void> done_future = done_promise.get_future();
+  const std::future<void> done_future = done_promise.get_future();
   bool response_was_non_null = false;
   bool response_was_empty = false;
   grpc::Status received_status;

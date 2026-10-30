@@ -222,7 +222,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_MultiplePoints_ReturnsCorrectSummary)
   cbs.write_done = [&write_slot](grpc::ClientWriteReactor<routeguide::Point>*, bool) {
     write_slot.release();
   };
-  cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>* base_reactor,
+  cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>* /*base_reactor*/,
                                const grpc::Status& status,
                                std::unique_ptr<routeguide::RouteSummary> response) {
     RecordRouteResult result;
@@ -630,7 +630,7 @@ class ObservedRecordRouteReactor final
 TEST_F(ActiveWriteReactorTest, RecordRoute_NoDoneCallbackBound_RpcStillCompletes) {
   std::atomic<int> write_done_count{0};
   std::promise<void> done_promise;
-  std::future<void> done_future = done_promise.get_future();
+  const std::future<void> done_future = done_promise.get_future();
 
   routeguide::RecordRoute::Callbacks<kDelivery, kSubmission> cbs;
   // cbs.done deliberately left unbound.

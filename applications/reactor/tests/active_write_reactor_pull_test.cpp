@@ -207,7 +207,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_MultiplePoints_ReturnsCorrectSummary)
   cbs.write_done = [&write_slot](grpc::ClientWriteReactor<routeguide::Point>*, bool) {
     write_slot.release();
   };
-  cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>* base_reactor,
+  cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>* /*base_reactor*/,
                                 const grpc::Status& status,
                                 const routeguide::RouteSummary& response) {
     RecordRouteResult result;
