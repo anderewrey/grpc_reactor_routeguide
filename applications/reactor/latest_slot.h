@@ -44,7 +44,7 @@ class LatestSlot {
   ///         one; false when a value was replaced, whose notification is still pending and now covers this
   ///         one
   [[nodiscard]] bool Put(T value) {
-    std::lock_guard lock(mutex_);
+    const std::lock_guard lock(mutex_);
     const bool was_empty = !value_.has_value();
     if (!was_empty) ++replaced_;
     value_ = std::move(value);
@@ -54,13 +54,13 @@ class LatestSlot {
   /// Takes the newest value, leaving the slot empty, so the next Put() asks for a notification again.
   /// @return the newest value, or std::nullopt when none was put since the last Take()
   std::optional<T> Take() {
-    std::lock_guard lock(mutex_);
+    const std::lock_guard lock(mutex_);
     return std::exchange(value_, std::nullopt);
   }
 
   /// @return how many values were replaced before anyone took them
   [[nodiscard]] std::uint64_t Replaced() const {
-    std::lock_guard lock(mutex_);
+    const std::lock_guard lock(mutex_);
     return replaced_;
   }
 

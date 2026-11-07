@@ -119,7 +119,7 @@ constexpr std::size_t kSecondWaveMs{1000};
 int main(int argc, char** argv) {
   assert(rg_demo::OnApplicationThread());
   spdlog::set_pattern("[%H:%M:%S.%f][%n][%t][%^%L%$] %v");
-  auto logger_Main = spdlog::stdout_color_mt("Main");
+  const auto logger_Main = spdlog::stdout_color_mt("Main");
   spdlog::set_default_logger(logger_Main);
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);

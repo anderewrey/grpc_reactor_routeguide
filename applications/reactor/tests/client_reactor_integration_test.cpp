@@ -199,7 +199,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_Pull_ValidPoint_DispatchesToEven
   // Register event handler (Servant role in Active Object pattern)
   // In NON_BLOCK mode, EventLoop runs in a background thread
   static constexpr auto kTestOnDone = "TestPullGetFeatureOnDone";
-  RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
+  const RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
     // In NON_BLOCK mode, this runs on EventLoop's background thread (not main thread)
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
 
@@ -359,7 +359,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_Pull_TryCancel_DispatchesToEvent
   std::unique_ptr<routeguide::GetFeature::ClientReactor<Delivery::kPull>> reactor;
 
   static constexpr auto kTestOnDone = "TestPullCancelOnDone";
-  RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
+  const RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);
     auto* r = static_cast<routeguide::GetFeature::ClientReactor<Delivery::kPull>*>(event->getData());
     received_status = r->Status();
@@ -416,7 +416,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_Push_ValidPoint_DispatchesToEven
   // Register event handler (Servant role in Active Object pattern)
   // In NON_BLOCK mode, EventLoop runs in a background thread
   static constexpr auto kTestOnDone = "TestPushGetFeatureOnDone";
-  RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
+  const RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
     // Reclaim first, so no assertion below can leak the response
     const std::unique_ptr<routeguide::Feature> feature{static_cast<routeguide::Feature*>(event->getData())};
 
@@ -669,7 +669,7 @@ TEST_F(ClientReactorIntegrationTest, GetFeature_Push_TryCancel_DispatchesToEvent
   std::unique_ptr<routeguide::GetFeature::ClientReactor<Delivery::kPush>> reactor;
 
   static constexpr auto kTestOnDone = "TestPushCancelOnDone";
-  RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
+  const RpcReactor::EventConnection on_done_guard(kTestOnDone, [&](const EventLoop::Event* event) {
     // Reclaim the response even on the cancelled path, where its content is not used
     const std::unique_ptr<routeguide::Feature> discarded{static_cast<routeguide::Feature*>(event->getData())};
     EXPECT_NE(std::this_thread::get_id(), main_thread_id_);

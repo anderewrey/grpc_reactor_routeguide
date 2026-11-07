@@ -43,7 +43,7 @@ TurnByTurnGuidance::~TurnByTurnGuidance() {
   TearDownReactor(reactor_, logger_);
 }
 
-void TurnByTurnGuidance::Start(routeguide::Rectangle rect) {
+void TurnByTurnGuidance::Start(const routeguide::Rectangle& rect) {
   using ResponseT = routeguide::ListFeatures::ResponseT;
   if (reactor_) {
     logger_.info("         | reactor[{}] already in execution, ignoring: {}", fmt::ptr(reactor_.get()),

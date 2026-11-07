@@ -31,7 +31,7 @@ GetFeature::~GetFeature() {
   TearDownReactor(reactor_, logger_);
 }
 
-void GetFeature::Start(routeguide::Point point) {
+void GetFeature::Start(const routeguide::Point& point) {
   using ResponseT = routeguide::GetFeature::ResponseT;
   if (reactor_) {
     logger_.info("         | reactor[{}] already in execution, ignoring: {}", fmt::ptr(reactor_.get()),

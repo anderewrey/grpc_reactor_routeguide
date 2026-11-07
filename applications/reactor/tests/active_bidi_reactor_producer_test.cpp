@@ -285,7 +285,7 @@ TEST_F(ActiveBidiReactorProducerTest, HeldRead_DoesNotStallPulls) {
   std::promise<grpc::Status> done_promise;
   auto done_future = done_promise.get_future();
   std::promise<void> source_dry_promise;
-  auto source_dry_future = source_dry_promise.get_future();
+  const auto source_dry_future = source_dry_promise.get_future();
   NoteSource source(3);
   std::counting_semaphore<> held{0};
 

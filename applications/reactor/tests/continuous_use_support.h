@@ -44,7 +44,7 @@ class AppLoop {
   /// Queues a task, or the loop's end with nullptr.
   void Post(std::function<void()> task) {
     {
-      std::lock_guard lock(mutex_);
+      const std::lock_guard lock(mutex_);
       tasks_.push_back(std::move(task));
     }
     cv_.notify_one();
@@ -74,8 +74,8 @@ class AppLoop {
 /// Streams kReadings features back to back, numbered from 1 in their longitude and their name, then finishes.
 class ReadingService final : public routeguide::RouteGuide::CallbackService {
  public:
-  grpc::ServerWriteReactor<routeguide::Feature>* ListFeatures(grpc::CallbackServerContext*,
-                                                              const routeguide::Rectangle*) override {
+  grpc::ServerWriteReactor<routeguide::Feature>* ListFeatures(grpc::CallbackServerContext* /*context*/,
+                                                              const routeguide::Rectangle* /*rect*/) override {
     class Reactor : public grpc::ServerWriteReactor<routeguide::Feature> {
      public:
       Reactor() { Next(); }

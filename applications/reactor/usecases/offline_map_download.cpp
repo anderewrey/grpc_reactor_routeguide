@@ -46,7 +46,7 @@ OfflineMapDownload::~OfflineMapDownload() {
   TearDownReactor(reactor_, logger_);
 }
 
-void OfflineMapDownload::Start(routeguide::Rectangle rect) {
+void OfflineMapDownload::Start(const routeguide::Rectangle& rect) {
   using ResponseT = routeguide::ListFeatures::ResponseT;
   if (reactor_) {
     logger_.info("         | reactor[{}] already in execution, ignoring: {}", fmt::ptr(reactor_.get()),

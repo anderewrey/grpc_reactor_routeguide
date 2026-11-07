@@ -42,7 +42,7 @@ LiveVehiclePosition::~LiveVehiclePosition() {
   TearDownReactor(reactor_, logger_);
 }
 
-void LiveVehiclePosition::Start(routeguide::Rectangle rect) {
+void LiveVehiclePosition::Start(const routeguide::Rectangle& rect) {
   using ResponseT = routeguide::ListFeatures::ResponseT;
   if (reactor_) {
     logger_.info("         | reactor[{}] already in execution, ignoring: {}", fmt::ptr(reactor_.get()),
@@ -79,7 +79,7 @@ void LiveVehiclePosition::Start(routeguide::Rectangle rect) {
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
 }
 
-void LiveVehiclePosition::OnLatestFix(const EventLoop::Event*) {
+void LiveVehiclePosition::OnLatestFix(const EventLoop::Event* /*event*/) {
   // ProceedEvent: the slot's notification, which carries no payload: the fix waits in the slot.
   assert(OnApplicationThread());
   // Empty when the OnDone handler already took the last fix.
