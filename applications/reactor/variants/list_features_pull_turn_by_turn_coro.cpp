@@ -23,10 +23,10 @@ void ListFeatures::Start(routeguide::Rectangle rect) {
     logger_.info("         | rpc already in execution, ignoring: {}", protobuf_utils::ToString(rect));
     return;
   }
-  roots_.Spawn(Run(std::move(rect)));
+  roots_.Spawn(Run(std::move(rect), Activity::Begin()));
 }
 
-RpcReactor::coro::Task<> ListFeatures::Run(routeguide::Rectangle rect) {
+RpcReactor::coro::Task<> ListFeatures::Run(routeguide::Rectangle rect, [[maybe_unused]] Activity activity) {
   assert(OnApplicationThread());
   // (Point 1.1) Create reactor, which sends the request and arms the first read
   Reader reader{executor_, stub_, rect, CreateClientContext()};

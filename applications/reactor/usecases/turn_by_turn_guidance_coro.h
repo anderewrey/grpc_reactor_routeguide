@@ -58,7 +58,8 @@ class TurnByTurnGuidance {
   /// Servant component, as one function: sends the request, shows each stop until the driver confirms it,
   /// then awaits the end of the RPC.
   /// @param rect bounding the features to list, taken by value since the coroutine outlives the call to Start()
-  RpcReactor::coro::Task<> Run(routeguide::Rectangle rect);
+  /// @param activity the scenario in progress, which the frame holds until the coroutine ends
+  RpcReactor::coro::Task<> Run(routeguide::Rectangle rect, Activity activity);
 
   RpcReactor::coro::Executor& executor_;
   routeguide::RouteGuide::Stub& stub_;

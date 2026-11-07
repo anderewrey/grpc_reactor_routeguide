@@ -56,7 +56,8 @@ class ListFeatures {
   /// Servant component, as one function: sends the request, reads the stream one message at a time, then
   /// awaits the end of the RPC.
   /// @param rect bounding the features to list, taken by value since the coroutine outlives the call to Start()
-  RpcReactor::coro::Task<> Run(routeguide::Rectangle rect);
+  /// @param activity the scenario in progress, which the frame holds until the coroutine ends
+  RpcReactor::coro::Task<> Run(routeguide::Rectangle rect, Activity activity);
 
   RpcReactor::coro::Executor& executor_;
   routeguide::RouteGuide::Stub& stub_;
