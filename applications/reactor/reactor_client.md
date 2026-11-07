@@ -391,7 +391,10 @@ run, and still reads its `ClientContext`, so destroying it earlier is a use-afte
 not prevent: it does not wait. `CancelAndWait()` cancels the RPC, releases every hold nobody is left to release, and
 waits for `OnDone()`:
 
-- a message still held, as `GetResponse()` or `ResumeRead()` would, but without arming a read;
+- a message still held, as `GetResponse()` or `ResumeRead()` would, but without arming a read. A message whose
+  `OnReadDone()` was already running but had not yet published its hold is released by that reaction itself, once
+  `read_ok` returns: `CancelAndWait()` raises a flag before its claim, and the reaction reads it after publishing, so
+  one of the two always sees the other;
 - under `Submission::kApplicationPushes`, the writer's write-flow hold, as `TryCancel()` does, and the bidi reactor's
   idle-window hold, which `OnReadDone(false)` cannot release when no read is armed.
 

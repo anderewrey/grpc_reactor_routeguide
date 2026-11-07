@@ -118,7 +118,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_ValidPoint_ReturnsFeature) {
   routeguide::GetFeature::Callbacks<kDelivery> cbs;
   cbs.done = [&result_promise](grpc::ClientUnaryReactor* base_reactor,
                                 const grpc::Status& status,
-                                const routeguide::Feature& response) {
+                                const routeguide::Feature& /*response*/) {
     GetFeatureResult result;
     result.status = status;
     if (status.ok()) {
@@ -169,7 +169,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_UnknownPoint_ReturnsEmptyFeature) {
   routeguide::GetFeature::Callbacks<kDelivery> cbs;
   cbs.done = [&result_promise](grpc::ClientUnaryReactor* base_reactor,
                                 const grpc::Status& status,
-                                const routeguide::Feature& response) {
+                                const routeguide::Feature& /*response*/) {
     GetFeatureResult result;
     result.status = status;
     if (status.ok()) {
@@ -416,7 +416,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_GetResponseBeforeOnDone_ReturnsFalse) 
   test_service_.SetGetFeatureResponse(expected_feature);
 
   std::promise<void> done_promise;
-  std::future<void> done_future = done_promise.get_future();
+  const std::future<void> done_future = done_promise.get_future();
   bool get_response_after_done = false;
 
   const routeguide::Point request = rg_utils::MakePoint(123, 456);
@@ -438,7 +438,7 @@ TEST_F(ActiveUnaryReactorTest, GetFeature_GetResponseBeforeOnDone_ReturnsFalse) 
 
   // Try GetResponse immediately - should return false
   routeguide::Feature early_response;
-  bool early_result = reactor->GetResponse(early_response);
+  const bool early_result = reactor->GetResponse(early_response);
   EXPECT_FALSE(early_result) << "GetResponse should return false before OnDone";
 
   ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));

@@ -175,7 +175,7 @@ class ActiveReadReactorPacingTest : public RouteGuideTestFixtureBase<TestRouteGu
   /// message is handed to `keep` before the release, because ResumeRead() arms the next read, and the
   /// next read_ok could then run before this one returns.
   template <class KeepFn>
-  static typename Callbacks::OnReadDoneOkCallback ConsumeEach(KeepFn keep) {
+  static Callbacks::OnReadDoneOkCallback ConsumeEach(KeepFn keep) {
     return [keep]([[maybe_unused]] grpc::ClientReadReactor<routeguide::Feature>* reactor,
                   std::unique_ptr<routeguide::Feature> message) {
       keep(std::move(*message));
@@ -231,7 +231,7 @@ std::vector<routeguide::Feature> MakeFeatures(int count) {
 /// - Each feature's name and location match expected values
 /// - Final status is OK
 TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_MultipleResponses_ReceivesAll) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   // Configure server to return multiple features
   std::vector<routeguide::Feature> expected_features;
@@ -293,7 +293,7 @@ TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_MultipleResponses_ReceivesA
 /// - ok callback is never invoked (no features received)
 /// - Final status is OK (empty stream is valid, not an error)
 TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_EmptyStream_CompletesSuccessfully) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   this->test_service_.SetListFeaturesResponse({});
 
@@ -333,7 +333,7 @@ TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_EmptyStream_CompletesSucces
 /// 3. OnReadDone(false) signals end
 /// 4. OnDone fires with OK status
 TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_SingleFeature_ReceivesOne) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   std::vector<routeguide::Feature> features;
   features.push_back(rg_utils::MakeFeature("Single Feature", 407128000, -740060000));
@@ -379,7 +379,7 @@ TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_SingleFeature_ReceivesOne) 
 /// - Final status is INTERNAL (as configured)
 /// - Partial data is preserved despite stream failure
 TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_ServerErrorMidStream_PropagatesStatus) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   // Configure server to return 2 features then error
   this->test_service_.SetListFeaturesResponse(MakeFeatures(5));
@@ -421,7 +421,7 @@ TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_ServerErrorMidStream_Propag
 /// 2. Client receives no features
 /// 3. OnDone fires with error status
 TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_ImmediateError_PropagatesStatus) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   this->test_service_.SetListFeaturesResponse(MakeFeatures(1));
   this->test_service_.SetListFeaturesErrorAfter(0, grpc::StatusCode::UNAVAILABLE, "Service unavailable");
@@ -461,7 +461,7 @@ TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_ImmediateError_PropagatesSt
 /// 3. After brief delay, client calls TryCancel()
 /// 4. OnDone fires with final status
 TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_TryCancel_TerminatesStream) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   // Configure server to return many features
   this->test_service_.SetListFeaturesResponse(MakeFeatures(100));
@@ -509,7 +509,7 @@ TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_TryCancel_TerminatesStream)
 /// 1. Client creates context with already-expired deadline
 /// 2. OnDone fires with DEADLINE_EXCEEDED status
 TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_DeadlineExceeded_PropagatesStatus) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   this->test_service_.SetListFeaturesResponse(MakeFeatures(1));
 
@@ -546,7 +546,7 @@ TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_DeadlineExceeded_Propagates
 /// 2. Each receives the same 10 features
 /// 3. All complete successfully
 TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_MultipleConcurrent_AllComplete) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   // Configure server with features
   this->test_service_.SetListFeaturesResponse(MakeFeatures(10));
@@ -601,7 +601,7 @@ TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_MultipleConcurrent_AllCompl
 /// 2. After last feature, OnReadDone(false) triggers nok callback
 /// 3. Then OnDone fires
 TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_NokCallback_FiresOnStreamEnd) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   this->test_service_.SetListFeaturesResponse(MakeFeatures(2));
 
@@ -643,7 +643,7 @@ TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_NokCallback_FiresOnStreamEn
 /// The held pacings matter most here: with no callback bound there is nobody to call ResumeRead(),
 /// so the reactor must arm the read itself rather than take a hold that nothing would ever release.
 TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_NoReadOkCallbackBound_StreamStillDrains) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   this->test_service_.SetListFeaturesResponse(MakeFeatures(5));
 
@@ -692,7 +692,7 @@ TYPED_TEST(ActiveReadReactorPacingTest, ListFeatures_NoReadOkCallbackBound_Strea
 /// - Every ResumeRead() from the consumer thread is accepted
 /// - All features are received, and the final status is OK
 TYPED_TEST(ActiveReadReactorHeldPacingTest, ListFeatures_ResumedBeforeCallbackReturns_HoldsUntilReturn) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
   constexpr ReadPacing kPacing = TestFixture::kPacing;
 
   const std::vector<routeguide::Feature> features = MakeFeatures(3);
@@ -772,7 +772,7 @@ TYPED_TEST(ActiveReadReactorHeldPacingTest, ListFeatures_ResumedBeforeCallbackRe
 /// - OnDone stays pending for as long as a hold is outstanding
 /// - The RPC completes with OK once the last read is armed
 TYPED_TEST(ActiveReadReactorHeldPacingTest, ListFeatures_StreamStallsUntilResumed) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
   constexpr ReadPacing kPacing = TestFixture::kPacing;
 
   constexpr int kFeatureCount = 5;
@@ -792,7 +792,7 @@ TYPED_TEST(ActiveReadReactorHeldPacingTest, ListFeatures_StreamStallsUntilResume
     // No ResumeRead() here on purpose: the test thread owns the re-arm, which is what makes the
     // stall observable.
     {
-      std::lock_guard<std::mutex> lock(mutex);
+      const std::lock_guard<std::mutex> lock(mutex);
       ++received;
     }
     cv.notify_one();
@@ -815,7 +815,7 @@ TYPED_TEST(ActiveReadReactorHeldPacingTest, ListFeatures_StreamStallsUntilResume
     EXPECT_EQ(done_future.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout)
         << "RPC terminated while a read hold was outstanding";
     {
-      std::lock_guard<std::mutex> lock(mutex);
+      const std::lock_guard<std::mutex> lock(mutex);
       EXPECT_EQ(received, expected) << "Held stream delivered ahead of ResumeRead()";
     }
     EXPECT_TRUE(reactor->ResumeRead()) << "ResumeRead() rejected while a hold was outstanding";
@@ -841,7 +841,7 @@ TYPED_TEST(ActiveReadReactorHeldPacingTest, ListFeatures_StreamStallsUntilResume
 /// - The duplicate call reports rejection rather than acting
 /// - The RPC still terminates once, with OK
 TYPED_TEST(ActiveReadReactorHeldPacingTest, ListFeatures_DuplicateResumeIsRejected) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
   constexpr ReadPacing kPacing = TestFixture::kPacing;
 
   this->test_service_.SetListFeaturesResponse(MakeFeatures(1));
@@ -859,7 +859,7 @@ TYPED_TEST(ActiveReadReactorHeldPacingTest, ListFeatures_DuplicateResumeIsReject
   cbs.read_ok = [&mutex, &cv, &received](grpc::ClientReadReactor<routeguide::Feature>*,
                                          std::unique_ptr<routeguide::Feature>) {
     {
-      std::lock_guard<std::mutex> lock(mutex);
+      const std::lock_guard<std::mutex> lock(mutex);
       ++received;
     }
     cv.notify_one();
@@ -904,9 +904,10 @@ TYPED_TEST(ActiveReadReactorHeldPacingTest, ListFeatures_DuplicateResumeIsReject
 TEST_F(ActiveReadReactorTest, ListFeatures_DeferredConsumer_StreamCompletesWithoutConsumerAction) {
   constexpr int kFeatureCount = 25;
   std::vector<routeguide::Feature> expected_features;
+  expected_features.reserve(kFeatureCount);
   for (int i = 0; i < kFeatureCount; ++i) {
     expected_features.push_back(
-        rg_utils::MakeFeature("Feature " + std::to_string(i), 400000000 + i * 1000, -740000000 + i * 1000));
+        rg_utils::MakeFeature("Feature " + std::to_string(i), 400000000 + (i * 1000), -740000000 + (i * 1000)));
   }
   test_service_.SetListFeaturesResponse(expected_features);
 
@@ -1031,7 +1032,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_PerMessage_MixedDecisions_HoldOnlyKep
                                          std::unique_ptr<routeguide::Feature>) {
     bool keep = false;
     {
-      std::lock_guard<std::mutex> lock(mutex);
+      const std::lock_guard<std::mutex> lock(mutex);
       keep = (received % 3) == 0;
       ++received;
     }
@@ -1056,7 +1057,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_PerMessage_MixedDecisions_HoldOnlyKep
     EXPECT_EQ(done_future.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout)
         << "RPC terminated while kept message " << kept_index << " was held";
     {
-      std::lock_guard<std::mutex> lock(mutex);
+      const std::lock_guard<std::mutex> lock(mutex);
       EXPECT_EQ(received, expected) << "Stream delivered past kept message " << kept_index;
     }
     EXPECT_TRUE(reactor->ResumeRead()) << "ResumeRead() rejected kept message " << kept_index;
@@ -1219,7 +1220,7 @@ TEST_F(ActiveReadReactorTest, ListFeatures_PerMessage_DeclinedAfterResumeRead_Le
   EXPECT_EQ(done_future.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout)
       << "RPC terminated while message 1 was kept";
   {
-    std::lock_guard<std::mutex> lock(mutex);
+    const std::lock_guard<std::mutex> lock(mutex);
     EXPECT_EQ(received, 2) << "Message 0's decline released message 1's hold, and the stream read on";
   }
   EXPECT_TRUE(first_resumed) << "Message 0's own ResumeRead() was rejected";

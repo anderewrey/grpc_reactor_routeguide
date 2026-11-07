@@ -73,8 +73,10 @@ class JournalReadTest : public RouteGuideTestFixtureBase<ReadingService> {
 
   /// Queues each owned message on `loop` as its own task, as a read_ok handing it to EventLoop would, and
   /// counts it. The task reclaims the message and writes its number to `journal`, after `write_time`.
-  Callbacks MakeCallbacks(AppLoop& loop, std::atomic<int>& read, std::atomic<int>& written,
-                          std::vector<int>& journal, std::chrono::microseconds write_time) {
+  // read and written are two counters of one type, told apart by name at each call site.
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+  static Callbacks MakeCallbacks(AppLoop& loop, std::atomic<int>& read, std::atomic<int>& written,
+                                 std::vector<int>& journal, std::chrono::microseconds write_time) {
     Callbacks cbs;
     cbs.read_ok = [&, write_time](auto*, std::unique_ptr<routeguide::Feature> response) {
       ++read;
@@ -116,7 +118,7 @@ TEST_F(JournalReadTest, BlockedJournal_StreamEndsWithEveryRecordQueued_ThenAllAr
       written_at_done = written.load();
       done_promise.set_value(status);
     };
-    routeguide::Rectangle request;
+    const routeguide::Rectangle request;
     reactor = std::make_unique<ClientReactor>(*stub_, CreateClientContext(), request, std::move(cbs));
 
     ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }))
@@ -163,7 +165,7 @@ TEST_F(JournalReadTest, SlowJournal_WritesEveryRecordInOrder_AfterTheRpcEnded) {
       loop.Post([&] { outcome_promise.set_value(Outcome{std::move(journal)}); });
       done_promise.set_value(status);
     };
-    routeguide::Rectangle request;
+    const routeguide::Rectangle request;
     reactor = std::make_unique<ClientReactor>(*stub_, CreateClientContext(), request, std::move(cbs));
 
     ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }));

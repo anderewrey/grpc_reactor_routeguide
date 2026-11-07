@@ -67,7 +67,7 @@ struct Reading {
 TEST(LatestSlotTest, FirstPut_AsksForANotification) {
   LatestSlot<int> slot;
   EXPECT_TRUE(slot.Put(1));
-  EXPECT_EQ(slot.Replaced(), 0u);
+  EXPECT_EQ(slot.Replaced(), 0U);
 }
 
 /// @test A value put before the previous one was taken replaces it, is counted as a replacement, and asks
@@ -77,7 +77,7 @@ TEST(LatestSlotTest, PutBeforeTake_ReplacesTheValue_AndAsksForNoNotification) {
   ASSERT_TRUE(slot.Put(1));
   EXPECT_FALSE(slot.Put(2));
   EXPECT_FALSE(slot.Put(3));
-  EXPECT_EQ(slot.Replaced(), 2u);
+  EXPECT_EQ(slot.Replaced(), 2U);
   EXPECT_EQ(slot.Take(), std::optional<int>(3));
 }
 
@@ -90,7 +90,7 @@ TEST(LatestSlotTest, Take_EmptiesTheSlot_SoTheNextPutAsksAgain) {
   EXPECT_EQ(slot.Take(), std::optional<int>(1));
   EXPECT_EQ(slot.Take(), std::nullopt);
   EXPECT_TRUE(slot.Put(2));
-  EXPECT_EQ(slot.Replaced(), 0u);
+  EXPECT_EQ(slot.Replaced(), 0U);
 }
 
 /// @test The slot keeps a move-only value, so it can carry a message owned under Delivery::kPush too.
@@ -98,7 +98,8 @@ TEST(LatestSlotTest, MoveOnlyValue_IsMovedThrough) {
   LatestSlot<std::unique_ptr<int>> slot;
   ASSERT_TRUE(slot.Put(std::make_unique<int>(7)));
   auto value = slot.Take();
-  ASSERT_TRUE(value.has_value());
+  // A plain branch rather than ASSERT_TRUE(), so that clang-tidy sees the value checked below.
+  if (!value.has_value()) FAIL() << "The slot held no value";
   ASSERT_NE(*value, nullptr);
   EXPECT_EQ(**value, 7);
 }
@@ -157,10 +158,10 @@ class LatestOnlyReadTest : public RouteGuideTestFixtureBase<ReadingService> {
 
   /// Copies each lent message into the slot, numbered, and notifies through `notify` only when the slot
   /// was empty, exactly as an application's read_ok would.
-  Callbacks MakeCallbacks(LatestSlot<Reading>& slot, std::atomic<int>& read_seq,
-                          std::function<void()> notify) {
+  static Callbacks MakeCallbacks(LatestSlot<Reading>& slot, std::atomic<int>& read_seq,
+                                 std::function<void()> notify) {
     Callbacks cbs;
-    cbs.read_ok = [&slot, &read_seq, notify](auto*, const routeguide::Feature& response) {
+    cbs.read_ok = [&slot, &read_seq, notify = std::move(notify)](auto*, const routeguide::Feature& response) {
       const int seq = ++read_seq;
       EXPECT_EQ(response.location().longitude(), seq) << "The stream arrived out of order";
       if (slot.Put(Reading{seq, response})) notify();
@@ -183,7 +184,7 @@ TEST_F(LatestOnlyReadTest, BlockedConsumer_StreamRunsOn_AndOnlyTheLastReadingIsL
 
   auto cbs = MakeCallbacks(slot, read_seq, [&notifications] { ++notifications; });
   cbs.done = [&done_promise](auto*, const grpc::Status& status) { done_promise.set_value(status); };
-  routeguide::Rectangle request;
+  const routeguide::Rectangle request;
   auto reactor = std::make_unique<ClientReactor>(*stub_, CreateClientContext(), request, std::move(cbs));
 
   ASSERT_TRUE(AwaitRpc(done_future, [&] { reactor->TryCancel(); }))
@@ -195,7 +196,7 @@ TEST_F(LatestOnlyReadTest, BlockedConsumer_StreamRunsOn_AndOnlyTheLastReadingIsL
   EXPECT_EQ(notifications.load(), 1) << "A burst of readings must ask for one notification only";
   EXPECT_EQ(slot.Replaced(), static_cast<std::uint64_t>(kReadings - 1));
   const auto last = slot.Take();
-  ASSERT_TRUE(last.has_value());
+  if (!last.has_value()) FAIL() << "The slot held no reading";  // A plain branch, as above
   EXPECT_EQ(last->seq, kReadings);
   EXPECT_EQ(last->feature.name(), "reading " + std::to_string(kReadings));
 }
@@ -237,7 +238,7 @@ TEST_F(LatestOnlyReadTest, SlowConsumer_HandlesOnlyNewerReadings_AndEndsOnTheLas
         outcome_promise.set_value(std::move(outcome));
       });
     };
-    routeguide::Rectangle request;
+    const routeguide::Rectangle request;
     reactor = std::make_unique<ClientReactor>(*stub_, CreateClientContext(), request, std::move(cbs));
     ASSERT_TRUE(AwaitRpc(outcome_future, [&] { reactor->TryCancel(); }));
     // Every callback has run before the outcome is ready, but OnDone() may still be returning.

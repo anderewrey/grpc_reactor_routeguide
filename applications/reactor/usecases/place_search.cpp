@@ -36,7 +36,7 @@ PlaceSearch::~PlaceSearch() {
   TearDownReactor(reactor_, logger_);
 }
 
-void PlaceSearch::Start(routeguide::Rectangle rect) {
+void PlaceSearch::Start(const routeguide::Rectangle& rect) {
   using ResponseT = routeguide::ListFeatures::ResponseT;
   if (reactor_) {
     logger_.info("         | reactor[{}] already in execution, ignoring: {}", fmt::ptr(reactor_.get()),

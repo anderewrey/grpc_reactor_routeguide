@@ -99,8 +99,8 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
             Finish(grpc::Status(error_code_, error_message_));
             return;
           }
-          auto end_time = std::chrono::steady_clock::now();
-          auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time_);
+          const auto end_time = std::chrono::steady_clock::now();
+          const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time_);
           summary_->set_point_count(point_count_);
           summary_->set_feature_count(feature_count_);
           summary_->set_distance(static_cast<int>(distance_));
@@ -207,7 +207,7 @@ TEST_F(ActiveWriteReactorTest, RecordRoute_MultiplePoints_ReturnsCorrectSummary)
   cbs.write_done = [&write_slot](grpc::ClientWriteReactor<routeguide::Point>*, bool) {
     write_slot.release();
   };
-  cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>* base_reactor,
+  cbs.done = [&result_promise](grpc::ClientWriteReactor<routeguide::Point>* /*base_reactor*/,
                                 const grpc::Status& status,
                                 const routeguide::RouteSummary& response) {
     RecordRouteResult result;
