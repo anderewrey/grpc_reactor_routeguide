@@ -337,7 +337,7 @@ TEST_F(ReactorTeardownTest, Read_MessageHeldAfterTheCancel) {
   gate.Open();
 
   if (done.get_future().wait_for(kTimeout) != std::future_status::ready) {
-    (void)reactor.release();  // OnDone() never ran: destroying it would be the use-after-free
+    [[maybe_unused]] const auto* leaked = reactor.release();  // OnDone() never ran: freeing it is a use-after-free
     FAIL() << "The hold of the message read after the cancel kept OnDone() from running";
   }
 }
@@ -430,7 +430,7 @@ TEST_F(ReactorTeardownTest, Bidi_EchoHeldAfterTheCancel) {
   gate.Open();
 
   if (done.get_future().wait_for(kTimeout) != std::future_status::ready) {
-    (void)reactor.release();  // OnDone() never ran: destroying it would be the use-after-free
+    [[maybe_unused]] const auto* leaked = reactor.release();  // OnDone() never ran: freeing it is a use-after-free
     FAIL() << "The hold of the echo read after the cancel kept OnDone() from running";
   }
 }
