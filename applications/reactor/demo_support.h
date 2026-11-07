@@ -11,6 +11,7 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <utility>
 
 /// Helpers shared by every demo scenario. Nothing here belongs to the reactor library: these are the
 /// application-side conveniences the scenarios happen to have in common.
@@ -42,6 +43,43 @@ spdlog::logger& VariantLogger(const std::string& name);
 /// resumes on the application thread, so the thread id no longer tells two coroutines apart; the task does.
 /// Call it first in main(), before any logger is created, so every logger gets it.
 void SetCoroutineLogPattern();
+
+/// One scenario in progress, for as long as an active Activity lives, for RunUntilDone(). Begin() returns an
+/// active one, which the scenario moves to whatever owns its end, so the activity ends wherever that owner is
+/// destroyed, on every path: a coroutine scenario hands it to its coroutine as a by-value parameter, which its
+/// frame holds until the coroutine ends; a callback scenario keeps it in a member from Start(), and its last
+/// handler moves it into a local, which ends it when the handler returns, after the reactor is destroyed. A
+/// default-constructed Activity is not active. Application thread only.
+class Activity {
+ public:
+  Activity() = default;
+  ~Activity() { End(); }
+
+  Activity(const Activity&) = delete;
+  Activity& operator=(const Activity&) = delete;
+  Activity(Activity&& other) noexcept : active_(std::exchange(other.active_, false)) {}
+  Activity& operator=(Activity&& other) noexcept {
+    if (this != &other) {
+      End();
+      active_ = std::exchange(other.active_, false);
+    }
+    return *this;
+  }
+
+  /// @return an active Activity, which counts as in progress until it is destroyed or moved over
+  [[nodiscard]] static Activity Begin();
+
+ private:
+  void End() noexcept;
+
+  bool active_{false};
+};
+
+/// Runs the EventLoop on the calling thread, the application thread, until no Activity is in progress, then
+/// halts it and returns. Returns at once when none is. An event already queued when the last Activity ends
+/// still runs, while a timed event still pending is dropped: hence the rule that a scenario's Activity lives
+/// until it has nothing left to wait for.
+void RunUntilDone();
 
 /// Tears a scenario's reactor down when the scenario is destroyed, whether or not its RPC has ended. An RPC
 /// still in flight is cancelled, and the reactor destroyed only once its OnDone() has run, since gRPC still

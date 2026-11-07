@@ -79,6 +79,7 @@ class RouteChat {
 
   routeguide::RouteGuide::Stub& stub_;
   std::unique_ptr<ClientReactor> reactor_;
+  Activity activity_;
 
   // The queue belongs to this object. Its siblings run concurrently and consume their own notes, so
   // one shared queue would let any of them drain another's.

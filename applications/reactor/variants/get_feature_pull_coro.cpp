@@ -23,10 +23,10 @@ void GetFeature::Start(routeguide::Point point) {
     logger_.info("         | rpc already in execution, ignoring: {}", protobuf_utils::ToString(point));
     return;
   }
-  roots_.Spawn(Run(std::move(point)));
+  roots_.Spawn(Run(std::move(point), Activity::Begin()));
 }
 
-RpcReactor::coro::Task<> GetFeature::Run(routeguide::Point point) {
+RpcReactor::coro::Task<> GetFeature::Run(routeguide::Point point, [[maybe_unused]] Activity activity) {
   assert(OnApplicationThread());
   // (Point 1.1) Create reactor, which sends the request
   Call call{executor_, stub_, point, CreateClientContext()};

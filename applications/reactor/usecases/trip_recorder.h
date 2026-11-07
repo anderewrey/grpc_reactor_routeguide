@@ -69,6 +69,7 @@ class TripRecorder {
 
   routeguide::RouteGuide::Stub& stub_;
   std::unique_ptr<ClientReactor> reactor_;
+  Activity activity_;
 
   // Delta against list_features_push_continuous.h: both counters are shared, so the gRPC thread can
   // measure the backlog. The read counter is incremented only on the gRPC thread, in read_ok, and the

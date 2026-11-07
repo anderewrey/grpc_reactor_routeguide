@@ -73,6 +73,7 @@ class TurnByTurnGuidance {
 
   routeguide::RouteGuide::Stub& stub_;
   std::unique_ptr<ClientReactor> reactor_;
+  Activity activity_;
 
   // The read counter is incremented only on the gRPC thread, in read_ok, and the handled counter
   // only on the application thread, so neither is shared. They stay in step because the event queue

@@ -152,7 +152,7 @@ class RouteGuideClient {
       void OnWriteDone(bool ok) override {
         logger_.info("         | OnWriteDone() OK: {} alarm_.Set()", ok);
         // Delay and then do the next write or WritesDone
-        alarm_.Set(std::chrono::system_clock::now() + std::chrono::milliseconds(rg_utils::GetRandomTimeDelay()),
+        alarm_.Set(std::chrono::system_clock::now() + std::chrono::milliseconds(rg_utils::GetPointDelay()),
                    [this](const bool not_cancelled) {
                      if (!not_cancelled) {
                        logger_.info("REQUEST  | cancelled");
@@ -234,7 +234,7 @@ class RouteGuideClient {
       void OnWriteDone(bool ok) override {
         logger_.info("         | OnWriteDone() OK: {} alarm_.Set()", ok);
         // Delay and then do the next write or WritesDone
-        alarm_.Set(std::chrono::system_clock::now() + std::chrono::milliseconds(rg_utils::GetRandomTimeDelay()),
+        alarm_.Set(std::chrono::system_clock::now() + std::chrono::milliseconds(rg_utils::GetPointDelay()),
                    [this](const bool not_cancelled) {
                      if (!not_cancelled) {
                        logger_.info("REQUEST  | cancelled");

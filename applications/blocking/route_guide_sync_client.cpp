@@ -104,7 +104,7 @@ class RouteGuideClient {
         // Broken stream.
         break;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(rg_utils::GetRandomTimeDelay()));
+      std::this_thread::sleep_for(std::chrono::milliseconds(rg_utils::GetPointDelay()));
     }
     logger.info("EXIT     | WritesDone");
     writer->WritesDone();

@@ -64,6 +64,7 @@ class UnnamedPlacesAudit {
 
   routeguide::RouteGuide::Stub& stub_;
   std::unique_ptr<ClientReactor> reactor_;
+  Activity activity_;
 
   // The aggregate. Incremented only on the gRPC thread, in read_ok, but read by the OnDone handler on
   // the application thread, so both are shared, and atomic rather than locked: the reaction must never

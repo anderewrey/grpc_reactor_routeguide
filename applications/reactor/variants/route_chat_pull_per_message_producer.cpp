@@ -90,6 +90,7 @@ void RouteChat::Start(std::vector<routeguide::RouteNote> notes) {
 
   // (Point 1.1) Create reactor. Its constructor already pulled the first note, on this thread.
   reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), std::move(cbs));
+  activity_ = Activity::Begin();
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
 }
 
@@ -144,6 +145,8 @@ void RouteChat::OnWriteDone(const EventLoop::Event* event) {
 
 void RouteChat::OnDone(const EventLoop::Event* event) {
   assert(OnApplicationThread());
+  // Ends the scenario when this handler returns, after the reactor is destroyed.
+  const Activity activity{std::move(activity_)};
   const auto* reactor = static_cast<ClientReactor*>(event->getData());
   assert(reactor == reactor_.get());
   const auto status = reactor_->Status();
