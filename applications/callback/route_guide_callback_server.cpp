@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -189,16 +190,19 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
             StartWriteAndFinish(&note_, grpc::WriteOptions(), Status::OK);
             return;
           }
-          // Unlike the non-reactor examples, locks twice instead of once around the whole exchange.
-          // See "Why Active Object pattern?" in docs/architecture.md for why.
-          mu_.lock();
+          // Unlike the non-reactor examples, the lock covers the copy and the store, not the writes that
+          // follow: see "Why Active Object pattern?" in docs/architecture.md for why. Taken together, as
+          // the sync server's single lock takes them, so concurrent chats never miss each other's notes.
           logger_.info("REQUEST  | RouteNote: {}", protobuf_utils::ToString(note_));
-          to_send_notes_.clear();
-          std::ranges::copy_if(received_notes_, std::back_inserter(to_send_notes_),
-                               [this](const RouteNote& note) {
-                                 return (note.location() == note_.location());
-                               });
-          mu_.unlock();
+          {
+            const std::lock_guard lock(mu_);
+            to_send_notes_.clear();
+            std::ranges::copy_if(received_notes_, std::back_inserter(to_send_notes_),
+                                 [this](const RouteNote& note) {
+                                   return (note.location() == note_.location());
+                                 });
+            received_notes_.push_back(note_);
+          }
           notes_iterator_ = to_send_notes_.begin();
           NextWrite();
         } else {
@@ -216,9 +220,6 @@ class RouteGuideImpl final : public RouteGuide::CallbackService {
           logger_.info("RESPONSE | RouteNote: {}", protobuf_utils::ToString(n));
           StartWrite(&n);
         } else {
-          mu_.lock();
-          received_notes_.push_back(note_);
-          mu_.unlock();
           logger_.info("         | no more response, waiting for next read");
           StartRead(&note_);
         }

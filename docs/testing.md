@@ -136,10 +136,9 @@ Each cell, [smoke_matrix_cell.sh][smoke-matrix-cell], starts a fresh server, run
 a non-zero exit status, a sanitizer report from either process, or a failed RPC status in the client's log. It then
 writes the client's digest: one line per logger, with the number of messages the scenario received, counted from its
 `read_ok` and `skipped` lines when it logs any, else from its `RESPONSE` lines. The RouteChat loggers make one `chat`
-line instead. Both servers answer each note with the notes already left at its location, by any RPC, but
-`route_guide_callback_server` takes those notes and stores the new one under two separate locks, so concurrent chats
-can miss each other's notes there, and what they receive depends on how they interleave. With one chat scenario, the
-line counts its replies; with several, it counts only the chat scenarios that ran.
+line instead, the replies of all of them together. Both servers answer each note with the notes already left at its
+location, by any RPC, taking those notes and storing the new one at once, so each pair of notes at one location makes
+exactly one reply. What one chat receives depends on how the chats interleave; their total does not.
 
 [smoke_matrix_compare.sh][smoke-matrix-compare] then checks that:
 

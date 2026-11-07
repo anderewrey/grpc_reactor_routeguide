@@ -135,8 +135,8 @@ for other RPCs.
 [route_guide_callback_server.cpp](/applications/callback/route_guide_callback_server.cpp) cannot hold a single
 lock around the shared notes vector for the whole exchange, unlike the non-reactor equivalent in
 [route_guide_sync_server.cpp](/applications/blocking/route_guide_sync_server.cpp), because the reactor's read and
-write callbacks can run on different gRPC threads between a read and a write. It locks twice instead: once to copy
-the notes to send, and once to append the newly received note.
+write callbacks can run on different gRPC threads between a read and a write. It locks only around copying the notes
+to send and appending the newly received note, in the read callback, then writes the copies with no lock held.
 
 The Active Object pattern defers response processing to the application thread instead of processing it inside
 the callback. The Proxy (`GetFeature()`, `ListFeatures()`) returns immediately without touching application

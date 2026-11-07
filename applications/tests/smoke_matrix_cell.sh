@@ -11,11 +11,10 @@
 #
 # The digest has one line per logger, "<logger> <messages>", where messages counts the messages the scenario
 # received: its read_ok and skipped lines when it logs any, which the callback reactors log from the gRPC thread
-# for every message, else its RESPONSE lines. The RouteChat loggers make one "chat" line instead. The servers answer
-# each note with the notes already left at its location, by any RPC, and route_guide_callback_server takes those
-# and stores the new note under two separate locks, so concurrent chats can miss each other's notes there: what
-# they receive depends on how they interleave. With one chat scenario, the line counts its replies, "chat <n>";
-# with several, only how many ran, "chat <n> scenarios".
+# for every message, else its RESPONSE lines. The RouteChat loggers make one "chat <n>" line instead, the replies
+# of all of them together. Both servers answer each note with the notes already left at its location, taking those
+# and storing the new note at once, so each pair of notes at one location makes exactly one reply. What one chat
+# receives depends on how the chats interleave; their total does not.
 #
 # Usage: smoke_matrix_cell.sh <server> <client> <digest>
 
@@ -95,11 +94,14 @@ awk -F '\\]\\[' -v chat="$chat_loggers" '
   }
   END {
     n = 0
-    for (l in chats) n++
+    replies = 0
+    for (l in chats) {
+      n++
+      replies += (l in received) ? received[l] : responses[l]
+    }
     for (l in received) if (!(l in chats)) print l, received[l]
     for (l in responses) if (!(l in received) && !(l in chats)) print l, responses[l]
-    if (n == 1) for (l in chats) print "chat", (l in received) ? received[l] : responses[l] + 0
-    if (n > 1) print "chat", n, "scenarios"
+    if (n > 0) print "chat", replies
   }' "$log" | LC_ALL=C sort > "$work/digest"
 [ -s "$work/digest" ] || fail "no scenario received anything"
 mv "$work/digest" "$digest"
