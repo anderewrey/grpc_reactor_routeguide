@@ -42,7 +42,7 @@ LiveVehiclePosition::~LiveVehiclePosition() {
   TearDownReactor(reactor_, logger_);
 }
 
-void LiveVehiclePosition::Start(routeguide::Rectangle rect) {
+void LiveVehiclePosition::Start(const routeguide::Rectangle& rect) {
   using ResponseT = routeguide::ListFeatures::ResponseT;
   if (reactor_) {
     logger_.info("         | reactor[{}] already in execution, ignoring: {}", fmt::ptr(reactor_.get()),
@@ -76,10 +76,11 @@ void LiveVehiclePosition::Start(routeguide::Rectangle rect) {
 
   // (Point 1.1) Create reactor
   reactor_ = std::make_unique<ClientReactor>(stub_, CreateClientContext(), rect, std::move(cbs));
+  activity_ = Activity::Begin();
   logger_.info("         | reactor[{}] created", fmt::ptr(reactor_.get()));
 }
 
-void LiveVehiclePosition::OnLatestFix(const EventLoop::Event*) {
+void LiveVehiclePosition::OnLatestFix(const EventLoop::Event* /*event*/) {
   // ProceedEvent: the slot's notification, which carries no payload: the fix waits in the slot.
   assert(OnApplicationThread());
   // Empty when the OnDone handler already took the last fix.
@@ -98,6 +99,8 @@ void LiveVehiclePosition::OnReadNOk(const EventLoop::Event* event) {
 void LiveVehiclePosition::OnDone(const EventLoop::Event* event) {
   // (Point 4.9) ProceedEvent: OnDone
   assert(OnApplicationThread());
+  // Ends the scenario when this handler returns, after the reactor is destroyed.
+  const Activity activity{std::move(activity_)};
   const auto* reactor = static_cast<ClientReactor*>(event->getData());
   assert(reactor == reactor_.get());
   // (Point 4.10) update application with status. Every reaction has returned before OnDone() fires, so

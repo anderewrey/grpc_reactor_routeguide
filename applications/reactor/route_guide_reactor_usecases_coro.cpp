@@ -74,7 +74,7 @@ int main(int argc, char** argv) {
   whats_here.Start(patriots_path);
   spdlog::info("-------------- Use case: turn-by-turn guidance (ListFeatures kPush kTurnByTurn, coroutine) -------");
   turn_by_turn_guidance.Start(rect);
-  EventLoop::Run();  // Scheduler component: Continuously processes queued events on main application thread
+  rg_demo::RunUntilDone();  // Scheduler component: processes queued events on this thread until every scenario ends
   spdlog::info("-------------- LEAVING APPLICATION --------------");
   return 0;
 }

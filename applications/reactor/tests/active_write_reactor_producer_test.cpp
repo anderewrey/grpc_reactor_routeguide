@@ -297,7 +297,7 @@ TEST_F(ActiveWriteReactorProducerTest, TryCancelFromApplication_Completes) {
   std::promise<ProducerResult> done_promise;
   auto done_future = done_promise.get_future();
   std::promise<void> writing_promise;
-  auto writing_future = writing_promise.get_future();
+  const auto writing_future = writing_promise.get_future();
   std::atomic<int> write_done_count{0};
 
   Callbacks cbs;

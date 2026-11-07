@@ -90,7 +90,7 @@ int main(int argc, char** argv) {
   list_features_push_turn_by_turn.Start(rect);
   spdlog::info("-------------- GetFeature kPull, coroutine --------------");
   get_feature_pull.Start(point);
-  EventLoop::Run();  // Scheduler component: Continuously processes queued events on main application thread
+  rg_demo::RunUntilDone();  // Scheduler component: processes queued events on this thread until every scenario ends
   spdlog::info("-------------- LEAVING APPLICATION --------------");
   return 0;
 }

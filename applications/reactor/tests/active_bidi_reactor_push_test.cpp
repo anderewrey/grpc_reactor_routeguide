@@ -102,7 +102,7 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
 
   /// RouteChat: Bidirectional streaming - receive notes, send back notes at same location
   grpc::ServerBidiReactor<routeguide::RouteNote, routeguide::RouteNote>* RouteChat(
-      grpc::CallbackServerContext* context) override {
+      grpc::CallbackServerContext* /*context*/) override {
     class RouteChatReactor : public grpc::ServerBidiReactor<routeguide::RouteNote, routeguide::RouteNote> {
      public:
       explicit RouteChatReactor(int max_messages)
@@ -126,8 +126,8 @@ class TestRouteGuideService final : public routeguide::RouteGuide::CallbackServi
         }
 
         // Get location key
-        auto location = std::make_pair(incoming_note_.location().latitude(),
-                                       incoming_note_.location().longitude());
+        const auto location = std::make_pair(incoming_note_.location().latitude(),
+                                             incoming_note_.location().longitude());
 
         // Get all previously stored notes at this location
         auto& notes_at_location = notes_by_location_[location];
@@ -210,7 +210,7 @@ class ActiveBidiReactorTest : public RouteGuideTestFixtureBase<TestRouteGuideSer
     test_service_.ClearMaxMessages();
   }
 
-  std::unique_ptr<grpc::ClientContext> CreateClientContextWithDeadline(
+  static std::unique_ptr<grpc::ClientContext> CreateClientContextWithDeadline(
       std::chrono::milliseconds timeout) {
     auto context = std::make_unique<grpc::ClientContext>();
     context->set_deadline(std::chrono::system_clock::now() + timeout);
@@ -240,7 +240,7 @@ class ActiveBidiReactorPacingTest : public ActiveBidiReactorTest {
   /// a read-only stream, a failed write or a cancel can end the RPC while the hold stands, and the
   /// release then rightly arms nothing.
   template <class KeepFn>
-  static typename Callbacks::OnReadDoneOkCallback ConsumeEach(KeepFn keep) {
+  static Callbacks::OnReadDoneOkCallback ConsumeEach(KeepFn keep) {
     return [keep]([[maybe_unused]] BidiReactorBase* reactor, std::unique_ptr<routeguide::RouteNote> message) {
       keep(std::move(*message));
       if constexpr (kPacing != ReadPacing::kContinuous) {
@@ -288,7 +288,7 @@ using ContinuousCallbacks = routeguide::RouteChat::Callbacks<kDelivery, kSubmiss
 /// - Total expected responses: 0 + 1 + 2 = 3, in the order the server sent them
 /// - The read stream ends with read_nok, then OnDone fires with OK
 TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_SendReceive_MatchesNotes) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   std::promise<RouteChatResult> result_promise;
   std::future<RouteChatResult> result_future = result_promise.get_future();
@@ -355,7 +355,7 @@ TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_SendReceive_MatchesNotes) {
 /// - Send notes to location A, then location B, the last one with SendLastRequest()
 /// - Verify responses arrive correctly for each location
 TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_InterleavedMessages_AllReceived) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   std::promise<RouteChatResult> result_promise;
   std::future<RouteChatResult> result_future = result_promise.get_future();
@@ -435,7 +435,7 @@ TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_InterleavedMessages_AllReceive
 /// - Every echo the server still sends after the close is received, under every pacing: a message
 ///   released after the close completes must still re-arm the read
 TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_ClientClosesFirst_ServerContinues) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   std::promise<RouteChatResult> result_promise;
   std::future<RouteChatResult> result_future = result_promise.get_future();
@@ -497,7 +497,7 @@ TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_ClientClosesFirst_ServerContin
 /// - read_nok fires when server done reading
 /// - OnDone fires with appropriate status
 TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_ServerClosesFirst_ClientContinues) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   // Configure server to close after 2 messages
   this->test_service_.SetMaxMessages(2);
@@ -558,7 +558,7 @@ TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_ServerClosesFirst_ClientContin
 /// - Call TryCancel() mid-stream
 /// - Verify OnDone fires with CANCELLED status
 TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_TryCancel_TriggersOnDone) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
@@ -598,7 +598,7 @@ TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_TryCancel_TriggersOnDone) {
 /// - Server takes time to respond
 /// - OnDone fires with DEADLINE_EXCEEDED status
 TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_DeadlineExceeded_PropagatesStatus) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
@@ -646,7 +646,7 @@ TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_DeadlineExceeded_PropagatesSta
 /// - Wait for all OnDone callbacks
 /// - Verify all complete successfully
 TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_MultipleConcurrent_AllComplete) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   constexpr int kNumStreams = 3;
   constexpr int kNotesPerStream = 2;
@@ -710,14 +710,14 @@ TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_MultipleConcurrent_AllComplete
   // still running: on a timeout, cancel every stream and wait for all of them before failing.
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   bool timed_out = false;
-  for (auto& future : futures) {
+  for (const auto& future : futures) {
     timed_out |= future.wait_until(deadline) != std::future_status::ready;
   }
   if (timed_out) {
     for (auto& stream : streams) {
       stream.reactor->TryCancel();
     }
-    for (auto& future : futures) {
+    for (const auto& future : futures) {
       if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
         std::fprintf(stderr, "A cancelled RouteChat stream never completed, aborting\n");
         std::abort();
@@ -742,7 +742,7 @@ TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_MultipleConcurrent_AllComplete
 /// The held pacings matter most here: with no callback bound there is nobody to release a hold, so the
 /// reactor must arm the read itself rather than take a hold that nothing would ever release.
 TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_NoReadOkCallbackBound_StreamStillDrains) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
 
   std::atomic<bool> read_nok_fired{false};
   std::mutex write_mutex;
@@ -761,7 +761,7 @@ TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_NoReadOkCallbackBound_StreamSt
   cbs.write_done = [&write_mutex, &write_cv, &write_ready](
                        grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                        bool) {
-    std::lock_guard<std::mutex> lock(write_mutex);
+    const std::lock_guard<std::mutex> lock(write_mutex);
     write_ready = true;
     write_cv.notify_one();
   };
@@ -815,7 +815,7 @@ TYPED_TEST(ActiveBidiReactorPacingTest, RouteChat_NoReadOkCallbackBound_StreamSt
 /// - OnDone never fires while a read_ok callback is still running
 /// - The message is received, and the final status is OK
 TYPED_TEST(ActiveBidiReactorHeldPacingTest, RouteChat_ResumedBeforeCallbackReturns_HoldsUntilReturn) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
   constexpr ReadPacing kPacing = TestFixture::kPacing;
 
   std::vector<routeguide::RouteNote> received_notes;
@@ -883,7 +883,7 @@ TYPED_TEST(ActiveBidiReactorHeldPacingTest, RouteChat_ResumedBeforeCallbackRetur
 /// - No further response arrives until ResumeRead() is called
 /// - All 3 echoes arrive and the RPC completes with OK
 TYPED_TEST(ActiveBidiReactorHeldPacingTest, RouteChat_ReadHoldDoesNotBlockWrites) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
   constexpr ReadPacing kPacing = TestFixture::kPacing;
 
   std::mutex mutex;
@@ -895,11 +895,11 @@ TYPED_TEST(ActiveBidiReactorHeldPacingTest, RouteChat_ReadHoldDoesNotBlockWrites
   std::future<grpc::Status> done_future = done_promise.get_future();
 
   // Waits for the next echo to be delivered, without resuming: the test thread owns the re-arm.
-  auto wait_for_received = [&mutex, &cv, &received](int expected) {
+  const auto wait_for_received = [&mutex, &cv, &received](int expected) {
     std::unique_lock<std::mutex> lock(mutex);
     return cv.wait_for(lock, std::chrono::seconds(5), [&received, expected] { return received == expected; });
   };
-  auto wait_for_write = [&mutex, &cv, &write_ready]() {
+  const auto wait_for_write = [&mutex, &cv, &write_ready] {
     std::unique_lock<std::mutex> lock(mutex);
     const bool ready = cv.wait_for(lock, std::chrono::seconds(5), [&write_ready] { return write_ready; });
     write_ready = false;
@@ -911,7 +911,7 @@ TYPED_TEST(ActiveBidiReactorHeldPacingTest, RouteChat_ReadHoldDoesNotBlockWrites
                     grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                     std::unique_ptr<routeguide::RouteNote>) {
     {
-      std::lock_guard<std::mutex> lock(mutex);
+      const std::lock_guard<std::mutex> lock(mutex);
       ++received;
     }
     cv.notify_all();
@@ -921,7 +921,7 @@ TYPED_TEST(ActiveBidiReactorHeldPacingTest, RouteChat_ReadHoldDoesNotBlockWrites
   cbs.write_done = [&mutex, &cv, &write_ready](
                        grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*, bool) {
     {
-      std::lock_guard<std::mutex> lock(mutex);
+      const std::lock_guard<std::mutex> lock(mutex);
       write_ready = true;
     }
     cv.notify_all();
@@ -946,7 +946,7 @@ TYPED_TEST(ActiveBidiReactorHeldPacingTest, RouteChat_ReadHoldDoesNotBlockWrites
       << "SendLastRequest() rejected while the read side was held";
   EXPECT_TRUE(wait_for_write()) << "Write never completed while a read hold was outstanding";
   {
-    std::lock_guard<std::mutex> lock(mutex);
+    const std::lock_guard<std::mutex> lock(mutex);
     EXPECT_EQ(received, 1) << "Read side delivered while it was supposed to be held";
   }
 
@@ -978,7 +978,7 @@ TYPED_TEST(ActiveBidiReactorHeldPacingTest, RouteChat_ReadHoldDoesNotBlockWrites
 /// - All 3 echoes arrive, in order, and read_nok fires
 /// - OnDone fires with OK, with no TryCancel() needed
 TYPED_TEST(ActiveBidiReactorHeldPacingTest, RouteChat_ReleasedAfterCloseRequestStream_ReadsOn) {
-  using Reactor = typename TestFixture::Reactor;
+  using Reactor = TestFixture::Reactor;
   constexpr ReadPacing kPacing = TestFixture::kPacing;
 
   std::mutex mutex;
@@ -989,7 +989,7 @@ TYPED_TEST(ActiveBidiReactorHeldPacingTest, RouteChat_ReleasedAfterCloseRequestS
   std::promise<grpc::Status> done_promise;
   std::future<grpc::Status> done_future = done_promise.get_future();
 
-  auto wait_for_received = [&mutex, &cv, &messages](size_t expected) {
+  const auto wait_for_received = [&mutex, &cv, &messages](size_t expected) {
     std::unique_lock<std::mutex> lock(mutex);
     return cv.wait_for(lock, std::chrono::seconds(5), [&messages, expected] { return messages.size() == expected; });
   };
@@ -1073,7 +1073,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_DeferredConsumer_StreamCompletesWithoutC
   cbs.read_ok = [&parked, &parked_mutex, &parked_cv](
                     grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                     std::unique_ptr<routeguide::RouteNote> note) {
-    std::lock_guard<std::mutex> lock(parked_mutex);
+    const std::lock_guard<std::mutex> lock(parked_mutex);
     parked.push_back(std::move(note));  // Defer everything: no processing, no reactor call
     parked_cv.notify_one();
   };
@@ -1081,7 +1081,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_DeferredConsumer_StreamCompletesWithoutC
   cbs.write_done = [&write_mutex, &write_cv, &write_ready](
                        grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
                        bool) {
-    std::lock_guard<std::mutex> lock(write_mutex);
+    const std::lock_guard<std::mutex> lock(write_mutex);
     write_ready = true;
     write_cv.notify_one();
   };
@@ -1125,7 +1125,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_DeferredConsumer_StreamCompletesWithoutC
   // Each parked message must still hold its own content, not a later message's.
   std::map<std::string, int> counts;
   {
-    std::lock_guard<std::mutex> lock(parked_mutex);
+    const std::lock_guard<std::mutex> lock(parked_mutex);
     ASSERT_EQ(parked.size(), kExpectedResponses);
     for (const auto& note : parked) counts[note->message()]++;
   }
@@ -1144,7 +1144,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_DeferredConsumer_StreamCompletesWithoutC
 TEST_F(ActiveBidiReactorTest, RouteChat_OverlappingWrite_RejectedWhileHoldIsClaimed) {
   std::atomic<int> completed{0};
   std::promise<grpc::Status> done_promise;
-  std::future<grpc::Status> done_future = done_promise.get_future();
+  const std::future<grpc::Status> done_future = done_promise.get_future();
 
   ContinuousCallbacks cbs;
   cbs.read_ok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
@@ -1221,7 +1221,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ConcurrentClaimants_KeepTheHoldAccountin
   // Each writer keeps writing until the server has ended the read stream, and a little after, so the
   // writers are still claiming while OnReadDone(false) claims to release.
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  auto writer = [&reactor, &accepted, &location, &read_ended, deadline] {
+  const auto writer = [&reactor, &accepted, &location, &read_ended, deadline] {
     int after_end = 0;
     while (after_end < 100 && std::chrono::steady_clock::now() < deadline) {
       if (reactor->SendRequest(rg_utils::MakeRouteNote("concurrent", 920, ++location))) ++accepted;
@@ -1250,9 +1250,9 @@ TEST_F(ActiveBidiReactorTest, RouteChat_WriteAfterReadStreamClosed_RejectedDeter
   test_service_.SetMaxMessages(1);  // Server finishes right after the first note
 
   std::promise<grpc::Status> done_promise;
-  std::future<grpc::Status> done_future = done_promise.get_future();
+  const std::future<grpc::Status> done_future = done_promise.get_future();
   std::promise<void> nok_promise;
-  std::future<void> nok_future = nok_promise.get_future();
+  const std::future<void> nok_future = nok_promise.get_future();
 
   ContinuousCallbacks cbs;
   cbs.read_ok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
@@ -1294,7 +1294,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_ReleaseWithNoHold_DoesNotLetOnDoneOverla
   std::atomic<bool> done_saw_nok_returned{false};
 
   std::promise<grpc::Status> done_promise;
-  std::future<grpc::Status> done_future = done_promise.get_future();
+  const std::future<grpc::Status> done_future = done_promise.get_future();
 
   ContinuousCallbacks cbs;
   cbs.read_ok = [](grpc::ClientBidiReactor<routeguide::RouteNote, routeguide::RouteNote>*,
@@ -1409,7 +1409,7 @@ TEST_F(ActiveBidiReactorTest, RouteChat_PerMessage_DeclinedAfterResumeRead_Leave
   EXPECT_EQ(done_future.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout)
       << "RPC terminated while message 1 was kept";
   {
-    std::lock_guard<std::mutex> lock(mutex);
+    const std::lock_guard<std::mutex> lock(mutex);
     EXPECT_EQ(received, 2) << "Message 0's decline released message 1's hold, and the read side read on";
   }
   EXPECT_TRUE(first_resumed) << "Message 0's own ResumeRead() was rejected";

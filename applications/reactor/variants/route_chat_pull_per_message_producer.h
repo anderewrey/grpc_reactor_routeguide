@@ -75,6 +75,7 @@ class RouteChat {
 
   routeguide::RouteGuide::Stub& stub_;
   std::unique_ptr<ClientReactor> reactor_;
+  Activity activity_;
 
   // The queue belongs to this object, and to the reactor while the RPC runs: Start() fills it before
   // creating the reactor, and only next_request reads it afterward. The reactor pulls once at a time,

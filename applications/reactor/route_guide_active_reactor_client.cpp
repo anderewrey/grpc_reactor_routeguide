@@ -149,7 +149,7 @@
 int main(int argc, char** argv) {
   assert(rg_demo::OnApplicationThread());
   spdlog::set_pattern("[%H:%M:%S.%f][%n][%t][%^%L%$] %v");
-  auto logger_Main = spdlog::stdout_color_mt("Main");
+  const auto logger_Main = spdlog::stdout_color_mt("Main");
   spdlog::set_default_logger(logger_Main);
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
@@ -234,7 +234,7 @@ int main(int argc, char** argv) {
   route_chat_push_per_message.Start(notes);
   spdlog::info("-------------- RouteChat kPush kTurnByTurn --------------");
   route_chat_push_turn_by_turn.Start(notes);
-  EventLoop::Run();  // Scheduler component: Continuously processes queued events on main application thread
+  rg_demo::RunUntilDone();  // Scheduler component: processes queued events on this thread until every scenario ends
   spdlog::info("-------------- LEAVING APPLICATION --------------");
   return 0;
 }

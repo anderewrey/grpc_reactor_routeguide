@@ -5,6 +5,8 @@
 
 #include "rg_service/rg_utils.h"
 
+#include <gflags/gflags.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -110,7 +112,12 @@ const Point& rg_utils::GetRandomPoint(const FeatureList& feature_list) {
   return feature_list[feature_distribution(generator)].location();
 }
 
-unsigned rg_utils::GetRandomTimeDelay() {
+DEFINE_int32(point_delay_ms, -1,
+             "Delay between two RecordRoute points, in milliseconds. Negative: random between 500 and 1500 ms, "
+             "as in gRPC's route_guide example. The smoke tests set it short.");
+
+unsigned rg_utils::GetPointDelay() {
+  if (FLAGS_point_delay_ms >= 0) return static_cast<unsigned>(FLAGS_point_delay_ms);
   static const unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
   static std::default_random_engine generator(seed);
   static std::uniform_int_distribution<unsigned> delay_distribution(500, 1500);

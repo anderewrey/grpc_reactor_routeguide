@@ -54,7 +54,7 @@ class ListFeatures {
   /// Proxy component: creates the Method Request and returns immediately.
   /// Runs on the application thread. A second call while one RPC is in flight is refused.
   /// @param rect bounding the features to list
-  void Start(routeguide::Rectangle rect);
+  void Start(const routeguide::Rectangle& rect);
 
  private:
   /// Application-thread handler for OnReadDoneNOk.
@@ -66,6 +66,7 @@ class ListFeatures {
 
   routeguide::RouteGuide::Stub& stub_;
   std::unique_ptr<ClientReactor> reactor_;
+  Activity activity_;
 
   // Incremented only on the gRPC thread, in read_ok, but read by the OnDone handler on the application
   // thread, so it is shared, and atomic rather than locked: the reaction must never wait on the

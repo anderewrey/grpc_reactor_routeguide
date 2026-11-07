@@ -53,9 +53,9 @@ DIR=cmake-build-vcpkg-debug-gcc
 ./$DIR/applications/reactor/route_guide_active_reactor_client
 ```
 
-The demo starts all of its scenarios at once, one per variant it shows, and keeps its event loop running, so stop it
-with Ctrl+C once the output settles. Each scenario logs under its own name, and each part below gives the `grep` that picks
-it out. The scenario files live in
+The demo starts all of its scenarios at once, one per variant it shows, runs its event loop until the last one has
+ended and destroyed its reactor, then exits. Each scenario logs under its own name, and each part below gives the
+`grep` that picks it out. The scenario files live in
 [applications/reactor/variants/](/applications/reactor/variants/), one per variant, and they are what you copy. Its
 [README](/applications/reactor/variants/README.md) lists every scenario with its variant, and the use cases, which
 show a variant serving a real-life situation, are in [usecases/](/applications/reactor/usecases/), run by their own
@@ -91,7 +91,7 @@ class GetFeature {
 
  public:
   explicit GetFeature(routeguide::RouteGuide::Stub& stub);
-  void Start(routeguide::Point point);           // creates the reactor, and returns at once
+  void Start(const routeguide::Point& point);    // creates the reactor, and returns at once
 
  private:
   void OnDone(const EventLoop::Event* event);    // a handler, on the application thread

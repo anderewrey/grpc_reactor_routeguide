@@ -23,7 +23,8 @@ const char* GetFeatureName(const routeguide::Point& point, const FeatureList& fe
 bool IsPointWithinRectangle(const routeguide::Rectangle& rectangle, const routeguide::Point& point);
 routeguide::Feature GetFeatureFromPoint(const FeatureList& feature_list, const routeguide::Point& point);
 const routeguide::Point& GetRandomPoint(const FeatureList& feature_list);
-unsigned GetRandomTimeDelay();
+/// @return the delay between two RecordRoute points, in milliseconds, set by --point_delay_ms
+unsigned GetPointDelay();
 }  // namespace rg_utils
 
 namespace routeguide {

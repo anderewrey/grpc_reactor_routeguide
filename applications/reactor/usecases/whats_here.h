@@ -49,7 +49,7 @@ class WhatsHere {
   /// Proxy component: creates the Method Request and returns immediately.
   /// Runs on the application thread. A second call while one RPC is in flight is refused.
   /// @param point tapped on the map
-  void Start(routeguide::Point point);
+  void Start(const routeguide::Point& point);
 
  private:
   /// Application-thread handler for the OnDone event. The event data is the reactor, which still holds
@@ -58,6 +58,7 @@ class WhatsHere {
 
   routeguide::RouteGuide::Stub& stub_;
   std::unique_ptr<ClientReactor> reactor_;
+  Activity activity_;
   spdlog::logger& logger_{VariantLogger("WhatsHere")};
 
   // Declared last, so destruction deregisters the handler before anything it reaches is gone. The
