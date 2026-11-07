@@ -445,6 +445,9 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
     context_->TryCancel();
     // Published before the held message is claimed, so a release call racing this one arms no read.
     stream_no_more_ = true;
+    // Published before the claim too, so a message whose hold is published after it is released by its
+    // own reaction, see ReleaseIfTornDown().
+    tearing_down_ = true;
     ReleaseHeldRead();
     return done_latch_->WaitFor(timeout);
   }
@@ -528,16 +531,16 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
       this->AddHold();
       // Published only once the hold is taken: the flag is what the releasing call claims, so setting
       // it is already part of the hand-off.
-      [[maybe_unused]] const auto held = PublishHeld();
+      const auto held = PublishHeld();
       if constexpr (kPacing == ReadPacing::kPerMessage) {
         // (Point 2.6, or 2.17 / 2.14 when declined) TriggerEvent: OnReadDoneOk. Held if the callback keeps
         // the message.
-        if (HandOver(message)) return;
-        ReleaseDeclined(held);
+        if (!HandOver(message)) ReleaseDeclined(held);
       } else {
         // (Point 2.6) TriggerEvent: OnReadDoneOk. The application owns the re-arm from here.
         HandOver(message);
       }
+      ReleaseIfTornDown(held);
     }
   }
 
@@ -601,6 +604,20 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
     if (flag.exchange(0) != 0) this->RemoveHold();
   }
 
+  /// After the hand-over: releases the hold of this message, without arming a read, when CancelAndWait()
+  /// ran before the hold was published and so found nothing to release. Nobody tearing down will claim it.
+  /// Both sides publish before they test: CancelAndWait() sets tearing_down_ before its claim, and this
+  /// reaction publishes its token before reading tearing_down_. So either that claim finds the token, or
+  /// this reaction sees the flag, and the token claim lets exactly one of them release the hold. Done once
+  /// the callback has returned, so the hold still covers the whole callback, and claimed with the message's
+  /// own token, so a next message already held on another gRPC thread keeps its hold.
+  /// @param held the token PublishHeld() returned for this message
+  void ReleaseIfTornDown(std::uint64_t held) {
+    if (!tearing_down_) return;
+    auto& flag = (kDelivery == Delivery::kPull) ? response_ready_ : read_held_;
+    if (flag.compare_exchange_strong(held, 0)) this->RemoveHold();
+  }
+
   grpc::Status status_;
   // Signalled once OnDone() has run, for CancelAndWait().
   std::shared_ptr<detail::DoneLatch> done_latch_{std::make_shared<detail::DoneLatch>()};
@@ -629,6 +646,11 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
   // GetResponse() and ResumeRead(), since every other StartRead() is issued from inside a reaction.
   // Set by gRPC thread, read by application thread.
   std::atomic_bool stream_no_more_{false};
+
+  // Set by CancelAndWait() before it claims a held message, read by OnReadDoneOk() once a message is
+  // handed over, so that a hold published after that claim is still released. See ReleaseIfTornDown().
+  // Set by application thread, read by gRPC thread.
+  std::atomic_bool tearing_down_{false};
 };
 
 /// Template callbacks for stream-writer RPC client reactor. It contains all available callbacks slots
@@ -1299,6 +1321,7 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
     // Published before the releases below, so a release call racing this one arms no read, and an
     // OnWriteDone() re-arming the idle-window hold meanwhile releases it itself.
     stream_no_more_ = true;
+    tearing_down_ = true;  // As in ActiveReadReactor::CancelAndWait()
     ReleaseHeldRead();
     if constexpr (kPushes) ReleaseWriteIdleHold();
     return done_latch_->WaitFor(timeout);
@@ -1416,13 +1439,13 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
     } else {
       // Holding the read side. Taken before the callback, for the same reason as in ActiveReadReactor.
       this->AddHold();
-      [[maybe_unused]] const auto held = PublishHeld();
+      const auto held = PublishHeld();
       if constexpr (kPacing == ReadPacing::kPerMessage) {
-        if (HandOver(message)) return;
-        ReleaseDeclined(held);
+        if (!HandOver(message)) ReleaseDeclined(held);
       } else {
         HandOver(message);
       }
+      ReleaseIfTornDown(held);  // As in ActiveReadReactor::OnReadDoneOk()
     }
   }
 
@@ -1477,6 +1500,15 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   void ReleaseHeldRead() {
     auto& flag = (kDelivery == Delivery::kPull) ? response_ready_ : read_held_;
     if (flag.exchange(0) != 0) this->RemoveHold();
+  }
+
+  /// After the hand-over: releases the hold of this message when CancelAndWait() ran before it was
+  /// published, as ActiveReadReactor::ReleaseIfTornDown() does.
+  /// @param held the token PublishHeld() returned for this message
+  void ReleaseIfTornDown(std::uint64_t held) {
+    if (!tearing_down_) return;
+    auto& flag = (kDelivery == Delivery::kPull) ? response_ready_ : read_held_;
+    if (flag.compare_exchange_strong(held, 0)) this->RemoveHold();
   }
 
   /// Submission::kReactorPulls: asks next_request for the next request, and writes it, or closes the request
@@ -1545,5 +1577,9 @@ class ActiveBidiReactor : public grpc::ClientBidiReactor<RequestT, ResponseT> {
   // failure on either direction means neither will succeed anymore, so one flag covers both.
   // Set by gRPC thread, read by application thread.
   std::atomic_bool stream_no_more_{false};
+
+  // Set by CancelAndWait(), read by OnReadDoneOk(), as in ActiveReadReactor. Not stream_no_more_, which a
+  // failed write also sets here, while the application may still take a message it holds.
+  std::atomic_bool tearing_down_{false};
 };
 }  // namespace RpcReactor::Client
