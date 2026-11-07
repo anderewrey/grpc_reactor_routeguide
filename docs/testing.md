@@ -133,7 +133,9 @@ against `route_guide_sync_server` and `route_guide_callback_server`, twelve CTes
 the sanitizer jobs included.
 
 Each cell, [smoke_matrix_cell.sh][smoke-matrix-cell], starts a fresh server, runs the client to its end, and fails on
-a non-zero exit status, a sanitizer report from either process, or a failed RPC status in the client's log. It then
+a non-zero exit status, a sanitizer report from either process, or a failed RPC status in the client's log. It runs
+the client with `--point_delay_ms=5`, so the sync and callback clients' RecordRoute waits 5 ms between points rather
+than gRPC's example's random 0.5 to 1.5 s. It then
 writes the client's digest: one line per logger, with the number of messages the scenario received, counted from its
 `read_ok` and `skipped` lines when it logs any, else from its `RESPONSE` lines. The RouteChat loggers make one `chat`
 line instead, the replies of all of them together. Both servers answer each note with the notes already left at its

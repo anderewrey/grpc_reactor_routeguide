@@ -73,7 +73,8 @@ until grep -q 'Server listening' "$work/server.log"; do
 done
 
 log="$work/client.log"
-"$client" > "$log" 2>&1 || fail "client exited with status $?"
+# RecordRoute waits only a few milliseconds between points, rather than gRPC's example's 0.5 to 1.5 s.
+"$client" --point_delay_ms=5 > "$log" 2>&1 || fail "client exited with status $?"
 check_sanitizers "$log"
 
 # An RPC that fails the same way on both servers would leave the digests equal. A false OnReadDone() or
