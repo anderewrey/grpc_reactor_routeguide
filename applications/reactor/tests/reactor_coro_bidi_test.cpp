@@ -261,6 +261,7 @@ Task<> ReadQueuedBeforeTheAwait(Executor* executor, routeguide::RouteGuide::Stub
   if (reply) seen->replies.push_back(reply->message());
   seen->closed = co_await chat.Close();
   EXPECT_FALSE(co_await chat.Read());
+  EXPECT_FALSE(co_await chat.Read());  // after the end, at once
   seen->status = co_await chat.Finish();
   done->set_value();
 }
@@ -305,6 +306,28 @@ Task<> ReadAndCancel(Executor* executor, routeguide::RouteGuide::Stub* stub, See
   Chat chat{*executor, *stub};
   static_cast<void>(co_await WhenAll(ReadAll(&chat, seen), WriteThenCancel(&chat, seen)));
   seen->status = co_await chat.Finish();
+  done->set_value();
+}
+
+/// Reads until Read() gives nothing, then reads once more, which gives nothing at once.
+Task<int> ReadAllThenOnceMore(Chat* chat, Seen* seen) {
+  const int read = co_await ReadAll(chat, seen);
+  if (co_await chat->Read()) seen->replies.emplace_back("after the end");
+  co_return read;
+}
+
+/// Writes one note, then awaits Finish() early, while the sibling reader still waits for a reply.
+Task<int> WriteThenFinish(Chat* chat, Seen* seen) {
+  seen->writes.push_back(co_await chat->Write(NoteNumber(1)));
+  seen->status = co_await chat->Finish();
+  co_return 0;
+}
+
+/// A reading coroutine, and a writing one that ends the RPC with Finish() while the reader waits.
+Task<> FinishWhileTheReaderWaits(Executor* executor, routeguide::RouteGuide::Stub* stub, Seen* seen,
+                                 std::promise<void>* done) {
+  Chat chat{*executor, *stub};
+  static_cast<void>(co_await WhenAll(ReadAllThenOnceMore(&chat, seen), WriteThenFinish(&chat, seen)));
   done->set_value();
 }
 
@@ -449,6 +472,7 @@ TEST_F(ReactorCoroBidiTest, RouteChat_ServerError_ReadEnds_FinishGivesTheError) 
   const Seen seen = Chatter(1000, std::chrono::milliseconds(5));
 
   EXPECT_EQ(seen.replies, Messages(2));
+  ASSERT_FALSE(seen.writes.empty());
   EXPECT_EQ(seen.writes.back(), false);
   EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::NOT_FOUND);
 }
@@ -530,6 +554,19 @@ TEST_F(ReactorCoroBidiTest, RouteChat_FinishBeforeCloseAfterTheServerError_Gives
 
   EXPECT_EQ(seen.replies, Messages(1));
   EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::NOT_FOUND);
+}
+
+/// @test Finish() awaited by the writing coroutine, while the reading one still waits for a reply, ends the RPC
+/// cancelled: the reader gets the end of the stream, and a Read() after it gives nothing at once, even once
+/// Finish() has destroyed the reactor.
+TEST_F(ReactorCoroBidiTest, RouteChat_FinishWhileTheReaderWaits_TheReaderGetsTheEnd) {
+  test_service_.Silent();
+  Seen seen;
+  RunToEnd([&](std::promise<void>* done) { return FinishWhileTheReaderWaits(&executor_, stub_.get(), &seen, done); });
+
+  EXPECT_EQ(seen.writes, std::vector<bool>{true});
+  EXPECT_TRUE(seen.replies.empty());
+  EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::CANCELLED);
 }
 
 /// @test A frame destroyed with the reader waiting for a reply and a write in flight, both under the join,

@@ -752,13 +752,15 @@ class Source {
 /// and Close() never suspending.
 ///
 /// Stopping early is awaiting Finish() before Read() has given nothing, or before Close() with the RPC still
-/// running: it cancels the RPC and drops the messages still queued. The status is then CANCELLED, unless the
+/// running: it cancels the RPC and drops the messages queued so far. The status is then CANCELLED, unless the
 /// server's own status had already arrived.
 ///
 /// The reactor lives in the Bidi, so in the frame of the coroutine that declares it, which must outlive both
 /// sides: the joined task. Finish() destroys it on the application thread once its OnDone() has run. A Bidi
 /// destroyed before, such as in a frame destroyed while both sides are suspended, cancels the RPC and
-/// destroys the reactor once OnDone() has run, or leaks it should OnDone() never come.
+/// destroys the reactor once OnDone() has run, or leaks it should OnDone() never come. Destroy such a frame
+/// only once the executor no longer resumes anything, as for every awaitable: the flows' frames are destroyed
+/// before the Bidi, so a callback in between could still hand the executor a destroyed flow.
 ///
 /// Non-copyable and non-movable: the reactor's callbacks refer to it.
 /// @tparam ReactorT a service-specific reactor, deriving from Client::ActiveBidiReactor under Delivery::kPush,
@@ -810,7 +812,7 @@ class Bidi {
         reactor_(std::make_unique<ReactorT>(stub, std::move(context), MakeCallbacks())) {}
 
   /// Cancels an RPC still in flight, and destroys the reactor once its OnDone() has run. The messages still
-  /// queued are dropped with the Bidi.
+  /// queued are dropped with the Bidi. Only once the executor no longer resumes anything, see the class.
   ~Bidi() {
     inbox_.Abandon();
     write_.Abandon();
@@ -825,7 +827,7 @@ class Bidi {
 
   /// Sends a best-effort cancel. Callable from the application thread at any time: both sides then end, so
   /// Read() gives nothing once the messages already queued are taken, Write() gives false, and Finish()
-  /// returns CANCELLED.
+  /// returns CANCELLED, unless the server's own status had already arrived.
   void TryCancel() {
     if (reactor_) reactor_->TryCancel();
   }
@@ -833,18 +835,19 @@ class Bidi {
   /// Takes the next message: at once when one is queued, or once the reactor hands one over. Awaited by one
   /// coroutine at a time, until it gives nothing; awaited again after, it gives nothing at once.
   /// @return an awaitable whose co_await gives the next message, owned, or nothing once the stream has ended
-  [[nodiscard]] auto Read() noexcept {
+  [[nodiscard]] auto Read() {
     struct Awaiter {
       Bidi& bidi;
       bool waits = false;  // await_ready() found nothing to take, so a read callback hands the coroutine over
-      bool await_ready() noexcept {
+      bool await_ready() {
         waits = !bidi.read_ended_ && !bidi.inbox_.ReadyOrWait();
         return !waits;
       }
       bool await_suspend(std::coroutine_handle<> waiter) const noexcept { return bidi.inbox_.Suspend(waiter); }
       MessageT await_resume() const { return bidi.TakeRead(waits); }
     };
-    assert(reactor_ && "Read() comes before Finish()");
+    // After Finish(), a Read() gives nothing: Finish() ended the reads, or Read() had already given nothing.
+    assert((reactor_ || read_ended_) && "Read() before Finish(), or after the end of the stream");
     return Awaiter{*this};
   }
 
@@ -860,7 +863,8 @@ class Bidi {
       bool await_suspend(std::coroutine_handle<> waiter) const noexcept { return bidi.write_.Suspend(waiter); }
       bool await_resume() const { return started && bidi.TakeWrite(); }
     };
-    assert(reactor_ && !closed_ && "Write() comes before Close() and Finish()");
+    // After an early Finish(), a Write() gives false at once: Finish() ended the writes.
+    assert(!closed_ && (reactor_ || write_ended_) && "Write() comes before Close(), and before Finish() ends it");
     // Refused once the RPC has ended: cancelled, a write failed, the read side ended, or OnDone() has run.
     // Never because a write is in flight, since the coroutine resumed from the last one before it could call
     // this.
@@ -880,7 +884,7 @@ class Bidi {
       static void await_suspend(std::coroutine_handle<> /*waiter*/) noexcept {}
       bool await_resume() const noexcept { return closing; }
     };
-    assert(reactor_ && !closed_ && "Close() is called once, before Finish()");
+    assert(!closed_ && (reactor_ || write_ended_) && "Close() is called once, before Finish() unless it ended it");
     closed_ = true;
     const bool closing = !write_ended_ && reactor_->CloseRequestStream();
     if (!closing) write_ended_ = true;
@@ -888,11 +892,12 @@ class Bidi {
   }
 
   /// Awaited exactly once, by the task that joins both sides, once both are done: resumes on the application
-  /// thread once the RPC has ended. Awaited before Read() has given nothing, or before Close() with the RPC
+  /// thread once the RPC has ended. Awaited by one side while the other waits, it ends that one too: its Read()
+  /// gives nothing, its Write() false. Awaited before Read() has given nothing, or before Close() with the RPC
   /// still running, it ends the RPC first: it cancels it, which ends both sides, and drops the messages still
   /// queued. The status is then CANCELLED, unless the server's own status had already arrived.
   /// @return an awaitable whose co_await gives the RPC's status
-  [[nodiscard]] auto Finish() noexcept {
+  [[nodiscard]] auto Finish() {
     struct Awaiter {
       Bidi& bidi;
       static bool await_ready() noexcept { return false; }

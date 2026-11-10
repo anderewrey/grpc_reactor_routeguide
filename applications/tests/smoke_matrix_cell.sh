@@ -15,7 +15,9 @@
 # of all of them together. Both servers answer each note with every note already left at its location, and store
 # the new one, so each pair of notes at one location makes exactly one reply. What one chat receives depends on
 # how the chats interleave; their total does not: it must equal the replies the server owes for the notes its log
-# shows it read, the sum of n(n-1)/2 over the locations, which proves every reply was received.
+# shows it read, the sum of n(n-1)/2 over the locations, which proves every reply was received. It assumes every
+# chat reads to the end of its stream, and sends no note with an empty message, which the callback server answers
+# without logging or storing it.
 #
 # A chat whose logger logs a line per note it sends, "typed    |" or "sent     |", also makes a
 # "notes:<logger> <n>" line, which smoke_matrix_compare.sh compares between a twin and its parent: a chat's replies
@@ -32,7 +34,7 @@ work=$(mktemp -d)
 server_pid=
 
 # The loggers of the scenarios that share the server's RouteChat note history.
-chat_loggers='^(RouteChat.*|ConvoyChat(\.coro)?|GuidedTourBriefing)$'
+chat_loggers='^(RouteChat.*|ConvoyChat([.]coro)?|GuidedTourBriefing)$'
 
 cleanup() {
   if [ -n "$server_pid" ]; then
@@ -118,7 +120,7 @@ awk -F '\\]\\[' -v chat="$chat_loggers" '
 # The replies the server owes: for the notes it read, keyed by their location, n(n-1)/2 per location.
 owed=$(awk '
   /\[RouteChat\]/ && /REQUEST  \| RouteNote:/ {
-    key = match($0, /location \{[^}]*\}/) ? substr($0, RSTART, RLENGTH) : "none"
+    key = match($0, /location [{][^}]*[}]/) ? substr($0, RSTART, RLENGTH) : "none"
     notes[key]++
   }
   END {

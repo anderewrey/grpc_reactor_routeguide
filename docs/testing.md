@@ -768,6 +768,7 @@ number of notes.
 | `RouteChat_FinishBeforeClose_EndsTheRpcCancelled` | An early `Finish()` cancels, on the loop |
 | `RouteChat_FinishBeforeReadingTheQueuedReplies_GivesTheServersStatus` | The queue dropped, the status arrived kept |
 | `RouteChat_FinishBeforeCloseAfterTheServerError_GivesTheError` | The server's status, once it has arrived |
+| `RouteChat_FinishWhileTheReaderWaits_TheReaderGetsTheEnd` | The waiting reader ends, a later `Read()` too |
 | `RouteChat_FrameDestroyedWithBothSidesInFlight_CancelsAndWaitsForOnDone` | A read waiting, a write in flight |
 
 `ReadSideEndsWhileWritesGoOn` writes 5 milliseconds apart, and checks that the reader gets every echo then the end,
@@ -779,6 +780,18 @@ OK, not a `CANCELLED` nobody sent. `FrameDestroyedWithBothSidesInFlight` keeps a
 whose `OnWriteDone()` sleeps 1 second, against a service that echoes nothing, so the reader waits too, and checks the
 reactor was released well under the 5 seconds of `kOnDoneTimeout`, and that nothing was posted after the
 destruction.
+
+`FinishWhileTheReaderWaits` came from the pre-PR review: `Finish()` awaited by the writing coroutine while the reading
+one waits. Its first run aborted on `Read()`'s assert, since the reader, ended by the cancel, read once more after
+`Finish()` had destroyed the reactor; `Read()`, `Write()` and `Close()` now assert only what they need, and give
+nothing or false at once.
+
+The same review pointed at a window no test provokes: when a frame holding a `Bidi` is destroyed while both flows
+wait, the flows' frames go first, and a read or write callback that comes before the `Bidi`'s destructor abandons its
+hand-overs could hand the executor a destroyed flow. The window is the few instructions between the two, on the
+application thread, which a test cannot stretch without changing the code under test, so it is not provoked. Every
+awaitable has the same rule, which their scenarios state: a frame is destroyed while suspended only once the loop no
+longer runs. The `Bidi`'s comment and [reactor_coro.md](/applications/reactor/reactor_coro.md) say it too.
 
 The whole file held in 10 local runs, and in 5 under GCC's AddressSanitizer and UndefinedBehaviorSanitizer.
 
@@ -792,9 +805,9 @@ Mutants, each run once against its test file, locally:
 | The `Join` not destroying its branch frames | Both frame destruction tests |
 | The awaiter's task number not restored by the join | `LastBranchResumedOutsideTheTask` |
 | A queued message not waking a waiting `Read()` | `FinishBeforeClose`: the reader waits for the end |
-| The end of the stream not waking a waiting `Read()` | Six tests: the reader never ends |
+| The end of the stream not waking a waiting `Read()` | Seven tests: the reader never ends |
 | The read hand-over not re-armed after a wait | Four tests: `Read()` ends the stream at the next wait |
-| An early `Finish()` not cancelling | `FinishBeforeClose`: the open write flow holds the RPC |
+| An early `Finish()` not cancelling | `FinishBeforeClose` and `FinishWhileTheReaderWaits` |
 | The `Bidi` destructor not abandoning the read hand-over | `FrameDestroyedWithBothSidesInFlight`: a crash |
 | An early `Finish()` not dropping the queue | None: the `Bidi` frees it moments later anyway |
 | `convoy_chat_coro` not showing its first reply | The smoke matrix: 2 replies received, 3 owed |

@@ -412,7 +412,7 @@ class Join {
     Branch get_return_object() noexcept { return Branch{BranchHandle::from_promise(*this)}; }
     static std::suspend_always initial_suspend() noexcept { return {}; }
     static auto final_suspend() noexcept {
-      struct Arrive {
+      struct ArriveAwaiter {
         static bool await_ready() noexcept { return false; }
         static std::coroutine_handle<> await_suspend(BranchHandle self) noexcept {
           Join& join = *self.promise().join;
@@ -423,7 +423,7 @@ class Join {
         }
         static void await_resume() noexcept {}
       };
-      return Arrive{};
+      return ArriveAwaiter{};
     }
     static void return_void() noexcept {}
     // A branch only awaits a Task, whose own promise ends the process first, so this never runs.
@@ -448,7 +448,11 @@ class Join {
 
   /// Takes both tasks, not started. Not noexcept: the branch frames are allocated here, not when awaited.
   Join(Task<A> a, Task<B> b)
-      : first_(Run(std::move(a), &first_value_).handle), second_(Run(std::move(b), &second_value_).handle) {}
+      : first_(Run(std::move(a), &first_value_).handle), second_(Run(std::move(b), &second_value_).handle) {
+    // The Join is built in place in the awaiter's frame, by co_await, so this address is final.
+    first_.promise().join = this;
+    second_.promise().join = this;
+  }
 
   /// Destroys both branch frames, and with them both tasks, finished or suspended.
   ~Join() {
@@ -467,9 +471,6 @@ class Join {
   /// @return true when either suspended, so the awaiter suspends until the second to finish resumes it; false
   ///         when both have already finished, so the awaiter goes on
   bool await_suspend(std::coroutine_handle<> awaiter) noexcept {
-    // Set here, at the Join's final address in the awaiter's frame.
-    first_.promise().join = this;
-    second_.promise().join = this;
     awaiter_ = awaiter;
     const CurrentTask::Id task = CurrentTask::Get();
     task_ = task;

@@ -737,8 +737,8 @@ TEST(CoroWhenAllTest, VoidTasks_JoinOnceBothHaveRun) {
   EXPECT_TRUE(joined);
 }
 
-Task<int> TrackedAfterSuspending(Tracked tracked, std::coroutine_handle<>* handle) {
-  const Tracked local = tracked;
+Task<int> TrackedAfterSuspending(Tracked tracked, int* live, std::coroutine_handle<>* handle) {
+  const Tracked local(live);
   co_await Suspend{handle};
   ADD_FAILURE() << "a destroyed frame never resumes";
   co_return 0;
@@ -755,8 +755,8 @@ TEST(CoroWhenAllTest, FrameDestroyedWhileBothWait_DestroysBothTasks) {
   std::pair<int, int> result{0, 0};
   {
     RootTasks roots;
-    roots.Spawn(StorePair(&result, WhenAll(TrackedAfterSuspending(Tracked(&live), &first),
-                                           TrackedAfterSuspending(Tracked(&live), &second))));
+    roots.Spawn(StorePair(&result, WhenAll(TrackedAfterSuspending(Tracked(&live), &live, &first),
+                                           TrackedAfterSuspending(Tracked(&live), &live, &second))));
     EXPECT_EQ(live, 4);  // each frame's argument and local
   }
   EXPECT_EQ(live, 0);
@@ -771,17 +771,16 @@ TEST(CoroWhenAllTest, FrameDestroyedWhileOneWaits_DestroysTheFinishedTaskToo) {
     RootTasks roots;
     std::pair<int, int> result{0, 0};
     roots.Spawn(StorePair(&result, WhenAll(TrackedAnswer(Tracked(&live)),
-                                           TrackedAfterSuspending(Tracked(&live), &second))));
+                                           TrackedAfterSuspending(Tracked(&live), &live, &second))));
     EXPECT_EQ(live, 3);  // the finished frame's argument, the suspended frame's argument and local
   }
   EXPECT_EQ(live, 0);
 }
 
-Task<int> RecordTaskThenWait(HandedOverOperation* operation, CurrentTask::Id* at_start,
-                             CurrentTask::Id* after_resume) {
-  *at_start = CurrentTask::Get();
+Task<int> RecordTaskThenWait(HandedOverOperation* operation, SeenTasks* seen) {
+  seen->at_start = CurrentTask::Get();
   co_await *operation;
-  *after_resume = CurrentTask::Get();
+  seen->after_resume = CurrentTask::Get();
   co_return 1;
 }
 
@@ -800,7 +799,8 @@ TEST(CoroWhenAllTest, CurrentTask_BothTasksRunInTheAwaitersTask) {
   RootTasks roots;
   HandedOverOperation first(&executor);
   HandedOverOperation second(&executor);
-  std::vector<CurrentTask::Id> seen(4, CurrentTask::kNone);
+  SeenTasks seen_first;
+  SeenTasks seen_second;
   CurrentTask::Id after_join = CurrentTask::kNone;
   CurrentTask::Id id = CurrentTask::kNone;
   CurrentTask::Id between = CurrentTask::kNone + 1;
@@ -808,8 +808,8 @@ TEST(CoroWhenAllTest, CurrentTask_BothTasksRunInTheAwaitersTask) {
 
   std::promise<void> spawned;
   loop.Post([&] {
-    id = roots.Spawn(JoinTwoWaits(WhenAll(RecordTaskThenWait(&first, &seen[0], &seen[1]),
-                                          RecordTaskThenWait(&second, &seen[2], &seen[3])),
+    id = roots.Spawn(JoinTwoWaits(WhenAll(RecordTaskThenWait(&first, &seen_first),
+                                          RecordTaskThenWait(&second, &seen_second)),
                                   &after_join, &done));
     between = CurrentTask::Get();
     spawned.set_value();
@@ -824,7 +824,10 @@ TEST(CoroWhenAllTest, CurrentTask_BothTasksRunInTheAwaitersTask) {
 
   EXPECT_NE(id, CurrentTask::kNone);
   EXPECT_EQ(between, CurrentTask::kNone);
-  EXPECT_EQ(seen, (std::vector<CurrentTask::Id>{id, id, id, id}));
+  EXPECT_EQ(seen_first.at_start, id);
+  EXPECT_EQ(seen_first.after_resume, id);
+  EXPECT_EQ(seen_second.at_start, id);
+  EXPECT_EQ(seen_second.after_resume, id);
   EXPECT_EQ(after_join, id);
 }
 

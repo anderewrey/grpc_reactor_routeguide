@@ -385,8 +385,12 @@ coro::Task<std::size_t> RouteChat::SendNotes(Chat* chat, std::vector<routeguide:
 | `co_await Write(request)` | Resumes once the write has completed: true, or false when the RPC has ended |
 | `co_await Close()` | Ends the request stream, without suspending: the server may go on sending |
 | `co_await Finish()` | Resumes once the RPC has ended, with its status. Awaited early, it cancels first |
-| `TryCancel()` | Cancels an RPC still in flight: both sides end, and `Finish()` gives `CANCELLED` |
+| `TryCancel()` | Cancels an RPC in flight: both sides end, and `Finish()` gives `CANCELLED`, unless the status came |
 | Destructor | Cancels an RPC in flight, drops the queued messages, destroys the reactor after `OnDone()` |
+
+As for every awaitable, a frame holding a `Bidi` is destroyed while suspended only once the executor no longer
+resumes anything, at shutdown: the flows' frames go first, and a read or write callback that comes before the
+`Bidi`'s own destructor could still hand the executor a flow already destroyed.
 
 Non-copyable and non-movable, since the reactor's callbacks refer to it. The flows take it by pointer, not by
 reference, since a reference parameter of a coroutine dangles once it suspends, which clang-tidy checks.
@@ -403,7 +407,8 @@ gives false. The writes ending, with `Close()`, leaves the reads running until t
 
 `Finish()` is awaited exactly once, by the task that joined both flows. Awaited early, before `Read()` has given
 nothing, or before `Close()` with the RPC still running, it cancels the RPC, which ends both sides, and drops the
-messages still queued. The status is then `CANCELLED`, unless the server's own status had already arrived, which it
+messages queued so far. Awaited by one flow while the other waits, it ends that one too: its `Read()` gives nothing,
+then nothing again at once, and its `Write()` false. The status is then `CANCELLED`, unless the server's own status had already arrived, which it
 then gives: a status nobody sent is never made up. A write flow that returns without `Close()` while the server
 waits for the client's close leaves the join waiting for a read side that never ends, so the write flow closes on
 every path, as in the example.
