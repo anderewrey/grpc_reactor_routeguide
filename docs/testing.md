@@ -115,6 +115,10 @@ no timing. Both are described in [unary awaitable coverage](#unary-awaitable-cov
 re-armed hand-over inside it is tested on its own in coro_task_test.cpp. Both are described in
 [reader coverage](#reader-coverage).
 
+[reactor_coro_unbounded_reader_test.cpp][coro-unbounded-reader-test] tests the reader with an unbounded buffer, the
+same way, as [unbounded buffer coverage](#unbounded-buffer-coverage) describes. Both reader tests share their service,
+their counting executor and their fixture, in [coro_reader_test_support.h][coro-reader-support].
+
 ### Callback application smoke test
 
 [callback_smoke_test.sh][callback-smoke-test] runs the callback example applications themselves,
@@ -546,7 +550,8 @@ Six mutants of `coro::Unary` were each caught:
 
 ### Reader coverage
 
-[reactor_coro_reader_test.cpp][coro-reader-test] runs `ListFeatures` through `coro::Reader`, under both deliveries.
+[reactor_coro_reader_test.cpp][coro-reader-test] runs `ListFeatures` through `coro::Reader` without a buffer, under
+both deliveries.
 Its service streams numbered features, then finishes OK, fails after a given number, or holds the stream until the
 client cancels it, so a coroutine waiting in `Read()` is known to wait.
 
@@ -650,6 +655,75 @@ Three more mutants of the early `Finish()`, each run 5 times against each of its
 `PullFinishAfterTheLastMessage` holds no message, only a read armed for the next one, which the cancel ends, so it
 catches none of them, and shows that a cancel alone is enough there. The third mutant opens the race of a message
 arriving as the cancel is sent, which [the teardown tests](#teardown-coverage) land deterministically.
+
+### Unbounded buffer coverage
+
+[reactor_coro_unbounded_reader_test.cpp][coro-unbounded-reader-test] runs `ListFeatures` through `coro::Reader` over a
+`kPush`, `kContinuous` reactor, which gives it the unbounded buffer. It uses the same service as the reader without a
+buffer, which can also hold back its first message until the test opens a gate, so a `Read()` is known to wait on an
+empty queue. Its first assertions are at compile time: `BufferFor()` maps each `Delivery` and `ReadPacing` to its
+buffer, or to nothing for the combinations no reader takes, whose `Reader` then does not compile.
+
+| Test | Checks |
+| ------ | --------- |
+| `ListFeatures_ReadsEveryMessageInOrder_ThenNothing_ThenFinishOk` | 2000 messages, owned, in order, on the loop |
+| `ListFeatures_EmptyStream_FirstReadGivesNothing` | An empty stream ends at the first `Read()` |
+| `ListFeatures_ServerErrorMidStream_ReadsWhatCameThenFinishGivesTheError` | An error is a status |
+| `ListFeatures_StreamRunsAheadOfASlowCoroutine_MessagesQueue` | A pause queues the rest: no suspension after it |
+| `ListFeatures_WaitingRead_ResumesOnTheNextMessage` | A message wakes a waiting `Read()`, the stream still open |
+| `ListFeatures_WaitingRead_ResumesWithNothingAtTheEndOfTheStream` | The end of the stream wakes it too |
+| `ListFeatures_FinishWithMessagesQueued_DropsThemAndGivesCancelled` | `CANCELLED`, though the server finished OK |
+| `ListFeatures_FinishWithMessagesQueuedOnAHeldStream_EndsTheRpcCancelled` | The cancel ends a stream held open |
+| `ListFeatures_FinishAfterEveryMessageOfAFinishedStream_GivesOk` | Nothing dropped: the server's own OK |
+| `ListFeatures_MessageArrivingAfterAnEarlyFinish_IsDroppedAndGivesCancelled` | A late message is dropped, `CANCELLED` |
+| `ListFeatures_FrameDestroyedWithMessagesQueued_CancelsAndWaitsForOnDone` | Frees nothing under gRPC, posts nothing |
+| `ListFeatures_FrameDestroyedWhileReadWaits_CancelsAndWaitsForOnDone` | The same, with a `Read()` waiting |
+
+Every message test checks the thread too, since each `Read()` resumes on the loop. The run-ahead test reads one
+message, then blocks the loop thread for 200 milliseconds, and on until `Queued()` shows the other two: they were
+queued while no code of the coroutine ran, and it reads them without suspending once, so the executor is handed
+nothing.
+Its sibling without a buffer, `PushReadsOnlyWhenAsked`, shows the opposite. The two waiting tests gate the first
+message, open the gate only once the coroutine has suspended in `Read()`, then wait for it. In the first, the server
+sends one message and holds the stream, so only the message can wake the `Read()` before the test cancels: a wake-up
+left to the end of the stream would come only with the cancel, after five seconds. A test reactor whose second
+`OnReadDone()` sleeps 300 milliseconds lets the coroutine await `Finish()` with an empty queue while that message is
+on its way and the server has already finished OK, so only the reader can say a message was dropped.
+
+Each pause first blocks the loop thread 200 milliseconds, then on until the messages it expects are queued: one run
+in twenty under AddressSanitizer failed while the machine was busy building, when the pauses trusted 200 milliseconds
+alone. Since, all twelve held in 240 runs, locally, with system gRPC, eight processes at once, half of them under
+AddressSanitizer.
+
+Nine mutants of the unbounded `coro::Reader` were run locally against this suite, each on a pristine copy of
+`reactor_coro.h`:
+
+| Mutant | Caught by |
+| ------ | --------- |
+| The read callback not waking a waiting `Read()` | `WaitingRead_ResumesOnTheNextMessage`, and 9 more |
+| The end of the stream not waking a waiting `Read()` | `WaitingRead_ResumesWithNothingAtTheEndOfTheStream`, and 4 more |
+| `Read()` not marking itself waiting | Every test but the frame destroyed while `Read()` waits |
+| No `Rearm()` after a wait | `ReadsEveryMessageInOrder`, and 2 more |
+| An early `Finish()` not dropping the queue | `FinishWithMessagesQueued_DropsThemAndGivesCancelled` |
+| A message after an early `Finish()` dropped, not marked dropped | `MessageArrivingAfterAnEarlyFinish` |
+| An early `Finish()` not cancelling | `FinishWithMessagesQueuedOnAHeldStream`, waiting for ever |
+| The destructor not abandoning the wait | `FrameDestroyedWhileReadWaits`, under ASan: a freed frame resumed |
+| No lock around the queue | ThreadSanitizer, on `ReadsEveryMessageInOrder`: 24 races on the queue, none without it |
+
+The last one is not a failed assertion: removing the lock is a data race, which only ThreadSanitizer reports, so the
+2000-message test is there to let the callback and `Read()` touch the queue at the same time. Locally, against system
+gRPC, which is not instrumented, ThreadSanitizer also reports hundreds of races inside gRPC, in both runs; the races on
+the queue and its callbacks come only with the mutant. The sanitizer job, with its instrumented stack, runs the same
+test.
+
+Two more mutants survived, and were dropped:
+
+- `Rearm()` only after a `Read()` that suspended, not after one whose wake-up came between the lock and `Suspend()`.
+  The next wait would then find the hand-over still ended, and go on with nothing. A callback has to land in those few
+  instructions, which no test can arrange without hooking the reader itself, so it was not provoked.
+- The destructor destroying the reactor without waiting for `OnDone()`. The same `DestroyAfterOnDone()` as the reader
+  without a buffer, whose mutant [reader coverage](#reader-coverage) caught under ASan in CI. Locally the freed
+  reactor is reached inside system gRPC only, which AddressSanitizer does not instrument, so both frame tests pass.
 
 ### Naming convention
 
@@ -898,6 +972,8 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [reactor-eventloop]: /applications/reactor/reactor_eventloop.h
 [coro-unary-test]: /applications/reactor/tests/reactor_coro_unary_test.cpp
 [coro-reader-test]: /applications/reactor/tests/reactor_coro_reader_test.cpp
+[coro-unbounded-reader-test]: /applications/reactor/tests/reactor_coro_unbounded_reader_test.cpp
+[coro-reader-support]: /applications/reactor/tests/coro_reader_test_support.h
 [reactor-coro]: /applications/reactor/reactor_coro.h
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp
 [callback-smoke-test]: /applications/callback/tests/callback_smoke_test.sh
