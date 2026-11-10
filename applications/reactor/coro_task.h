@@ -440,6 +440,7 @@ class Join {
     } else {
       out->emplace(co_await std::move(task));
     }
+    co_return;  // for cppcheck, which takes a body whose every co_await is under if constexpr for a plain function
   }
 
  public:
