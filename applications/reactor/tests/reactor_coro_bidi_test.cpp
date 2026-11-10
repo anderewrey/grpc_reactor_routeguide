@@ -107,15 +107,15 @@ class ChatService final : public routeguide::RouteGuide::CallbackService {
       }
 
       void OnWriteDone(bool /*ok*/) override {
-        bool more = false;
+        const routeguide::RouteNote* next = nullptr;
         {
           const std::lock_guard lock(mutex_);
           out_.pop_front();
-          more = !out_.empty();
-          writing_ = more;
+          writing_ = !out_.empty();
+          if (writing_) next = &out_.front();
         }
-        if (more) {
-          StartWrite(&out_.front());
+        if (next != nullptr) {
+          StartWrite(next);
           return;
         }
         MaybeFinish();
@@ -124,15 +124,17 @@ class ChatService final : public routeguide::RouteGuide::CallbackService {
       void OnDone() override { delete this; }
 
      private:
-      /// Queues a reply, and writes it at once when no write is in flight.
+      /// Queues a reply, and writes it at once when no write is in flight. The deque is only touched under the
+      /// lock, since OnReadDone() and OnWriteDone() run on different threads; the note written keeps its address
+      /// while others are pushed behind it, so StartWrite() gets its pointer outside the lock.
       void Send(const routeguide::RouteNote& note) {
-        bool start = false;
+        const routeguide::RouteNote* next = nullptr;
         {
           const std::lock_guard lock(mutex_);
-          out_.push_back(note);  // a deque: the note in flight keeps its address
-          start = !std::exchange(writing_, true);
+          out_.push_back(note);
+          if (!std::exchange(writing_, true)) next = &out_.back();
         }
-        if (start) StartWrite(&out_.back());
+        if (next != nullptr) StartWrite(next);
       }
 
       /// Finishes with `status` once every queued reply is written.
