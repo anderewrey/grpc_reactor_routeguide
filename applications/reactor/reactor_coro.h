@@ -7,6 +7,7 @@
 
 #include <grpcpp/grpcpp.h>
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <coroutine>
@@ -912,7 +913,7 @@ class Reader<ReactorT> {
   ResumeHandover ready_;  // re-armed after each wait of a Read() for the slot
   ResumeHandover done_;
   bool ended_ = false;  // Read() gave nothing, or Finish() came first. Application thread only
-  // Application thread only: written under the lock by TakeLocked(), which only the coroutine calls.
+  // Application thread only: zeroed by Read(), and set by TakeLocked(), which only the coroutine calls.
   std::uint64_t overwritten_ = 0;       // messages replaced between the last two messages given
   std::uint64_t replaced_at_take_ = 0;  // slot_.Replaced() when the last message was given
   // Guards what follows, shared by the read callbacks on a gRPC thread and the coroutine. The slot's own lock is
@@ -1074,10 +1075,11 @@ class Reader<ReactorT> {
   using Callbacks = Client::ActiveReadCallbacks<ResponseT, Client::Delivery::kPush, Client::ReadPacing::kPerMessage>;
   using Queue = std::deque<std::unique_ptr<ResponseT>>;
 
-  /// @return the capacity, asserted to be at least 1: a reader that holds an empty queue would never resume
+  /// @return the capacity, asserted to be at least 1, and raised to 1 without assertions: a reader that held an
+  ///         empty queue would never resume
   static std::size_t CheckedCapacity(std::size_t capacity) noexcept {
     assert(capacity > 0 && "a bounded reader holds at least one message");
-    return capacity;
+    return std::max<std::size_t>(capacity, 1);
   }
 
   /// The level's own code, on the gRPC thread: queues the message under the lock, then holds the stream once the

@@ -759,7 +759,7 @@ when its `OnDone()` begins.
 | `ListFeatures_FrameDestroyedWhileReadWaits_CancelsAndWaitsForOnDone` | The same, with a `Read()` waiting |
 
 Every coroutine records its thread after each `co_await`, and every test that runs one to its end checks that each
-was the loop's. The 2000-message test pauses a millisecond after each message, so the stream overwrites most of them:
+was the loop's. The 2000-message test pauses a millisecond after each message, so the stream overwrites some of them:
 it checks that every message is either taken or overwritten, that the last one taken is the stream's last, and that
 each one taken is the one after those `Overwritten()` reported before it. The last-message test blocks the loop
 thread after the first message until `OnDone()` has begun: the other two then reached the slot while no code of the
@@ -798,8 +798,9 @@ Every coroutine records its thread after each `co_await`, and every test that ru
 was the loop's. The pause test blocks the loop thread after the first message until two are queued, then 200 ms more,
 long enough for a stream that is not held to send the rest: still two are queued, and three have reached the reader.
 That window is the one fixed delay of the suite, and only an absence is checked after it. The early `Finish()` tests,
-the case the design plan flagged as the likeliest to hang, check that `Finish()` resumes in well under the five seconds
-`DestroyAfterOnDone()` waits: a hold left in place keeps `OnDone()` from coming at all.
+the case the design plan flagged as the likeliest to hang, time `Finish()` alone, and check it resumes in well under
+the five seconds `DestroyAfterOnDone()` waits: a hold left in place keeps `OnDone()` from coming at all. The
+2000-message test blocks once after the first message until the queue is full, so the stream is held at least once.
 
 Four mutants of the bounded `coro::Reader` were run locally against this suite, each on a pristine copy of
 `reactor_coro.h`:

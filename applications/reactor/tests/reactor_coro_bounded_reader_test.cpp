@@ -73,6 +73,7 @@ struct Seen {
   std::size_t queued_while_held = 0;     // Queued() once the stream has been held a while
   int arrived_while_held = 0;            // messages that reached the reader by then
   std::uint64_t holds = 0;               // Holds() at the end of the stream
+  std::chrono::steady_clock::duration finish_took{};  // from an early Finish() to its resumption
   bool read_after_end_gave_nothing = false;
   grpc::Status status;
 
@@ -138,14 +139,18 @@ struct Pacing {
   std::size_t pause_every;
 };
 
-/// Reads the whole stream, pausing a millisecond every `pacing.pause_every` messages so the stream fills the queue,
-/// and records the largest backlog, reads once more after the end, then finishes.
+/// Reads the whole stream, blocking after the first message until the queue is full, so the stream is held at least
+/// once, then pausing a millisecond every `pacing.pause_every` messages, never when 0, and records the largest
+/// backlog, reads once more after the end, then finishes.
 Task<> ReadAll(Executor* executor, routeguide::RouteGuide::Stub* stub, Pacing pacing, Seen* seen,
                std::promise<void>* done) {
   BoundedReader reader{*executor, *stub, routeguide::Rectangle{}, pacing.capacity};
   while (auto feature = co_await reader.Read()) {
     seen->Resumed();
     seen->names.push_back(feature->name());
+    if (pacing.pause_every > 0 && seen->names.size() == 1) {
+      EXPECT_TRUE(PollUntil([&] { return reader.Queued() >= pacing.capacity; }));
+    }
     if (pacing.pause_every > 0 && seen->names.size() % pacing.pause_every == 0) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -192,7 +197,9 @@ Task<> ReadOneUntilHeldThenFinish(Executor* executor, routeguide::RouteGuide::St
   seen->Resumed();
   EXPECT_TRUE(PollUntil([&] { return reader.Queued() == capacity && reader.Holds() > 0; }));
   seen->queued_while_held = reader.Queued();
+  const auto finish = std::chrono::steady_clock::now();
   seen->status = co_await reader.Finish();
+  seen->finish_took = std::chrono::steady_clock::now() - finish;
   seen->Resumed();
   done->set_value();
 }
@@ -276,11 +283,10 @@ class ReactorCoroBoundedReaderTest : public coro_reader_test::CoroReaderTestBase
   /// An early Finish() once the stream is held: checks it gave CANCELLED, saying it dropped the queue, in well
   /// under the time DestroyAfterOnDone() waits before it leaks the reactor.
   void ExpectFinishWhileHeldEndsCancelled(std::size_t capacity) {
-    const auto start = std::chrono::steady_clock::now();
     const Seen seen = Run([&](Seen* s, std::promise<void>* done) {
       return ReadOneUntilHeldThenFinish(&executor_, stub_.get(), capacity, s, done);
     });
-    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(3));
+    EXPECT_LT(seen.finish_took, std::chrono::seconds(3));
     EXPECT_EQ(seen.names, std::vector<std::string>{"feature 1"});
     EXPECT_EQ(seen.queued_while_held, capacity);
     EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::CANCELLED);

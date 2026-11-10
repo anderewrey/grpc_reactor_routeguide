@@ -389,6 +389,7 @@ TEST_F(ReactorCoroLatestReaderTest, ListFeatures_ServerErrorMidStream_FinishGive
   });
 
   EXPECT_EQ(seen.Received(), 2U);
+  ASSERT_FALSE(seen.names.empty());
   EXPECT_EQ(seen.names.back(), "feature 2");
   EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::NOT_FOUND);
 }
