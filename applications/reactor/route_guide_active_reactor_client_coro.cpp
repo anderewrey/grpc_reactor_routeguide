@@ -13,11 +13,14 @@
 
 #include <cassert>
 #include <memory>
+#include <vector>
 
 #include "applications/reactor/reactor_eventloop.h"
 #include "applications/reactor/variants/get_feature_pull_coro.h"
 #include "applications/reactor/variants/list_features_pull_turn_by_turn_coro.h"
 #include "applications/reactor/variants/list_features_push_turn_by_turn_coro.h"
+#include "applications/reactor/variants/record_route_pull_producer_coro.h"
+#include "applications/reactor/variants/record_route_push_coro.h"
 #include "applications/reactor/demo_support.h"
 #include "rg_service/rg_db.h"
 #include "rg_service/rg_utils.h"
@@ -45,6 +48,11 @@
  *   coro::Reader: each Read() swaps the next message out of the reactor, which arms the following read at once.
  * - rg_demo::push::turn_by_turn::coro::ListFeatures, ListFeatures under kPush and kTurnByTurn through
  *   coro::Reader: each Read() takes the message handed over, and only the next Read() arms the following read.
+ * - rg_demo::push::coro::RecordRoute, RecordRoute under kPush and kApplicationPushes through coro::Writer: each
+ *   Write() resumes the coroutine once its write has completed, then Close() ends the request stream, and
+ *   Finish() resumes it with the summary.
+ * - rg_demo::pull::producer::coro::RecordRoute, RecordRoute under kPull and kReactorPulls through coro::Source:
+ *   the coroutine hands the points over, the reactor pulls each one, and Finish() resumes it with the summary.
  *
  * Reading the output: each scenario logs "rpc started" when its coroutine has sent the request, then, once
  * resumed, its RESPONSE lines and "rpc ended". The thread id in the log pattern shows every line on the
@@ -52,7 +60,9 @@
  * scenario code runs there. A reader logs "stream ended after N messages", the total its callback parent
  * counts with its RESPONSE lines. Under kPush, each "resumed  | #k" line comes before RESPONSE #k+1, since
  * nothing is read until the coroutine asks; under kPull no such line exists, as the read is armed when the
- * message is taken.
+ * message is taken. A writer logs "write #k done" once each write has resumed it, then its summary as one
+ * RESPONSE line, as its callback parent does. The Source logs no line per point: its pulls run on a gRPC
+ * thread, where no scenario code runs.
  *
  * See docs/client-coroutines-design.md for the design of the coroutine level.
  ************************/
@@ -77,10 +87,15 @@ int main(int argc, char** argv) {
   rg_demo::pull::coro::GetFeature get_feature_pull{executor, *stub};
   rg_demo::pull::turn_by_turn::coro::ListFeatures list_features_pull_turn_by_turn{executor, *stub};
   rg_demo::push::turn_by_turn::coro::ListFeatures list_features_push_turn_by_turn{executor, *stub};
+  rg_demo::push::coro::RecordRoute record_route_push{executor, *stub};
+  rg_demo::pull::producer::coro::RecordRoute record_route_pull_producer{executor, *stub};
 
   // The same input as route_guide_active_reactor_client, so each run compares with its parent's.
   const auto rect = rg_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000);
   const auto point = rg_utils::GetRandomPoint(feature_list);
+  const std::vector<routeguide::Point> route{rg_utils::GetRandomPoint(feature_list),
+                                             rg_utils::GetRandomPoint(feature_list),
+                                             rg_utils::GetRandomPoint(feature_list)};
 
   // Every scenario is started before the loop runs, so all of the RPCs are in flight together. Nothing below
   // blocks: each Start() returns at its coroutine's first suspension.
@@ -90,6 +105,10 @@ int main(int argc, char** argv) {
   list_features_push_turn_by_turn.Start(rect);
   spdlog::info("-------------- GetFeature kPull, coroutine --------------");
   get_feature_pull.Start(point);
+  spdlog::info("-------------- RecordRoute kPush, coroutine --------------");
+  record_route_push.Start(route);
+  spdlog::info("-------------- RecordRoute kPull kReactorPulls, coroutine --------------");
+  record_route_pull_producer.Start(route);
   rg_demo::RunUntilDone();  // Scheduler component: processes queued events on this thread until every scenario ends
   spdlog::info("-------------- LEAVING APPLICATION --------------");
   return 0;

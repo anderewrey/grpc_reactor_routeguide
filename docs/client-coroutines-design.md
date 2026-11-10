@@ -1,7 +1,7 @@
 # Client coroutines: design draft
 
 > [!NOTE]
-> This is a design draft, built step by step. Steps 1 to 3 of the [suggested order](#suggested-order) exist, and
+> This is a design draft, built step by step. Steps 1 to 3 and 5 of the [suggested order](#suggested-order) exist, and
 > [reactor_coro.md](/applications/reactor/reactor_coro.md) is their reference. Once the level is built and its claims
 > are proven by tests and runs, this draft's reasoning moves into [architecture.md](/docs/architecture.md), and this
 > file goes away.
@@ -369,7 +369,22 @@ Every non-trivial claim needs a test or a demonstrable run:
    [testing.md](/docs/testing.md#reader-coverage) lists what the tests prove.
 4. The buffered readers: their three variants, then `trip_recorder_coro`, `live_vehicle_position_coro` and
    `offline_map_download_coro`.
-5. The writers: their two variants, then `live_route_recording_coro` and `gpx_track_upload_coro`.
+5. The writers: their two variants, then `live_route_recording_coro` and `gpx_track_upload_coro`. Done:
+   `coro::Writer` and `coro::Source` in `reactor_coro.h`. A `Writer`'s `co_await Write()` gives a `bool`, false once
+   the RPC has ended, and the request was then not sent. A write can still succeed after the server has ended the
+   RPC, while its status is on the way, so `Finish()`, not the writes, says how the RPC ended. `co_await Close()`
+   never suspends, since the reactor has no callback for the close completing, and `Finish()` sees it anyway: the
+   reactor level is unchanged. Both `Finish()` give a `UnaryResult`, as the unary awaitable does. A `Writer`'s
+   `Finish()` awaited before `Close()` cancels, by the reader's rule, since the write flow would hold the RPC open,
+   but not after a write that failed, which already ended it. A `Source`'s `Finish()` never cancels: it is its only
+   call, and the reactor sends the whole range on its own, so awaiting it at once skips nothing.
+   The write hand-over is re-armed as each completed write is taken, not before the next write starts, as the reader
+   re-arms before `ResumeRead()`: a fresh hand-over is not ended, so there is nothing to re-arm before the first
+   write. A `Source` takes any range, and copies it into a `std::vector`, or moves a vector in, on the application
+   thread, since `next_request` runs on a gRPC thread, where a view's function would run code of the application's.
+   `live_route_recording_coro` awaits each GPS fix with `EventLoopExecutor::After()`, then its write: a fix that
+   came while a write was in flight waits for the coroutine, so no queue is kept.
+   [testing.md](/docs/testing.md#writer-coverage) lists what the tests prove.
 6. The bidirectional join: `route_chat_push_continuous_coro`, then `convoy_chat_coro`.
 7. Teardown and cancellation tests.
 
