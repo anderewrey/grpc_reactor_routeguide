@@ -8,7 +8,7 @@ exists, and why each choice was made, is in the [design draft](/docs/client-coro
 > [!NOTE]
 > The level is built step by step, as the design draft's
 > [suggested order](/docs/client-coroutines-design.md#suggested-order) lists. Today it has the task core, the unary
-> awaitable and the reader without a buffer. The buffered readers, the writers and the bidirectional join come next,
+> awaitable, the reader without a buffer, and the writers. The buffered readers and the bidirectional join come next,
 > and each adds its section here.
 
 ## The words you need
@@ -33,7 +33,7 @@ The level has two headers of its own, and shares the EventLoop adapter with the 
 | Header | Knows | Holds |
 |--------|-------|-------|
 | [coro_task.h](/applications/reactor/coro_task.h) | C++20 coroutines only | `Task`, `RootTasks`, `Executor`, `ResumeHandover`, `CurrentTask` |
-| [reactor_coro.h](/applications/reactor/reactor_coro.h) | Generic reactors, task core | `Unary`, `UnaryResult`, `Reader`, `DestroyAfterOnDone()` |
+| [reactor_coro.h](/applications/reactor/reactor_coro.h) | Generic reactors, task core | Every awaitable, its helpers |
 | [reactor_eventloop.h](/applications/reactor/reactor_eventloop.h) | EventLoop | `EventLoopExecutor`, beside the callback level's `EventConnection` |
 
 Everything is in the `RpcReactor::coro` namespace. A helper used by one class only is a private member of that class,
@@ -83,9 +83,10 @@ The coroutine level changes how the application consumes a reactor, and nothing 
 - **Arguments by value.** A coroutine outlives the call that started it, so a reference argument dangles once it
   suspends. clang-tidy enforces it with `cppcoreguidelines-avoid-reference-coroutine-parameters` and
   `cppcoreguidelines-avoid-capturing-lambda-coroutines`.
-- **One awaiter.** A `Task` is awaited once at most, and a `Unary`'s or a `Reader`'s `Finish()` exactly once. Asserts
-  in `Task::operator co_await()` and in each `Finish()` enforce it. A `Reader`'s `Read()` is awaited one at a time,
-  which the shape of the code enforces: a coroutine cannot await a second one before the first resumes it.
+- **One awaiter.** A `Task` is awaited once at most, and an awaitable's `Finish()` exactly once. Asserts in
+  `Task::operator co_await()` and in each `Finish()` enforce it. A `Reader`'s `Read()` and a `Writer`'s `Write()` are
+  awaited one at a time, which the shape of the code enforces: a coroutine cannot await a second one before the first
+  resumes it.
 - **Errors are values.** A failed RPC is its `grpc::Status`, never an exception. An exception that escapes a coroutine
   body is a bug: it is logged, and the process terminates.
 - **Frames end on the application thread.** `RootTasks` spawns, resumes and destroys its tasks on the application
@@ -249,6 +250,82 @@ is ended by `OnDone()`, which can come before the coroutine has resumed from its
 first one. The read hand-over is re-armed before the call that arms the next read: in `Read()` under `kPush`, before
 `ResumeRead()`, and as the message is taken under `kPull`, before `GetResponse()`.
 
+### `Writer<ReactorT>`
+
+A client-streaming RPC a coroutine writes one request at a time. `ReactorT` is a service-specific reactor deriving
+from `ActiveWriteReactor` under `Submission::kApplicationPushes`, such as
+`routeguide::RecordRoute::ClientReactor<Delivery::kPush, Submission::kApplicationPushes>`. Another submission does not
+compile.
+
+```cpp
+coro::Writer<routeguide::RecordRoute::ClientReactor<Delivery::kPush, Submission::kApplicationPushes>> writer{
+    executor, stub};
+for (auto& point : points) {
+  if (!co_await writer.Write(std::move(point))) break;  // the RPC has ended
+}
+static_cast<void>(co_await writer.Close());
+auto [status, summary] = co_await writer.Finish();
+```
+
+| Member | Use |
+|--------|-----|
+| `Writer(executor, stub, context)` | Starts the RPC, which sends nothing until the first `Write()`. Optional context |
+| `co_await Write(request)` | Resumes once the write has completed: true, or false when the RPC has ended |
+| `co_await Close()` | Ends the request stream, without suspending: false when the RPC has ended |
+| `co_await Finish()` | Resumes once the RPC has ended, with a `UnaryResult`. Before `Close()`, it cancels first |
+| `TryCancel()` | Cancels an RPC still in flight: `Write()` then gives false, and `Finish()` gives `CANCELLED` |
+| Destructor | Cancels an RPC in flight, which ends its write flow, destroys the reactor after `OnDone()` |
+
+Non-copyable and non-movable, since the reactor's callbacks refer to it. One write is in flight at most, which the
+shape of the code enforces. The write starts in `Write()` itself, and the awaitable it returns is awaited at once,
+which `[[nodiscard]]` reminds. A `Write()` that gives false sent nothing, and every later one gives false at once: it
+is never a reason to retry. A write can still succeed after the server has ended the RPC, while its status is on the
+way, so `Finish()` says how the RPC ended, never the writes.
+
+`Close()` never suspends: the close completing is seen by `Finish()`, which waits for the RPC to end. To stop early,
+await `Finish()` without `Close()`: the write flow the reactor keeps open for the next write would hold the RPC
+open, so `Finish()` cancels it. The status is then `CANCELLED`, unless the server's own status had already arrived.
+After a write that failed, the RPC ends on its own, and `Finish()` gives its status without cancelling.
+
+The final response is owned by the coroutine, as for `Unary`: swapped out of the reactor under `kPull`, moved out of
+the message the done callback hands over under `kPush`.
+
+Inside, the writer has two hand-overs, as the reader has. The write hand-over is re-armed as each completed write is
+taken, in `await_resume()`, and not before the next write starts, as the reader does before `ResumeRead()`: a fresh
+hand-over is not ended, so the first write could not re-arm it. Either way, it is re-armed before the call that
+starts the next operation. `OnDone()` has its own, since it can come before the coroutine has resumed from a write
+that failed.
+
+### `Source<ReactorT>`
+
+A client-streaming RPC whose requests are all at hand. `ReactorT` is a service-specific reactor deriving from
+`ActiveWriteReactor` under `Submission::kReactorPulls`, such as
+`routeguide::RecordRoute::ClientReactor<Delivery::kPull, Submission::kReactorPulls>`. Another submission does not
+compile.
+
+```cpp
+coro::Source<routeguide::RecordRoute::ClientReactor<Delivery::kPull, Submission::kReactorPulls>> upload{
+    executor, stub, std::move(track)};
+auto [status, summary] = co_await upload.Finish();
+```
+
+| Member | Use |
+|--------|-----|
+| `Source(executor, stub, requests, context)` | Takes the requests, and starts the RPC. The context is optional |
+| `co_await Finish()` | Resumes once every request is sent and the RPC has ended, with a `UnaryResult` |
+| `TryCancel()` | Cancels an RPC still in flight: no further request is pulled, and `Finish()` gives `CANCELLED` |
+| Destructor | Cancels an RPC in flight, which stops the pulls, destroys the reactor after `OnDone()` |
+
+The source takes any range of requests. A `std::vector<RequestT>` passed by rvalue is moved in, and any other range,
+a view included, is copied into one on the constructing thread. The reactor's `next_request` then moves each request
+out of that vector, once inside the reactor's constructor, then on a gRPC thread after each completed write, and
+closes the request stream after the last one. So no code of the application's, such as a view's function, runs off
+the application thread.
+
+`Finish()` never cancels, unlike the other awaitables' `Finish()` awaited early. A `Source` has nothing to read or
+write, so its `Finish()` comes at once, and the coroutine skips nothing by awaiting it: the reactor sends the whole
+range on its own. `TryCancel()`, or destroying the `Source`, stops it.
+
 ### `DestroyAfterOnDone(reactor, timeout)`
 
 Cancels a reactor's RPC, and destroys the reactor once its `OnDone()` has run. Should `OnDone()` not come within the
@@ -260,6 +337,7 @@ timeout, it leaks the reactor rather than freeing it under gRPC, and returns fal
 - [Coroutine scenarios](/applications/reactor/variants/README.md#coroutine-scenarios) lists every coroutine scenario,
   and the two diffs each has.
 - [Coroutine core coverage](/docs/testing.md#coroutine-core-coverage),
-  [unary awaitable coverage](/docs/testing.md#unary-awaitable-coverage) and
-  [reader coverage](/docs/testing.md#reader-coverage) list what each test proves, and the mutants each caught.
+  [unary awaitable coverage](/docs/testing.md#unary-awaitable-coverage),
+  [reader coverage](/docs/testing.md#reader-coverage) and [writer coverage](/docs/testing.md#writer-coverage) list
+  what each test proves, and the mutants each caught.
 - [The design draft](/docs/client-coroutines-design.md) explains why each choice was made.

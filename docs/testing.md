@@ -115,6 +115,9 @@ no timing. Both are described in [unary awaitable coverage](#unary-awaitable-cov
 re-armed hand-over inside it is tested on its own in coro_task_test.cpp. Both are described in
 [reader coverage](#reader-coverage).
 
+[reactor_coro_writer_test.cpp][coro-writer-test] tests `coro::Writer`, the awaited writes, and `coro::Source`, the range
+the reactor pulls, the same way. Both are described in [writer coverage](#writer-coverage).
+
 ### Callback application smoke test
 
 [callback_smoke_test.sh][callback-smoke-test] runs the callback example applications themselves,
@@ -651,6 +654,72 @@ Three more mutants of the early `Finish()`, each run 5 times against each of its
 catches none of them, and shows that a cancel alone is enough there. The third mutant opens the race of a message
 arriving as the cancel is sent, which [the teardown tests](#teardown-coverage) land deterministically.
 
+### Writer coverage
+
+[reactor_coro_writer_test.cpp][coro-writer-test] runs `RecordRoute` through `coro::Writer` under
+`Submission::kApplicationPushes`, and through `coro::Source` under `Submission::kReactorPulls`, under both deliveries.
+Its service records the latitude of every point it reads, and finishes once the client closes its stream, with a
+summary counting them. It can instead fail once it has read a given number, or hold the RPC after the close until the
+client cancels it.
+
+| Test | Checks |
+| ------ | --------- |
+| `RecordRoute_PullWritesEveryPoint_ThenFinishGivesTheSummary` | Each write resumes on the loop, then the summary |
+| `RecordRoute_PushWritesEveryPoint_ThenFinishGivesTheSummary` | The same under `kPush`, the summary moved out |
+| `RecordRoute_NoWrite_CloseThenFinishGivesAnEmptySummary` | A stream closed with no write |
+| `RecordRoute_WriteCompletedBeforeTheAwait_GoesOnWithoutSuspending` | No post, and the next write still suspends |
+| `RecordRoute_PullServerError_WriteGivesFalse_FinishGivesTheError` | A `Write()` gives false, then the next at once |
+| `RecordRoute_PushServerError_WriteGivesFalse_FinishGivesTheError` | The same under `kPush` |
+| `RecordRoute_WriteAfterTheServerErrorArrived_ThatWriteGivesFalse` | The failed write itself gives false |
+| `RecordRoute_TryCancel_WriteGivesFalse_FinishGivesCancelled` | A cancel refuses the next write |
+| `RecordRoute_PullFinishBeforeClose_EndsTheRpcCancelled` | An early `Finish()` cancels the RPC the close holds open |
+| `RecordRoute_PushFinishBeforeAnyWrite_EndsTheRpcCancelled` | The same with no write, under `kPush` |
+| `RecordRoute_FinishBeforeCloseAfterTheServerError_GivesTheError` | The server's status, once it has arrived |
+| `RecordRoute_FrameDestroyedMidWrite_CancelsAndWaitsForOnDone` | Frees nothing under gRPC, and posts nothing |
+| `RecordRoute_FrameDestroyedBetweenWrites_ReleasesTheWriteFlow` | The open write flow no longer stalls the teardown |
+| `RecordRoute_PullSourceSendsEveryElement_ThenFinishGivesTheSummary` | Every element, in order, then the summary |
+| `RecordRoute_PushSourceSendsEveryElement_ThenFinishGivesTheSummary` | The same under `kPush` |
+| `RecordRoute_SourceOfAnEmptyRange_FinishGivesAnEmptySummary` | An empty range closes the stream at once |
+| `RecordRoute_SourceOfADeque_SendsEveryElement` | A range other than a vector is copied, in order |
+| `RecordRoute_SourceOfATransformView_SendsEveryElement` | A view is copied too |
+| `RecordRoute_SourceTryCancel_FinishGivesCancelled` | A cancel ends a held upload |
+| `RecordRoute_SourceFrameDestroyedWhileFinishWaits_CancelsAndWaitsForOnDone` | Frees nothing, and posts nothing |
+
+A write started before the client has the server's status can still succeed after the server has ended the RPC,
+since gRPC buffers it, so the server error tests write until a `Write()` gives false, pausing 5 milliseconds between
+writes, and check only that a false comes, that every later call gives false at once, and the status. Which write
+fails is set by `WriteAfterTheServerErrorArrived`: it writes once, pauses the loop thread 300 milliseconds while the
+server fails, then writes again. That write, started once the status has arrived, fails, held in 10 runs of 10. The
+same pause lets `FinishBeforeCloseAfterTheServerError` show that a cancel sent once the status has arrived changes
+nothing, as for the reader.
+
+`WriteCompletedBeforeTheAwait` takes the awaitable `Write()` returns, pauses the loop thread 200 milliseconds before
+awaiting it, so the write has completed, and checks the executor was given no coroutine meanwhile.
+`FrameDestroyedMidWrite` keeps a write in flight with a test reactor whose `OnWriteDone()` sleeps 300 milliseconds,
+and destroys the frame suspended in that `Write()`. Both destruction tests also check the reactor was released well
+under the 5 seconds of `kOnDoneTimeout`, and that nothing was posted after the destruction.
+
+The whole file held in 30 local runs, and in 5 under GCC's AddressSanitizer and UndefinedBehaviorSanitizer.
+
+Nine mutants of `coro::Writer` and `coro::Source`, each run once against the whole file, locally:
+
+| Mutant | Caught by |
+| ------ | --------- |
+| No `Rearm()` after a completed write | Both `WritesEveryPoint`, `WriteCompletedBeforeTheAwait` |
+| `Rearm()` before `SendRequest()`, as the reader re-arms before `ResumeRead()` | The first write: `Rearm()`'s assert |
+| The write callback ignoring `ok` | `WriteAfterTheServerErrorArrived` |
+| An early `Finish()` not cancelling | All three early `Finish()` tests, waiting for the close |
+| `Close()` not closing the request stream | Every test that closes, waiting for the close |
+| The `Writer` destructor not abandoning the write hand-over | `FrameDestroyedMidWrite`: the destroyed frame resumed |
+| `Source` dropping the last element | Every `Source` test with elements |
+| `Source::Finish()` cancelling, as the `Writer`'s early `Finish()` does | Every `Source` test but `SourceTryCancel` |
+| The `Source` destructor not abandoning the done hand-over | `SourceFrameDestroyedWhileFinishWaits`: resumed |
+
+The write callback ignoring `ok` was first missed: the next `Write()` is refused anyway, since the failed write ended
+the write flow, and the server error tests could not tell which write failed. `WriteAfterTheServerErrorArrived` was
+added for it. The second mutant is the order the reader uses, and the reason the writer differs: a fresh hand-over is
+not ended, so nothing can be re-armed before the first write, and the writer re-arms after each one instead.
+
 ### Naming convention
 
 Test names have three underscore-separated segments: `RpcMethod_Scenario_Result`. The first and
@@ -898,6 +967,7 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [reactor-eventloop]: /applications/reactor/reactor_eventloop.h
 [coro-unary-test]: /applications/reactor/tests/reactor_coro_unary_test.cpp
 [coro-reader-test]: /applications/reactor/tests/reactor_coro_reader_test.cpp
+[coro-writer-test]: /applications/reactor/tests/reactor_coro_writer_test.cpp
 [reactor-coro]: /applications/reactor/reactor_coro.h
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp
 [callback-smoke-test]: /applications/callback/tests/callback_smoke_test.sh

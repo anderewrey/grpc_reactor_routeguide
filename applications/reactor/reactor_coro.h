@@ -9,11 +9,15 @@
 
 #include <cassert>
 #include <chrono>
+#include <concepts>
 #include <coroutine>
+#include <cstddef>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "applications/reactor/coro_task.h"
 #include "applications/reactor/reactor_client.h"
@@ -371,6 +375,350 @@ class Reader {
   bool ended_ = false;  // the stream has ended: no read is armed, and none will end. Application thread only
   bool held_ = false;   // Delivery::kPush only: a message was given, and its read is not armed yet
   std::unique_ptr<ResponseT> pushed_;  // Delivery::kPush only, set by the read callback
+  std::unique_ptr<ReactorT> reactor_;  // declared last, so the callbacks' targets exist before the RPC starts
+};
+
+// ---------------------------------------------------------------------------------------------------------
+// The writers: Writer, whose coroutine awaits each write, and Source, a range the reactor pulls from. Both
+// end with the final response of a client-streaming RPC, as a UnaryResult.
+// ---------------------------------------------------------------------------------------------------------
+
+/// The request, the response, the delivery and the submission of the generic writing reactor ReactorT
+/// derives from, for Writer and Source.
+template <class ReactorT>
+class WriteTraits {
+  template <class RequestT_, class ResponseT_, Client::Delivery kDelivery_, Client::Submission kSubmission_>
+  struct Traits_ {
+    using RequestT = RequestT_;
+    using ResponseT = ResponseT_;
+    static constexpr Client::Delivery kDelivery = kDelivery_;
+    static constexpr Client::Submission kSubmission = kSubmission_;
+  };
+  template <class RequestT_, class ResponseT_, Client::Delivery kDelivery_, Client::Submission kSubmission_>
+  static Traits_<RequestT_, ResponseT_, kDelivery_, kSubmission_> TraitsOf(
+      const Client::ActiveWriteReactor<RequestT_, ResponseT_, kDelivery_, kSubmission_>*);
+  using Traits = decltype(TraitsOf(static_cast<ReactorT*>(nullptr)));
+
+ public:
+  using RequestT = Traits::RequestT;
+  using ResponseT = Traits::ResponseT;
+  static constexpr Client::Delivery kDelivery = Traits::kDelivery;
+  static constexpr Client::Submission kSubmission = Traits::kSubmission;
+  using ResultT = UnaryResult<ResponseT>;
+  using Callbacks = Client::ActiveWriteCallbacks<RequestT, ResponseT, kDelivery, kSubmission>;
+
+  /// On the application thread, once a writing RPC has ended: takes its status and its final response out of
+  /// the reactor, then destroys the reactor once its OnDone() has returned.
+  /// @param reactor the awaitable's reactor, whose OnDone() has called the done callback
+  /// @param pushed Delivery::kPush only: the response the done callback was handed, never null by then
+  static ResultT TakeResult(std::unique_ptr<ReactorT>& reactor, std::unique_ptr<ResponseT>& pushed) {
+    ResultT result{reactor->Status(), {}};
+    if constexpr (kDelivery == Client::Delivery::kPull) {
+      static_cast<void>(reactor->GetResponse(result.response));  // false on a failed RPC: left empty
+    } else {
+      result.response = std::move(*pushed);  // never null: the reactor hands its message over even on a failure
+    }
+    // OnDone() may still be returning, on its gRPC thread, from the callback that resumed this coroutine.
+    DestroyAfterOnDone(reactor, kOnDoneTimeout);
+    return result;
+  }
+
+  /// The done callback of a writing awaitable, on the gRPC thread: records the response under kPush, then
+  /// hands the coroutine to the executor. Under kPull the response and the status stay in the reactor.
+  static typename Callbacks::OnDoneCallback DoneCallback(Executor& executor, ResumeHandover& done,
+                                                std::unique_ptr<ResponseT>& pushed) {
+    if constexpr (kDelivery == Client::Delivery::kPull) {
+      return [&executor, &done](auto*, const grpc::Status&, const ResponseT&) { done.Complete(executor); };
+    } else {
+      return [&executor, &done, &pushed](auto*, const grpc::Status&, std::unique_ptr<ResponseT> response) {
+        pushed = std::move(response);
+        done.Complete(executor);
+      };
+    }
+  }
+};
+
+/// A client-streaming RPC a coroutine writes one request at a time: `co_await Write(request)` resumes the
+/// coroutine on the application thread once the write has completed, `co_await Close()` ends the request
+/// stream, and `co_await Finish()` then gives the RPC's status and its final response, as a UnaryResult.
+///
+///     coro::Writer<routeguide::RecordRoute::ClientReactor<Delivery::kPush, Submission::kApplicationPushes>>
+///         writer{executor, stub};
+///     for (auto& point : points) {
+///       if (!co_await writer.Write(std::move(point))) break;  // the RPC has ended
+///     }
+///     static_cast<void>(co_await writer.Close());
+///     auto [status, summary] = co_await writer.Finish();
+///
+/// One write is in flight at most, which the shape of the code enforces: a coroutine cannot start a second
+/// Write() before the first one resumes it. Write() gives false once the RPC has ended, a failed write
+/// included, and the request was then not sent; it is never a reason to retry. A write can still succeed
+/// after the server has ended the RPC, while its status is on the way, so Finish() is what says how the RPC
+/// ended, never the writes.
+///
+/// Stopping early is awaiting Finish() before Close(): it cancels the RPC, whose write flow would otherwise
+/// keep it open, and gives CANCELLED, or the server's own status had it already arrived. After a write that
+/// failed, the RPC ends on its own, and Finish() gives its status without cancelling.
+///
+/// The reactor lives in the Writer, so in the coroutine's frame. Finish() destroys it on the application
+/// thread once its OnDone() has run. A Writer destroyed before, such as in a frame destroyed while
+/// suspended, cancels the RPC and destroys the reactor once OnDone() has run, or leaks it should OnDone()
+/// never come.
+///
+/// Non-copyable and non-movable: the reactor's callbacks refer to it.
+/// @tparam ReactorT a service-specific reactor, deriving from Client::ActiveWriteReactor under
+///         Submission::kApplicationPushes, and constructed from a stub, a context and the write callbacks
+template <class ReactorT>
+class Writer {
+  using Traits = WriteTraits<ReactorT>;
+  static_assert(Traits::kSubmission == Client::Submission::kApplicationPushes,
+                "a Writer's coroutine starts each write: Submission::kApplicationPushes. A range the reactor "
+                "pulls from is a Source");
+
+ public:
+  /// What Write() sends.
+  using RequestT = Traits::RequestT;
+  /// What Finish() returns.
+  using ResultT = Traits::ResultT;
+
+  /// Constructs the reactor, which starts the RPC. Nothing is sent until the first Write().
+  /// @param executor resumes the awaiting coroutine on the application thread, and must outlive this object
+  /// @param stub the service stub, which must outlive the RPC
+  /// @param context of the RPC, for a deadline or metadata: a fresh one by default
+  template <class StubT>
+  Writer(Executor& executor, StubT& stub,
+         std::unique_ptr<grpc::ClientContext> context = std::make_unique<grpc::ClientContext>())
+      : executor_(executor),
+        reactor_(std::make_unique<ReactorT>(stub, std::move(context), MakeCallbacks())) {}
+
+  /// Cancels an RPC still in flight, which ends its write flow, and destroys the reactor once its OnDone()
+  /// has run.
+  ~Writer() {
+    write_.Abandon();
+    done_.Abandon();
+    DestroyAfterOnDone(reactor_, kOnDoneTimeout);
+  }
+
+  Writer(const Writer&) = delete;
+  Writer& operator=(const Writer&) = delete;
+  Writer(Writer&&) = delete;
+  Writer& operator=(Writer&&) = delete;
+
+  /// Sends a best-effort cancel. Callable from the application thread at any time: a Write() then gives
+  /// false, and Finish() returns CANCELLED.
+  void TryCancel() {
+    if (reactor_) reactor_->TryCancel();
+  }
+
+  /// Sends a request. The write starts here, so a Write() is always awaited, at once.
+  /// @param request to send, moved into the reactor
+  /// @return an awaitable whose co_await gives true once the request was written, or false, at once or once
+  ///         the write failed, when the RPC has ended and the request was not sent
+  [[nodiscard]] auto Write(RequestT request) {
+    struct Awaiter {
+      Writer& writer;
+      bool started;
+      bool await_ready() const noexcept { return !started; }
+      bool await_suspend(std::coroutine_handle<> waiter) const noexcept { return writer.write_.Suspend(waiter); }
+      bool await_resume() const { return started && writer.TakeWrite(); }
+    };
+    assert(reactor_ && !closed_ && "Write() comes before Close() and Finish()");
+    // Refused once the RPC has ended: cancelled, a write failed, or OnDone() has run. Never because a write
+    // is in flight, since the coroutine resumed from the last one before it could call this.
+    const bool started = !ended_ && reactor_->SendRequest(std::move(request));
+    if (!started) ended_ = true;
+    return Awaiter{*this, started};
+  }
+
+  /// Ends the request stream: no Write() may follow. It never suspends: the close completing is seen by
+  /// Finish(), which waits for the RPC to end.
+  /// @return an awaitable whose co_await gives true once the close is started, or false when the RPC has
+  ///         ended
+  [[nodiscard]] auto Close() {
+    struct Awaiter {
+      bool closing;
+      static bool await_ready() noexcept { return true; }
+      static void await_suspend(std::coroutine_handle<> /*waiter*/) noexcept {}
+      bool await_resume() const noexcept { return closing; }
+    };
+    assert(reactor_ && !closed_ && "Close() is called once, before Finish()");
+    closed_ = true;
+    const bool closing = !ended_ && reactor_->CloseRequestStream();
+    if (!closing) ended_ = true;
+    return Awaiter{closing};
+  }
+
+  /// Awaited exactly once: resumes on the application thread once the RPC has ended. Awaited before Close(),
+  /// with the RPC still running, it ends the RPC first: it cancels it, which ends the write flow that would
+  /// otherwise keep it open. The status is then CANCELLED, unless the server's own status had already arrived.
+  /// @return an awaitable whose co_await gives the ResultT
+  [[nodiscard]] auto Finish() noexcept {
+    struct Awaiter {
+      Writer& writer;
+      static bool await_ready() noexcept { return false; }
+      bool await_suspend(std::coroutine_handle<> waiter) const noexcept { return writer.done_.Suspend(waiter); }
+      ResultT await_resume() const {
+        writer.done_.Resumed();
+        return Traits::TakeResult(writer.reactor_, writer.pushed_);
+      }
+    };
+    assert(reactor_ && "Finish() is awaited exactly once");
+    if (!closed_ && !ended_) {
+      // Stopping early: no write or close will come, and the open write flow would keep the RPC open.
+      ended_ = true;
+      reactor_->TryCancel();
+    }
+    return Awaiter{*this};
+  }
+
+ private:
+  /// The level's own code, on the gRPC thread: records the outcome of a write, or the response under kPush,
+  /// then hands the coroutine to the executor. OnDone() has its own hand-over, since it can come before the
+  /// coroutine has resumed from a write that failed.
+  typename Traits::Callbacks MakeCallbacks() {
+    typename Traits::Callbacks cbs;
+    cbs.write_done = [this](auto*, bool ok) {
+      write_ok_ = ok;  // published by Complete()
+      write_.Complete(executor_);
+    };
+    cbs.done = Traits::DoneCallback(executor_, done_, pushed_);
+    return cbs;
+  }
+
+  /// On the application thread, once a write has ended: whether it succeeded. The hand-over is re-armed here,
+  /// before the next Write() can start a write that ends on a gRPC thread at once.
+  bool TakeWrite() {
+    write_.Resumed();
+    write_.Rearm();
+    if (!write_ok_) ended_ = true;
+    return write_ok_;
+  }
+
+  Executor& executor_;
+  ResumeHandover write_;  // re-armed after each write
+  ResumeHandover done_;
+  bool write_ok_ = false;  // set by the write callback before it hands the coroutine over
+  bool ended_ = false;     // the RPC has ended for the writes: none can start. Application thread only
+  bool closed_ = false;    // Close() was called. Application thread only
+  std::unique_ptr<typename Traits::ResponseT> pushed_;  // Delivery::kPush only, set by the done callback
+  std::unique_ptr<ReactorT> reactor_;  // declared last, so the callbacks' targets exist before the RPC starts
+};
+
+/// A client-streaming RPC whose requests are all at hand: the reactor pulls them from a range, one per
+/// completed write, closes the request stream after the last one, and `co_await Finish()` gives the RPC's
+/// status and its final response, as a UnaryResult.
+///
+///     coro::Source<routeguide::RecordRoute::ClientReactor<Delivery::kPull, Submission::kReactorPulls>> upload{
+///         executor, stub, std::move(track)};
+///     auto [status, summary] = co_await upload.Finish();
+///
+/// The source takes any range of requests: a std::vector<RequestT> passed by rvalue is moved in, and any
+/// other range, a view included, is copied into one, on the constructing thread. So the pulls, on gRPC
+/// threads, only move requests out of a vector: no code of the application's, such as a view's function,
+/// runs off the application thread.
+///
+/// Finish() never cancels. The coroutine skips nothing by awaiting it at once: the reactor sends the whole
+/// range on its own, and Finish() waits for the RPC to end. TryCancel(), or destroying the Source, stops it.
+///
+/// The reactor lives in the Source, so in the coroutine's frame, as for the other awaitables.
+///
+/// Non-copyable and non-movable: the reactor's callbacks refer to it.
+/// @tparam ReactorT a service-specific reactor, deriving from Client::ActiveWriteReactor under
+///         Submission::kReactorPulls, and constructed from a stub, a context and the write callbacks
+template <class ReactorT>
+class Source {
+  using Traits = WriteTraits<ReactorT>;
+  static_assert(Traits::kSubmission == Client::Submission::kReactorPulls,
+                "a Source is pulled by its reactor: Submission::kReactorPulls. A coroutine that awaits each "
+                "write uses a Writer");
+
+ public:
+  /// What the range holds.
+  using RequestT = Traits::RequestT;
+  /// What Finish() returns.
+  using ResultT = Traits::ResultT;
+
+  /// Takes the requests, then constructs the reactor, which pulls the first one and starts the RPC.
+  /// @param executor resumes the awaiting coroutine on the application thread, and must outlive this object
+  /// @param stub the service stub, which must outlive the RPC
+  /// @param requests every request to send, in order: moved in when a std::vector<RequestT> rvalue, copied
+  ///        otherwise
+  /// @param context of the RPC, for a deadline or metadata: a fresh one by default
+  template <class StubT, std::ranges::input_range RangeT>
+  requires std::constructible_from<typename Traits::RequestT, std::ranges::range_reference_t<RangeT>>
+  Source(Executor& executor, StubT& stub, RangeT&& requests,
+         std::unique_ptr<grpc::ClientContext> context = std::make_unique<grpc::ClientContext>())
+      : executor_(executor),
+        requests_(ToVector(std::forward<RangeT>(requests))),
+        reactor_(std::make_unique<ReactorT>(stub, std::move(context), MakeCallbacks())) {}
+
+  /// Cancels an RPC still in flight, which stops the pulls, and destroys the reactor once its OnDone() has
+  /// run.
+  ~Source() {
+    done_.Abandon();
+    DestroyAfterOnDone(reactor_, kOnDoneTimeout);
+  }
+
+  Source(const Source&) = delete;
+  Source& operator=(const Source&) = delete;
+  Source(Source&&) = delete;
+  Source& operator=(Source&&) = delete;
+
+  /// Sends a best-effort cancel. Callable from the application thread at any time: the reactor pulls no
+  /// further request, and Finish() returns CANCELLED.
+  void TryCancel() {
+    if (reactor_) reactor_->TryCancel();
+  }
+
+  /// Awaited exactly once: resumes on the application thread once the RPC has ended, every request sent
+  /// unless it failed or was cancelled.
+  /// @return an awaitable whose co_await gives the ResultT
+  [[nodiscard]] auto Finish() noexcept {
+    struct Awaiter {
+      Source& source;
+      static bool await_ready() noexcept { return false; }
+      bool await_suspend(std::coroutine_handle<> waiter) const noexcept { return source.done_.Suspend(waiter); }
+      ResultT await_resume() const {
+        source.done_.Resumed();
+        return Traits::TakeResult(source.reactor_, source.pushed_);
+      }
+    };
+    assert(reactor_ && "Finish() is awaited exactly once");
+    return Awaiter{*this};
+  }
+
+ private:
+  /// The requests, as a vector the pulls move from.
+  template <class RangeT>
+  static std::vector<RequestT> ToVector(RangeT&& requests) {
+    if constexpr (std::is_same_v<std::remove_cvref_t<RangeT>, std::vector<RequestT>>) {
+      return std::vector<RequestT>(std::forward<RangeT>(requests));
+    } else {
+      std::vector<RequestT> copied;
+      for (auto&& request : std::forward<RangeT>(requests)) copied.emplace_back(request);
+      return copied;
+    }
+  }
+
+  /// The level's own code. next_request runs once on the constructing thread, inside the reactor's
+  /// constructor, then on a gRPC thread after each completed write, never two at once, and moves the next
+  /// request out. The done callback records the response under kPush, then hands the coroutine over.
+  typename Traits::Callbacks MakeCallbacks() {
+    typename Traits::Callbacks cbs;
+    cbs.next_request = [this](auto*) -> std::optional<RequestT> {
+      if (next_ == requests_.size()) return std::nullopt;  // the reactor closes the request stream
+      return std::move(requests_[next_++]);
+    };
+    cbs.done = Traits::DoneCallback(executor_, done_, pushed_);
+    return cbs;
+  }
+
+  Executor& executor_;
+  ResumeHandover done_;
+  // The reactor's from its construction: only next_request reads them.
+  std::vector<RequestT> requests_;
+  std::size_t next_ = 0;
+  std::unique_ptr<typename Traits::ResponseT> pushed_;  // Delivery::kPush only, set by the done callback
   std::unique_ptr<ReactorT> reactor_;  // declared last, so the callbacks' targets exist before the RPC starts
 };
 
