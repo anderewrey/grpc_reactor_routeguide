@@ -15,6 +15,7 @@
 #include <chrono>
 #include <coroutine>
 #include <cstddef>
+#include <cstdio>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -447,5 +448,139 @@ TEST_F(ReactorCoroReaderTest, ListFeatures_FrameDestroyedWithAMessageHeld_Releas
     return ReadOneThenStall<Delivery::kPush>(&executor_, stub_.get(), read_one);
   });
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Probes of #38's design choices.
+
+/// A ListFeatures reactor whose OnDone() runs only after a delay, so a coroutine reaches Finish() before it.
+template <Delivery kDelivery>
+class SlowDoneReactor final
+    : public RpcReactor::Client::ActiveReadReactor<routeguide::Feature, kDelivery, ReadPacing::kTurnByTurn> {
+  using Base = RpcReactor::Client::ActiveReadReactor<routeguide::Feature, kDelivery, ReadPacing::kTurnByTurn>;
+
+ public:
+  SlowDoneReactor(routeguide::RouteGuide::Stub& stub, std::unique_ptr<grpc::ClientContext> context,
+                  const routeguide::Rectangle& request,
+                  RpcReactor::Client::ActiveReadCallbacks<routeguide::Feature, kDelivery, ReadPacing::kTurnByTurn>&& cbs)
+      : Base(std::move(context), std::move(cbs)) {
+    stub.async()->ListFeatures(this->context_.get(), &request, this);
+    this->StartRead(&this->response_);
+    this->StartCall();
+  }
+  void OnDone(const grpc::Status& status) override {
+    std::this_thread::sleep_for(kDoneDelay);
+    Base::OnDone(status);
+  }
+  static constexpr auto kDoneDelay = std::chrono::milliseconds(300);
+};
+
+/// Reads the whole stream, then pauses the loop thread before Finish(), so OnDone() has run by then.
+template <class ReaderT>
+Task<> ReadAllPauseThenFinish(Executor* executor, routeguide::RouteGuide::Stub* stub, Seen* seen,
+                              std::promise<void>* done) {
+  ReaderT reader{*executor, *stub, routeguide::Rectangle{}};
+  while (auto feature = co_await reader.Read()) seen->names.push_back(feature->name());
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  seen->status = co_await reader.Finish();
+  done->set_value();
+}
+
+/// @test OnDone() runs before the coroutine reaches Finish(): Finish() still resumes, with the status.
+TEST_F(ReactorCoroReaderTest, Probe_OnDoneBeforeFinish_Pull) {
+  test_service_.FailAfter(2, grpc::StatusCode::NOT_FOUND);
+  test_service_.Send(3);
+  Seen seen;
+  RunToEnd([&](std::promise<void>* done) {
+    return ReadAllPauseThenFinish<ListFeaturesReader<Delivery::kPull>>(&executor_, stub_.get(), &seen, done);
+  });
+  EXPECT_EQ(seen.names.size(), 2U);
+  EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::NOT_FOUND);
+}
+TEST_F(ReactorCoroReaderTest, Probe_OnDoneBeforeFinish_Push) {
+  test_service_.FailAfter(2, grpc::StatusCode::NOT_FOUND);
+  test_service_.Send(3);
+  Seen seen;
+  RunToEnd([&](std::promise<void>* done) {
+    return ReadAllPauseThenFinish<ListFeaturesReader<Delivery::kPush>>(&executor_, stub_.get(), &seen, done);
+  });
+  EXPECT_EQ(seen.names.size(), 2U);
+  EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::NOT_FOUND);
+}
+
+/// Reads the whole stream, then awaits Finish() at once, while OnDone() is still delayed.
+template <class ReaderT>
+Task<> ReadAllThenFinish(Executor* executor, routeguide::RouteGuide::Stub* stub, Seen* seen,
+                         std::promise<void>* done) {
+  ReaderT reader{*executor, *stub, routeguide::Rectangle{}};
+  while (auto feature = co_await reader.Read()) seen->names.push_back(feature->name());
+  seen->status = co_await reader.Finish();
+  done->set_value();
+}
+
+/// @test The coroutine reaches Finish() before OnDone() runs: Finish() waits for it, and gives its status.
+TEST_F(ReactorCoroReaderTest, Probe_FinishBeforeOnDone_Pull) {
+  test_service_.FailAfter(2, grpc::StatusCode::NOT_FOUND);
+  test_service_.Send(3);
+  Seen seen;
+  RunToEnd([&](std::promise<void>* done) {
+    return ReadAllThenFinish<Reader<SlowDoneReactor<Delivery::kPull>>>(&executor_, stub_.get(), &seen, done);
+  });
+  EXPECT_EQ(seen.names.size(), 2U);
+  EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::NOT_FOUND);
+}
+TEST_F(ReactorCoroReaderTest, Probe_FinishBeforeOnDone_Push) {
+  test_service_.FailAfter(2, grpc::StatusCode::NOT_FOUND);
+  test_service_.Send(3);
+  Seen seen;
+  RunToEnd([&](std::promise<void>* done) {
+    return ReadAllThenFinish<Reader<SlowDoneReactor<Delivery::kPush>>>(&executor_, stub_.get(), &seen, done);
+  });
+  EXPECT_EQ(seen.names.size(), 2U);
+  EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::NOT_FOUND);
+}
+
+/// Reads `reads` messages, then awaits Finish() without reading to the end of the stream.
+template <Delivery kDelivery>
+Task<> ReadSomeThenFinish(Executor* executor, routeguide::RouteGuide::Stub* stub, int reads, Seen* seen,
+                          std::promise<void>* done) {
+  ListFeaturesReader<kDelivery> reader{*executor, *stub, routeguide::Rectangle{}};
+  for (int i = 0; i < reads; ++i) {
+    if (auto feature = co_await reader.Read()) seen->names.push_back(feature->name());
+  }
+  seen->status = co_await reader.Finish();
+  done->set_value();
+}
+
+/// Awaits Finish() early, and reports whether it resumed and how long teardown took.
+class EarlyFinishProbe : public ReactorCoroReaderTest {
+ protected:
+  template <Delivery kDelivery>
+  void Run(int reads) {
+    test_service_.Send(3);
+    auto roots = std::make_unique<RootTasks>();
+    Seen seen;
+    std::promise<void> done;
+    auto future = done.get_future();
+    OnLoop([&] {
+      roots->Spawn(ReadSomeThenFinish<kDelivery>(&executor_, stub_.get(), reads, &seen, &done));
+    });
+    const bool resumed = future.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    std::size_t left = 0;
+    OnLoop([&] { left = roots->Size(); });
+    const auto start = std::chrono::steady_clock::now();
+    OnLoop([&] { roots.reset(); });
+    const auto teardown = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start);
+    std::printf("PROBE early Finish %s after %d read(s): resumed=%d names=%zu status=%d(%s) roots_left=%zu "
+                "teardown=%lldms\n",
+                kDelivery == Delivery::kPull ? "kPull" : "kPush", reads, resumed, seen.names.size(),
+                resumed ? seen.status.error_code() : -1, resumed ? seen.status.error_message().c_str() : "",
+                left, static_cast<long long>(teardown.count()));
+  }
+};
+TEST_F(EarlyFinishProbe, Pull_MidStream) { Run<Delivery::kPull>(1); }
+TEST_F(EarlyFinishProbe, Pull_AfterLastMessage) { Run<Delivery::kPull>(3); }
+TEST_F(EarlyFinishProbe, Push_MidStream) { Run<Delivery::kPush>(1); }
+TEST_F(EarlyFinishProbe, Push_AfterLastMessage) { Run<Delivery::kPush>(3); }
 
 }  // namespace
