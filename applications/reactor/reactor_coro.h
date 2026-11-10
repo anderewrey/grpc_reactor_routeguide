@@ -426,7 +426,7 @@ class WriteTraits {
   /// The done callback of a writing awaitable, on the gRPC thread: records the response under kPush, then
   /// hands the coroutine to the executor. Under kPull the response and the status stay in the reactor.
   static typename Callbacks::OnDoneCallback DoneCallback(Executor& executor, ResumeHandover& done,
-                                                std::unique_ptr<ResponseT>& pushed) {
+                                                         std::unique_ptr<ResponseT>& pushed) {
     if constexpr (kDelivery == Client::Delivery::kPull) {
       return [&executor, &done](auto*, const grpc::Status&, const ResponseT&) { done.Complete(executor); };
     } else {
@@ -613,7 +613,7 @@ class Writer {
 ///     auto [status, summary] = co_await upload.Finish();
 ///
 /// The source takes any range of requests: a std::vector<RequestT> passed by rvalue is moved in, and any
-/// other range, a view included, is copied into one, on the constructing thread. So the pulls, on gRPC
+/// other range, a view included, is taken into one, on the constructing thread. So the pulls, on gRPC
 /// threads, only move requests out of a vector: no code of the application's, such as a view's function,
 /// runs off the application thread.
 ///
@@ -641,8 +641,8 @@ class Source {
   /// Takes the requests, then constructs the reactor, which pulls the first one and starts the RPC.
   /// @param executor resumes the awaiting coroutine on the application thread, and must outlive this object
   /// @param stub the service stub, which must outlive the RPC
-  /// @param requests every request to send, in order: moved in when a std::vector<RequestT> rvalue, copied
-  ///        otherwise
+  /// @param requests every request to send, in order: moved in when a std::vector<RequestT> rvalue, taken
+  ///        into one otherwise
   /// @param context of the RPC, for a deadline or metadata: a fresh one by default
   template <class StubT, std::ranges::input_range RangeT>
   requires std::constructible_from<typename Traits::RequestT, std::ranges::range_reference_t<RangeT>>
@@ -694,9 +694,13 @@ class Source {
     if constexpr (std::is_same_v<std::remove_cvref_t<RangeT>, std::vector<RequestT>>) {
       return std::vector<RequestT>(std::forward<RangeT>(requests));
     } else {
-      std::vector<RequestT> copied;
-      for (auto&& request : std::forward<RangeT>(requests)) copied.emplace_back(request);
-      return copied;
+      std::vector<RequestT> taken;
+      if constexpr (std::ranges::sized_range<RangeT>) taken.reserve(std::ranges::size(requests));
+      // An element a view makes, as a prvalue, is moved in; one the range holds is copied.
+      for (auto&& request : std::forward<RangeT>(requests)) {
+        taken.emplace_back(std::forward<decltype(request)>(request));
+      }
+      return taken;
     }
   }
 

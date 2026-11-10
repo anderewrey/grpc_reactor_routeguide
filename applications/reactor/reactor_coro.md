@@ -312,18 +312,19 @@ auto [status, summary] = co_await upload.Finish();
 | Member | Use |
 |--------|-----|
 | `Source(executor, stub, requests, context)` | Takes the requests, and starts the RPC. The context is optional |
-| `co_await Finish()` | Resumes once every request is sent and the RPC has ended, with a `UnaryResult` |
+| `co_await Finish()` | Resumes once the RPC has ended, every request sent unless it failed, with a `UnaryResult` |
 | `TryCancel()` | Cancels an RPC still in flight: no further request is pulled, and `Finish()` gives `CANCELLED` |
 | Destructor | Cancels an RPC in flight, which stops the pulls, destroys the reactor after `OnDone()` |
 
 The source takes any range of requests. A `std::vector<RequestT>` passed by rvalue is moved in, and any other range,
-a view included, is copied into one on the constructing thread. The reactor's `next_request` then moves each request
+a view included, is taken into one on the constructing thread: each element it holds is copied, and each
+element a view makes is moved. The reactor's `next_request` then moves each request
 out of that vector, once inside the reactor's constructor, then on a gRPC thread after each completed write, and
 closes the request stream after the last one. So no code of the application's, such as a view's function, runs off
 the application thread.
 
 `Finish()` never cancels, unlike the other awaitables' `Finish()` awaited early. A `Source` has nothing to read or
-write, so its `Finish()` comes at once, and the coroutine skips nothing by awaiting it: the reactor sends the whole
+write, so its `Finish()` is awaited at once, and the coroutine skips nothing by awaiting it: the reactor sends the whole
 range on its own. `TryCancel()`, or destroying the `Source`, stops it.
 
 ### `DestroyAfterOnDone(reactor, timeout)`

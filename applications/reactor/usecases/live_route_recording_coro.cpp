@@ -59,6 +59,7 @@ RpcReactor::coro::Task<> LiveRouteRecording::Run(std::vector<routeguide::Point> 
   // Switches the GPS on. Nothing is sent before the first fix.
   const auto gps_on = Clock::now();
   std::size_t fixes = 0;
+  std::size_t sent = 0;
   for (auto& point : drive) {
     // Delta against record_route_push_coro.cpp: the GPS fix comes first. A fix already due came while the last
     // write was in flight, and waited for it.
@@ -78,6 +79,7 @@ RpcReactor::coro::Task<> LiveRouteRecording::Run(std::vector<routeguide::Point> 
       break;
     }
     assert(OnApplicationThread());
+    ++sent;
   }
   // The drive has ended: the GPS has no fix left.
   static_cast<void>(co_await writer.Close());
@@ -87,8 +89,8 @@ RpcReactor::coro::Task<> LiveRouteRecording::Run(std::vector<routeguide::Point> 
   assert(OnApplicationThread());
   if (status.ok()) {
     logger_.info("RESPONSE | {}: {}", response.GetTypeName(), protobuf_utils::ToString(response));
-    // Every fix of the drive was sent, and counted.
-    assert(static_cast<std::size_t>(response.point_count()) == fixes);
+    // Every fix sent was counted: every fix of the drive, unless a write was rejected.
+    assert(static_cast<std::size_t>(response.point_count()) == sent);
     // Handed to the trip history, which keeps the summary it now owns.
     trip_history_.push_back(std::make_unique<routeguide::RecordRoute::ResponseT>(std::move(response)));
     logger_.info("history  | {} trip(s) recorded", trip_history_.size());

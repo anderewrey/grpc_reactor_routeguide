@@ -49,6 +49,10 @@ template <Delivery kDelivery>
 using RecordRouteSource = Source<routeguide::RecordRoute::ClientReactor<kDelivery, Submission::kReactorPulls>>;
 
 constexpr auto kTimeout = std::chrono::seconds(10);
+// How long the loop thread pauses for something to happen on gRPC's threads meanwhile: a write to complete, or the
+// server's status to arrive. No event tells the client either, so the pause has head-room for loaded or sanitizer
+// runs.
+constexpr auto kPause = std::chrono::milliseconds(1000);
 
 // What Finish() gives, the same under both deliveries and for both writers.
 static_assert(std::is_same_v<RecordRouteWriter<Delivery::kPull>::ResultT,
@@ -217,7 +221,7 @@ Task<> WriteCompletingBeforeTheAwait(Executor* executor, routeguide::RouteGuide:
   RecordRouteWriter<Delivery::kPull> writer{*executor, *stub};
   const int before = counter->Posts();
   auto write = writer.Write(PointNumber(1));
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  std::this_thread::sleep_for(kPause);
   seen->writes.push_back(co_await write);
   *posts = counter->Posts() - before;
   seen->writes.push_back(co_await writer.Write(PointNumber(2)));
@@ -254,7 +258,7 @@ Task<> WriteAfterTheServerError(Executor* executor, routeguide::RouteGuide::Stub
                                 std::promise<void>* done) {
   RecordRouteWriter<kDelivery> writer{*executor, *stub};
   seen->writes.push_back(co_await writer.Write(PointNumber(1)));
-  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  std::this_thread::sleep_for(kPause);
   seen->writes.push_back(co_await writer.Write(PointNumber(2)));
   auto [status, summary] = co_await writer.Finish();
   seen->status = status;
@@ -281,7 +285,7 @@ Task<> WriteSomeThenFinish(Executor* executor, routeguide::RouteGuide::Stub* stu
                            Seen* seen, std::promise<void>* done) {
   RecordRouteWriter<kDelivery> writer{*executor, *stub};
   for (int i = 1; i <= count; ++i) seen->writes.push_back(co_await writer.Write(PointNumber(i)));
-  if (pause) std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  if (pause) std::this_thread::sleep_for(kPause);
   auto [status, summary] = co_await writer.Finish();
   seen->status = status;
   done->set_value();
@@ -314,7 +318,7 @@ class SlowWriteReactor final
 
  protected:
   void OnWriteDone(bool ok) override {
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    std::this_thread::sleep_for(kPause);
     Base::OnWriteDone(ok);
   }
 };

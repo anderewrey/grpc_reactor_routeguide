@@ -667,7 +667,7 @@ client cancels it.
 | `RecordRoute_PullWritesEveryPoint_ThenFinishGivesTheSummary` | Each write resumes on the loop, then the summary |
 | `RecordRoute_PushWritesEveryPoint_ThenFinishGivesTheSummary` | The same under `kPush`, the summary moved out |
 | `RecordRoute_NoWrite_CloseThenFinishGivesAnEmptySummary` | A stream closed with no write |
-| `RecordRoute_WriteCompletedBeforeTheAwait_GoesOnWithoutSuspending` | No post, and the next write still suspends |
+| `RecordRoute_WriteCompletedBeforeTheAwait_GoesOnWithoutSuspending` | No post, and the next write still works |
 | `RecordRoute_PullServerError_WriteGivesFalse_FinishGivesTheError` | A `Write()` gives false, then the next at once |
 | `RecordRoute_PushServerError_WriteGivesFalse_FinishGivesTheError` | The same under `kPush` |
 | `RecordRoute_WriteAfterTheServerErrorArrived_ThatWriteGivesFalse` | The failed write itself gives false |
@@ -688,14 +688,14 @@ client cancels it.
 A write started before the client has the server's status can still succeed after the server has ended the RPC,
 since gRPC buffers it, so the server error tests write until a `Write()` gives false, pausing 5 milliseconds between
 writes, and check only that a false comes, that every later call gives false at once, and the status. Which write
-fails is set by `WriteAfterTheServerErrorArrived`: it writes once, pauses the loop thread 300 milliseconds while the
+fails is set by `WriteAfterTheServerErrorArrived`: it writes once, pauses the loop thread 1 second while the
 server fails, then writes again. That write, started once the status has arrived, fails, held in 10 runs of 10. The
 same pause lets `FinishBeforeCloseAfterTheServerError` show that a cancel sent once the status has arrived changes
 nothing, as for the reader.
 
-`WriteCompletedBeforeTheAwait` takes the awaitable `Write()` returns, pauses the loop thread 200 milliseconds before
+`WriteCompletedBeforeTheAwait` takes the awaitable `Write()` returns, pauses the loop thread 1 second before
 awaiting it, so the write has completed, and checks the executor was given no coroutine meanwhile.
-`FrameDestroyedMidWrite` keeps a write in flight with a test reactor whose `OnWriteDone()` sleeps 300 milliseconds,
+`FrameDestroyedMidWrite` keeps a write in flight with a test reactor whose `OnWriteDone()` sleeps 1 second,
 and destroys the frame suspended in that `Write()`. Both destruction tests also check the reactor was released well
 under the 5 seconds of `kOnDoneTimeout`, and that nothing was posted after the destruction.
 
@@ -705,14 +705,14 @@ Nine mutants of `coro::Writer` and `coro::Source`, each run once against the who
 
 | Mutant | Caught by |
 | ------ | --------- |
-| No `Rearm()` after a completed write | Both `WritesEveryPoint`, `WriteCompletedBeforeTheAwait` |
+| No `Rearm()` after a completed write | Both `WritesEveryPoint`, and every test that writes after a pause |
 | `Rearm()` before `SendRequest()`, as the reader re-arms before `ResumeRead()` | The first write: `Rearm()`'s assert |
 | The write callback ignoring `ok` | `WriteAfterTheServerErrorArrived` |
 | An early `Finish()` not cancelling | All three early `Finish()` tests, waiting for the close |
 | `Close()` not closing the request stream | Every test that closes, waiting for the close |
 | The `Writer` destructor not abandoning the write hand-over | `FrameDestroyedMidWrite`: the destroyed frame resumed |
 | `Source` dropping the last element | Every `Source` test with elements |
-| `Source::Finish()` cancelling, as the `Writer`'s early `Finish()` does | Every `Source` test but `SourceTryCancel` |
+| `Source::Finish()` cancelling, as the `Writer`'s early `Finish()` does | Every `Source` test that ends on its own |
 | The `Source` destructor not abandoning the done hand-over | `SourceFrameDestroyedWhileFinishWaits`: resumed |
 
 The write callback ignoring `ok` was first missed: the next `Write()` is refused anyway, since the failed write ended
