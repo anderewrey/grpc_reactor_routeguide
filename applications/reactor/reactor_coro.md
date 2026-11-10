@@ -408,10 +408,10 @@ gives false. The writes ending, with `Close()`, leaves the reads running until t
 `Finish()` is awaited exactly once, by the task that joined both flows. Awaited early, before `Read()` has given
 nothing, or before `Close()` with the RPC still running, it cancels the RPC, which ends both sides, and drops the
 messages queued so far. Awaited by one flow while the other waits, it ends that one too: its `Read()` gives nothing,
-then nothing again at once, and its `Write()` false. The status is then `CANCELLED`, unless the server's own status had already arrived, which it
-then gives: a status nobody sent is never made up. A write flow that returns without `Close()` while the server
-waits for the client's close leaves the join waiting for a read side that never ends, so the write flow closes on
-every path, as in the example.
+then nothing again at once, and its `Write()` false. The status is then `CANCELLED`, unless the server's own status had
+already arrived, which it then gives: a status nobody sent is never made up. A write flow that returns without `Close()`
+while the server waits for the client's close leaves the join waiting for a read side that never ends, so the write flow
+closes on every path, as in the example.
 
 ### `DestroyAfterOnDone(reactor, timeout)`
 
