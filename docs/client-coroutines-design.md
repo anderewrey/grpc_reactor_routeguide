@@ -171,7 +171,7 @@ what that costs:
 | Delivery | How the coroutine gets an owned message | Cost per message | Read-ahead |
 |---|---|---|---|
 | `kPull` | `Read()` swaps it out with `GetResponse()` | No allocation | `GetResponse()` arms the next read at once |
-| `kPush` | `Read()` moves it out of the `std::unique_ptr` the callback hands out | One allocation | None until the next `Read()` |
+| `kPush` | `Read()` moves it out of the callback's `std::unique_ptr` | One allocation | None until the next `Read()` |
 
 Either way, `Read()` gives a `std::optional<ResponseT>`, and a unary `Finish()` a plain `ResponseT`: a message moves
 out of its heap object with a swap, so `kPush` pays no copy for it, and the coroutine's code is the same under both

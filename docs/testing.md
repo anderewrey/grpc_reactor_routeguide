@@ -553,7 +553,7 @@ client cancels it, so a coroutine waiting in `Read()` is known to wait.
 | Test | Checks |
 | ------ | --------- |
 | `ListFeatures_PullReadsEveryMessage_ThenNothing_ThenFinishOk` | Each message owned, in order, on the loop, then none |
-| `ListFeatures_PushReadsEveryMessage_ThenNothing_ThenFinishOk` | The same under `kPush`, each moved out of its hand-over |
+| `ListFeatures_PushReadsEveryMessage_ThenNothing_ThenFinishOk` | The same under `kPush`, each moved out |
 | `ListFeatures_EmptyStream_FirstReadGivesNothing` | An empty stream ends at the first `Read()` |
 | `ListFeatures_PullServerErrorMidStream_ReadsWhatCameThenFinishGivesTheError` | An error is a status |
 | `ListFeatures_PushServerErrorMidStream_ReadsWhatCameThenFinishGivesTheError` | The same, `kPush` |
@@ -571,7 +571,7 @@ client cancels it, so a coroutine waiting in `Read()` is known to wait.
 | `ListFeatures_PushFinishMidStream_EndsTheRpcCancelled` | The same under `kPush`, releasing the message given |
 | `ListFeatures_PullFinishAfterTheLastMessage_EndsTheRpcCancelled` | The same once every message is given |
 | `ListFeatures_PushFinishAfterTheLastMessage_EndsTheRpcCancelled` | The same under `kPush` |
-| `ListFeatures_PullFinishAfterTheLastMessageOfAFinishedStream_GivesOk` | The server's status, once every message is read |
+| `ListFeatures_PullFinishAfterTheLastMessageOfAFinishedStream_GivesOk` | The server's status, all messages read |
 | `ListFeatures_PushFinishAfterTheLastMessageOfAFinishedStream_GivesOk` | The same under `kPush` |
 
 The two read-ahead tests tell the deliveries apart. The coroutine reads one message, pauses the loop thread for 200
@@ -633,8 +633,8 @@ run 50 times against each ordering test, locally:
 
 | Mutant | Caught by |
 | ------ | --------- |
-| `Finish()` re-arms the read hand-over, then suspends on it | Every time: both `OnDoneBeforeFinish`, `PullFinishBeforeOnDone` |
-| `Finish()` suspends on the read hand-over as it is | Every time: `PushFinishBeforeOnDone`. 33 of 50: `PullOnDoneBeforeFinish` |
+| `Finish()` re-arms the read hand-over, then waits on it | Always: both `OnDoneBeforeFinish`, `PullFinishBeforeOnDone` |
+| `Finish()` waits on the read hand-over as it is | Always: `PushFinishBeforeOnDone`. 33/50: `PullOnDoneBeforeFinish` |
 
 The first loses an end that came before `Finish()`, and waits forever, or trips `Rearm()`'s assert. The second
 returns at once, since the last read left the hand-over ended, with a status `OnDone()` has not set yet.
