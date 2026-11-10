@@ -85,6 +85,8 @@ class RouteChat {
   // only on the application thread, so neither is shared.
   unsigned read_seq_{0};
   unsigned handled_seq_{0};
+  // The notes sent, on the application thread.
+  unsigned sent_seq_{0};
 
   spdlog::logger& logger_{VariantLogger("RouteChat.push.cont")};
 

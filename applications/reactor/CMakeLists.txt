@@ -123,6 +123,12 @@ add_executable(route_guide_active_reactor_client_coro
     variants/list_features_pull_turn_by_turn_coro.cpp
     variants/list_features_push_turn_by_turn_coro.h
     variants/list_features_push_turn_by_turn_coro.cpp
+    variants/record_route_pull_producer_coro.h
+    variants/record_route_pull_producer_coro.cpp
+    variants/record_route_push_coro.h
+    variants/record_route_push_coro.cpp
+    variants/route_chat_push_continuous_coro.h
+    variants/route_chat_push_continuous_coro.cpp
 )
 
 target_include_directories(route_guide_active_reactor_client_coro
@@ -147,6 +153,12 @@ add_executable(route_guide_reactor_usecases_coro
     reactor_eventloop.h
     demo_support.h
     demo_support.cpp
+    usecases/convoy_chat_coro.h
+    usecases/convoy_chat_coro.cpp
+    usecases/gpx_track_upload_coro.h
+    usecases/gpx_track_upload_coro.cpp
+    usecases/live_route_recording_coro.h
+    usecases/live_route_recording_coro.cpp
     usecases/turn_by_turn_guidance_coro.h
     usecases/turn_by_turn_guidance_coro.cpp
     usecases/whats_here_coro.h

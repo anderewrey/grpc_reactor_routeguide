@@ -20,6 +20,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "applications/reactor/coro_task.h"
@@ -32,6 +33,7 @@ using RpcReactor::coro::Executor;
 using RpcReactor::coro::ResumeHandover;
 using RpcReactor::coro::RootTasks;
 using RpcReactor::coro::Task;
+using RpcReactor::coro::WhenAll;
 
 /// Counts its live instances, to show when a frame destroys what it owns. Coroutines take it by value, so
 /// the frame owns a copy of its own.
@@ -642,6 +644,217 @@ TEST(CoroTaskTest, CurrentTask_RearmedHandover_RestoresTheTaskAtEachResumption) 
 
   EXPECT_NE(id, CurrentTask::kNone);
   EXPECT_EQ(seen, (std::vector<CurrentTask::Id>{id, id, id}));
+}
+
+// =============================================================================
+// WhenAll: two tasks at once, joined
+// =============================================================================
+
+template <class A, class B>
+Task<> StorePair(std::pair<A, B>* out, Task<std::pair<A, B>> joined) {
+  *out = co_await std::move(joined);
+}
+
+/// @test Two tasks that finish without suspending give both values, and the awaiter goes on without suspending:
+/// the root has completed when Spawn() returns. A move-only value is moved out.
+TEST(CoroWhenAllTest, BothFinishWithoutSuspending_GivesBothValuesAtOnce) {
+  RootTasks roots;
+  std::pair<int, std::unique_ptr<std::string>> result;
+  roots.Spawn(StorePair(&result, WhenAll(Answer(), Owned())));
+  EXPECT_EQ(roots.Size(), 0U);
+  EXPECT_EQ(result.first, 42);
+  ASSERT_NE(result.second, nullptr);
+  EXPECT_EQ(*result.second, "owned");
+}
+
+Task<int> NumberAfterSuspending(int number, std::coroutine_handle<>* handle) {
+  co_await Suspend{handle};
+  co_return number;
+}
+
+/// Spawns a join of two tasks that each suspend, then resumes them in the order given: the join gives both
+/// values only once the second has finished.
+void ResumeInOrder(bool first_resumed_first) {
+  RootTasks roots;
+  std::coroutine_handle<> first;
+  std::coroutine_handle<> second;
+  std::pair<int, int> result{0, 0};
+  roots.Spawn(StorePair(&result, WhenAll(NumberAfterSuspending(1, &first), NumberAfterSuspending(2, &second))));
+  // Both started, each up to its suspension, before the awaiter suspended.
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(second);
+  EXPECT_EQ(roots.Size(), 1U);
+
+  (first_resumed_first ? first : second).resume();
+  EXPECT_EQ(result, (std::pair{0, 0}));
+  EXPECT_EQ(roots.Size(), 1U);
+
+  (first_resumed_first ? second : first).resume();
+  EXPECT_EQ(result, (std::pair{1, 2}));
+  EXPECT_EQ(roots.Size(), 0U);
+}
+
+/// @test The first task finishing first leaves the join waiting for the second, whose end resumes the awaiter.
+TEST(CoroWhenAllTest, FirstFinishesFirst_TheSecondsEndResumesTheAwaiter) { ResumeInOrder(true); }
+
+/// @test The same, the other way round: the values stay in the order of the tasks, not of their ends.
+TEST(CoroWhenAllTest, SecondFinishesFirst_TheFirstsEndResumesTheAwaiter) { ResumeInOrder(false); }
+
+/// @test One task finishing without suspending, the other suspending: the join waits for the one that suspended.
+TEST(CoroWhenAllTest, OneFinishesWithoutSuspending_TheJoinWaitsForTheOther) {
+  RootTasks roots;
+  std::coroutine_handle<> second;
+  std::pair<int, int> result{0, 0};
+  roots.Spawn(StorePair(&result, WhenAll(Answer(), NumberAfterSuspending(2, &second))));
+  EXPECT_EQ(roots.Size(), 1U);
+  EXPECT_EQ(result, (std::pair{0, 0}));
+  second.resume();
+  EXPECT_EQ(result, (std::pair{42, 2}));
+  EXPECT_EQ(roots.Size(), 0U);
+}
+
+Task<> StepAfterSuspending(int* steps, std::coroutine_handle<>* handle) {
+  co_await Suspend{handle};
+  ++*steps;
+}
+
+Task<> AwaitVoidJoin(Task<std::pair<std::monostate, std::monostate>> joined, bool* joined_out) {
+  static_cast<void>(co_await std::move(joined));
+  *joined_out = true;
+  co_return;  // cppcheck takes the function for a plain one when its only co_await is cast to void
+}
+
+/// @test Two Task<void> join too, each giving a std::monostate.
+TEST(CoroWhenAllTest, VoidTasks_JoinOnceBothHaveRun) {
+  RootTasks roots;
+  int steps = 0;
+  std::coroutine_handle<> second;
+  bool joined = false;
+  roots.Spawn(AwaitVoidJoin(WhenAll(Count(&steps), StepAfterSuspending(&steps, &second)), &joined));
+  EXPECT_EQ(steps, 1);
+  EXPECT_FALSE(joined);
+  second.resume();
+  EXPECT_EQ(steps, 2);
+  EXPECT_TRUE(joined);
+}
+
+Task<int> TrackedAfterSuspending(Tracked tracked, int* live, std::coroutine_handle<>* handle) {
+  const Tracked local(live);
+  co_await Suspend{handle};
+  ADD_FAILURE() << "a destroyed frame never resumes";
+  co_return 0;
+}
+
+Task<int> TrackedAnswer(Tracked tracked) { co_return 42; }
+
+/// @test A frame destroyed while it awaits a join destroys both tasks, both suspended: every local and argument
+/// of theirs is released, and neither resumes.
+TEST(CoroWhenAllTest, FrameDestroyedWhileBothWait_DestroysBothTasks) {
+  int live = 0;
+  std::coroutine_handle<> first;
+  std::coroutine_handle<> second;
+  std::pair<int, int> result{0, 0};
+  {
+    RootTasks roots;
+    roots.Spawn(StorePair(&result, WhenAll(TrackedAfterSuspending(Tracked(&live), &live, &first),
+                                           TrackedAfterSuspending(Tracked(&live), &live, &second))));
+    EXPECT_EQ(live, 4);  // each frame's argument and local
+  }
+  EXPECT_EQ(live, 0);
+  EXPECT_EQ(result, (std::pair{0, 0}));
+}
+
+/// @test The same once one task has finished: its frame, kept for its value, is released too.
+TEST(CoroWhenAllTest, FrameDestroyedWhileOneWaits_DestroysTheFinishedTaskToo) {
+  int live = 0;
+  std::coroutine_handle<> second;
+  {
+    RootTasks roots;
+    std::pair<int, int> result{0, 0};
+    roots.Spawn(StorePair(&result, WhenAll(TrackedAnswer(Tracked(&live)),
+                                           TrackedAfterSuspending(Tracked(&live), &live, &second))));
+    EXPECT_EQ(live, 3);  // the finished frame's argument, the suspended frame's argument and local
+  }
+  EXPECT_EQ(live, 0);
+}
+
+Task<int> RecordTaskThenWait(HandedOverOperation* operation, SeenTasks* seen) {
+  seen->at_start = CurrentTask::Get();
+  co_await *operation;
+  seen->after_resume = CurrentTask::Get();
+  co_return 1;
+}
+
+Task<> JoinTwoWaits(Task<std::pair<int, int>> joined, CurrentTask::Id* after_join, std::promise<void>* done) {
+  static_cast<void>(co_await std::move(joined));
+  *after_join = CurrentTask::Get();
+  done->set_value();
+}
+
+/// @test Both tasks of a join run in the root's task, before and after their suspension through a hand-over,
+/// even though the first one's suspension leaves the thread under no task before the second starts. So does the
+/// awaiter after the join, and the loop runs under no task while the join waits.
+TEST(CoroWhenAllTest, CurrentTask_BothTasksRunInTheAwaitersTask) {
+  continuous_use_test::AppLoop loop;
+  AppLoopExecutor executor(&loop);
+  RootTasks roots;
+  HandedOverOperation first(&executor);
+  HandedOverOperation second(&executor);
+  SeenTasks seen_first;
+  SeenTasks seen_second;
+  CurrentTask::Id after_join = CurrentTask::kNone;
+  CurrentTask::Id id = CurrentTask::kNone;
+  CurrentTask::Id between = CurrentTask::kNone + 1;
+  std::promise<void> done;
+
+  std::promise<void> spawned;
+  loop.Post([&] {
+    id = roots.Spawn(JoinTwoWaits(WhenAll(RecordTaskThenWait(&first, &seen_first),
+                                          RecordTaskThenWait(&second, &seen_second)),
+                                  &after_join, &done));
+    between = CurrentTask::Get();
+    spawned.set_value();
+  });
+  spawned.get_future().wait();
+  first.End();
+  std::promise<CurrentTask::Id> waiting;
+  loop.Post([&] { waiting.set_value(CurrentTask::Get()); });
+  EXPECT_EQ(waiting.get_future().get(), CurrentTask::kNone);
+  second.End();
+  ASSERT_EQ(done.get_future().wait_for(std::chrono::seconds(10)), std::future_status::ready);
+  // The root ends on the loop after signalling done, and removes itself from its owner there: the owner is read,
+  // then destroyed, only once the loop has run that end.
+  std::promise<std::size_t> left;
+  loop.Post([&] { left.set_value(roots.Size()); });
+  EXPECT_EQ(left.get_future().get(), 0U);
+
+  EXPECT_NE(id, CurrentTask::kNone);
+  EXPECT_EQ(between, CurrentTask::kNone);
+  EXPECT_EQ(seen_first.at_start, id);
+  EXPECT_EQ(seen_first.after_resume, id);
+  EXPECT_EQ(seen_second.at_start, id);
+  EXPECT_EQ(seen_second.after_resume, id);
+  EXPECT_EQ(after_join, id);
+}
+
+Task<> RecordTaskAfterJoin(Task<std::pair<int, int>> joined, CurrentTask::Id* after_join) {
+  static_cast<void>(co_await std::move(joined));
+  *after_join = CurrentTask::Get();
+}
+
+/// @test The awaiter goes on in its own task even when the last branch was resumed by an awaitable that does not
+/// carry the task across, as a plain handle resumed from outside any task: the join restores it, not the branch.
+TEST(CoroWhenAllTest, CurrentTask_LastBranchResumedOutsideTheTask_AwaiterGoesOnInItsTask) {
+  RootTasks roots;
+  std::coroutine_handle<> first;
+  CurrentTask::Id after_join = CurrentTask::kNone;
+  const CurrentTask::Id id = roots.Spawn(RecordTaskAfterJoin(WhenAll(NumberAfterSuspending(1, &first), Answer()),
+                                                             &after_join));
+  ASSERT_EQ(CurrentTask::Get(), CurrentTask::kNone);
+  first.resume();  // from the test's body, under no task
+  EXPECT_NE(id, CurrentTask::kNone);
+  EXPECT_EQ(after_join, id);
+  EXPECT_EQ(roots.Size(), 0U);
 }
 
 }  // namespace

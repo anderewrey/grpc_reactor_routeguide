@@ -6,7 +6,10 @@
 # - each client's digest must be the same against every server;
 # - each logger of a coroutine twin application, named after its callback parent's logger with a .coro suffix,
 #   must count what the parent's logger counts, against the same server. Every .coro logger must find its parent,
-#   and every twin application must have one, so a renamed logger fails rather than goes unchecked.
+#   and every twin application must have one, so a renamed logger fails rather than goes unchecked. A chat's
+#   "notes:<logger>" line, the notes it sent, is compared the same way. The "chat" line, the replies of every chat
+#   of an application together, is not: it depends on which chats the application runs, and the cell already
+#   checked it against the replies the server owed.
 #
 # Usage: smoke_matrix_compare.sh <digest dir> "<servers>" "<clients>" "<twin>=<parent> ..."
 

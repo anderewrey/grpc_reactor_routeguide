@@ -68,6 +68,12 @@ diff usecases/whats_here.cpp usecases/whats_here_coro.cpp                # one c
 diff variants/get_feature_pull_coro.cpp usecases/whats_here_coro.cpp     # fills the card
 diff usecases/turn_by_turn_guidance.cpp usecases/turn_by_turn_guidance_coro.cpp   # awaits the confirmation
 diff variants/list_features_push_turn_by_turn_coro.cpp usecases/turn_by_turn_guidance_coro.cpp  # waits for the driver
+diff usecases/live_route_recording.cpp usecases/live_route_recording_coro.cpp   # awaits each fix, then its write
+diff variants/record_route_push_coro.cpp usecases/live_route_recording_coro.cpp  # the GPS, and the trip history
+diff usecases/gpx_track_upload.cpp usecases/gpx_track_upload_coro.cpp             # hands the track to a Source
+diff variants/record_route_pull_producer_coro.cpp usecases/gpx_track_upload_coro.cpp  # checks the summary
+diff usecases/convoy_chat.cpp usecases/convoy_chat_coro.cpp                       # two flows, joined
+diff variants/route_chat_push_continuous_coro.cpp usecases/convoy_chat_coro.cpp   # awaits each typed note
 ```
 
 The first two are described in the reference, under

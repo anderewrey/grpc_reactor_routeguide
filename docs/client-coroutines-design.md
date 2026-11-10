@@ -1,10 +1,10 @@
 # Client coroutines: design draft
 
 > [!NOTE]
-> This is a design draft, built step by step. Steps 1 to 3 of the [suggested order](#suggested-order) exist, and
-> [reactor_coro.md](/applications/reactor/reactor_coro.md) is their reference. Once the level is built and its claims
-> are proven by tests and runs, this draft's reasoning moves into [architecture.md](/docs/architecture.md), and this
-> file goes away.
+> This is a design draft, built step by step. Steps 1 to 3, and 5 to 7, of the [suggested order](#suggested-order)
+> exist, and [reactor_coro.md](/applications/reactor/reactor_coro.md) is their reference. Once the level is built and
+> its claims are proven by tests and runs, this draft's reasoning moves into [architecture.md](/docs/architecture.md),
+> and this file goes away.
 
 ## Goal
 
@@ -329,16 +329,25 @@ boundary rule keeps at the callback level:
 
 ## How the milestone proves it
 
-Every non-trivial claim needs a test or a demonstrable run:
+Every non-trivial claim needs a test or a demonstrable run. Each is in place, and named here:
 
-- **`Task<T>` resumes, transfers and destroys correctly.** Unit tests of the task type, under ASan and TSan.
-- **Every resumption runs on the application thread.** An assert in the executor's resume handler, and in every
-  coroutine scenario.
+- **`Task<T>` resumes, transfers and destroys correctly.** Unit tests of the task type, under ASan and TSan:
+  `CoroTaskTest.Task_BodyEndsOnAnotherThreadDuringStart_AwaiterResumedOnce`,
+  `CoroTaskTest.Task_MillionSynchronousAwaits_StackDoesNotGrow` and
+  `CoroTaskTest.RootTasks_DestroyedWithSuspendedChain_DestroysEveryFrame` lead
+  [coroutine core coverage](/docs/testing.md#coroutine-core-coverage).
+- **Every resumption runs on the application thread.** An assert in the executor's resume handler, which
+  `EventLoopExecutorTest.Executor_ResumptionsFromOtherThreads_AllRunOnTheApplicationThread` drives from other threads,
+  and in every coroutine scenario. Each awaitable's tests record the thread of each resumption, such as
+  `ReactorCoroBidiTest.RouteChat_EveryNoteSent_EveryReplyReceived`.
 - **Each buffer behaves as its callback parent does.** Tests on the `AppLoop` task queue, against the in-process server
   of `continuous_use_support.h`, one per buffer.
-- **Teardown never frees a reactor under gRPC.** A test that halts the loop with RPCs in flight, under ASan.
-- **Each twin does what its parent does.** Each pair of applications runs against a fresh `route_guide_callback_server`,
-  with the same totals: every fix, report, place, point and note counted as by the parent.
+- **Teardown never frees a reactor under gRPC.** `ReactorCoroHaltTest.EveryAwaitableInFlight_HaltThenDestroy_ReleasesEveryReactorAfterOnDone`
+  halts the loop with a coroutine of every awaitable kind suspended mid-RPC, then destroys them, under ASan, which
+  reports a use after free once the reactors are freed without waiting for `OnDone()`.
+- **Each twin does what its parent does.** `smoke_matrix.compare` runs each pair of applications against fresh
+  servers, with the same totals: every fix, report, place, point and note counted as by the parent, see
+  [smoke matrix](/docs/testing.md#smoke-matrix).
 
 ## Suggested order
 
@@ -369,9 +378,48 @@ Every non-trivial claim needs a test or a demonstrable run:
    [testing.md](/docs/testing.md#reader-coverage) lists what the tests prove.
 4. The buffered readers: their three variants, then `trip_recorder_coro`, `live_vehicle_position_coro` and
    `offline_map_download_coro`.
-5. The writers: their two variants, then `live_route_recording_coro` and `gpx_track_upload_coro`.
-6. The bidirectional join: `route_chat_push_continuous_coro`, then `convoy_chat_coro`.
-7. Teardown and cancellation tests.
+5. The writers: their two variants, then `live_route_recording_coro` and `gpx_track_upload_coro`. Done:
+   `coro::Writer` and `coro::Source` in `reactor_coro.h`. A `Writer`'s `co_await Write()` gives a `bool`, false once
+   the RPC has ended, and the request was then not sent. A write can still succeed after the server has ended the
+   RPC, while its status is on the way, so `Finish()`, not the writes, says how the RPC ended. `co_await Close()`
+   never suspends, since the reactor has no callback for the close completing, and `Finish()` sees it anyway: the
+   reactor level is unchanged. Both `Finish()` give a `UnaryResult`, as the unary awaitable does. A `Writer`'s
+   `Finish()` awaited before `Close()` cancels, by the reader's rule, since the write flow would hold the RPC open,
+   but not after a write that failed, which already ended it. A `Source`'s `Finish()` never cancels: it is its only
+   call, and the reactor sends the whole range on its own, so awaiting it at once skips nothing.
+   The write hand-over is re-armed as each completed write is taken, not before the next write starts, as the reader
+   re-arms before `ResumeRead()`: a fresh hand-over is not ended, so there is nothing to re-arm before the first
+   write. A `Source` takes any range, and copies it into a `std::vector`, or moves a vector in, on the application
+   thread, since `next_request` runs on a gRPC thread, where a view's function would run code of the application's.
+   `live_route_recording_coro` awaits each GPS fix with `EventLoopExecutor::After()`, then its write: a fix that
+   came while a write was in flight waits for the coroutine, so no queue is kept.
+   [testing.md](/docs/testing.md#writer-coverage) lists what the tests prove.
+6. The bidirectional join: `route_chat_push_continuous_coro`, then `convoy_chat_coro`. Done: `coro::WhenAll()` in
+   `coro_task.h`, and `coro::Bidi` in `reactor_coro.h`. `WhenAll()` joins two tasks of any value types, `void`
+   included, and gives both values as a `std::pair`. Each task runs in a branch frame the join owns, so destroying
+   a frame that waits on a join destroys both tasks, and the last of the two branches and the starter to arrive
+   resumes the awaiter, or lets it go on without suspending, as `Task` does. Both branches run in the awaiter's
+   task number, which the join restores when the awaiter goes on, whatever resumed the last branch.
+   A `Bidi`'s read callbacks queue each message on the gRPC thread, under a lock, since `kContinuous` never waits,
+   and wake the reading coroutine through a re-armed `ResumeHandover` only when it found nothing to take. The queue,
+   its lock and that hand-over are one private class of the `Bidi`, the minimum the buffered reader of step 4 also
+   needs, so the two can share one once both exist. The write side is the `Writer`'s. An early `Finish()`, before
+   the read stream ended or the writes were closed, cancels and drops the queue, and gives the reactor's status:
+   `CANCELLED`, or the server's own status had it already arrived, never a status nobody sent. No
+   `CancelAndRelease()` is needed: under `kContinuous` no read hold exists, and the cancel ends the armed read, whose
+   `OnReadDone(false)` releases the idle write hold. The flows take the `Bidi` by pointer, since a reference
+   parameter dangles across a suspension.
+   The smoke matrix cannot compare a chat's replies with its parent's: the server echoes every note left at a
+   location by any RPC, so what one chat receives depends on the chats beside it. Each cell now checks instead that
+   its chats together received the replies the server owed for the notes its log shows, and each chat that logs a
+   line per note it sends is compared with its parent on that count. `route_chat_push_continuous` gained a
+   `sent     |` line for it.
+   [testing.md](/docs/testing.md#bidirectional-join-coverage) lists what the tests prove.
+7. Teardown and cancellation tests. Done: each awaitable's tests cancel, await `Finish()` early, and destroy a frame
+   suspended mid-RPC, on a running loop. `reactor_coro_halt_test.cpp` adds the application's own shutdown:
+   `EventLoop::Halt()` with a coroutine of every awaitable kind in flight, then their frames destroyed off the loop,
+   as `main()` does once `EventLoop::Run()` returns. It runs in a process of its own, since EventLoop cannot restart.
+   [testing.md](/docs/testing.md#coroutine-teardown-coverage) lists what it proves.
 
 ## The language standard: C++20
 

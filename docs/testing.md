@@ -115,6 +115,16 @@ no timing. Both are described in [unary awaitable coverage](#unary-awaitable-cov
 re-armed hand-over inside it is tested on its own in coro_task_test.cpp. Both are described in
 [reader coverage](#reader-coverage).
 
+[reactor_coro_writer_test.cpp][coro-writer-test] tests `coro::Writer`, the awaited writes, and `coro::Source`, the range
+the reactor pulls, the same way. Both are described in [writer coverage](#writer-coverage).
+
+[reactor_coro_bidi_test.cpp][coro-bidi-test] tests `coro::Bidi`, the bidirectional stream, read by one coroutine and
+written by another, joined by `coro::WhenAll()`, the same way. `WhenAll()` itself is tested on its own in
+coro_task_test.cpp. Both are described in [bidirectional join coverage](#bidirectional-join-coverage).
+
+[reactor_coro_halt_test.cpp][coro-halt-test] halts the real EventLoop with every awaitable kind in flight, then
+destroys their frames, as described in [coroutine teardown coverage](#coroutine-teardown-coverage).
+
 ### Callback application smoke test
 
 [callback_smoke_test.sh][callback-smoke-test] runs the callback example applications themselves,
@@ -142,21 +152,26 @@ the client with `--point_delay_ms=5`, so the sync and callback clients' RecordRo
 than gRPC's example's random 0.5 to 1.5 s. It then
 writes the client's digest: one line per logger, with the number of messages the scenario received, counted from its
 `read_ok` and `skipped` lines when it logs any, else from its `RESPONSE` lines. The RouteChat loggers make one `chat`
-line instead, the replies of all of them together. Both servers answer each note with the notes already left at its
-location, by any RPC, taking those notes and storing the new one at once, so each pair of notes at one location makes
-exactly one reply. What one chat receives depends on how the chats interleave; their total does not.
+line instead, the replies of all of them together. Both servers answer each note with every note already left at its
+location, by any RPC, and store the new one, so each pair of notes at one location makes exactly one reply. What one
+chat receives depends on how the chats interleave; their total does not. The cell checks that total against the
+replies the server owed: it counts the notes the server's log shows it read, per location, and fails unless the chats
+received n(n-1)/2 replies for each location's n notes. A chat whose logger logs one line per note it sends,
+`typed    |` or `sent     |`, also makes a `notes:<logger>` line, the notes it sent.
 
 [smoke_matrix_compare.sh][smoke-matrix-compare] then checks that:
 
 - each client's digest is the same against both servers;
 - each logger of a coroutine twin application, named after its callback parent's logger with a `.coro` suffix, such
   as `GetFeature.pull.coro` for `GetFeature.pull`, counts what the parent's logger counts, against the same server.
-  Every `.coro` logger must find its parent, and every twin application must have one.
+  Every `.coro` logger must find its parent, and every twin application must have one. A `notes:` line of a `.coro`
+  chat, such as `notes:ConvoyChat.coro`, is compared the same way, with `notes:ConvoyChat`.
 
 A scenario added to an application, a coroutine twin included, needs nothing in the matrix. A new application is one
-line in `SMOKE_SERVERS` or `SMOKE_CLIENTS`, and a new twin application one more line in `SMOKE_TWINS`. One limit: a
-coroutine twin of a RouteChat scenario goes into its application's `chat` line, which is compared across servers
-only, not with its parent.
+line in `SMOKE_SERVERS` or `SMOKE_CLIENTS`, and a new twin application one more line in `SMOKE_TWINS`. A coroutine twin
+of a RouteChat scenario goes into its application's `chat` line, which depends on every chat the application runs, so
+it is compared across servers and with the replies owed, not with the parent's: the twin is compared with its parent
+on the notes it sends instead, and its parent must log a line per note for that.
 
 The cells hold the same `RESOURCE_LOCK` on port 50051 as the callback smoke test, so they run one at a time. The
 servers are killed at the end of each cell, so their exit-time checks do not run, while every client runs to its end,
@@ -508,6 +523,9 @@ Under the first mutant, the stack test overflows under GCC, and the five other t
 by one of the two `CurrentTask` tests: not setting it in `Spawn()`, not restoring it in `ResumeHandover::Resumed()`, not
 clearing it when a task suspends through the hand-over, and not clearing it when a root task ends.
 
+`WhenAll()`'s tests are in the same file, under `CoroWhenAllTest`, and described in
+[bidirectional join coverage](#bidirectional-join-coverage).
+
 ### Unary awaitable coverage
 
 [reactor_coro_unary_test.cpp][coro-unary-test] runs `GetFeature` through `coro::Unary`. Its service can hold an answer
@@ -650,6 +668,184 @@ Three more mutants of the early `Finish()`, each run 5 times against each of its
 `PullFinishAfterTheLastMessage` holds no message, only a read armed for the next one, which the cancel ends, so it
 catches none of them, and shows that a cancel alone is enough there. The third mutant opens the race of a message
 arriving as the cancel is sent, which [the teardown tests](#teardown-coverage) land deterministically.
+
+### Writer coverage
+
+[reactor_coro_writer_test.cpp][coro-writer-test] runs `RecordRoute` through `coro::Writer` under
+`Submission::kApplicationPushes`, and through `coro::Source` under `Submission::kReactorPulls`, under both deliveries.
+Its service records the latitude of every point it reads, and finishes once the client closes its stream, with a
+summary counting them. It can instead fail once it has read a given number, or hold the RPC after the close until the
+client cancels it.
+
+| Test | Checks |
+| ------ | --------- |
+| `RecordRoute_PullWritesEveryPoint_ThenFinishGivesTheSummary` | Each write resumes on the loop, then the summary |
+| `RecordRoute_PushWritesEveryPoint_ThenFinishGivesTheSummary` | The same under `kPush`, the summary moved out |
+| `RecordRoute_NoWrite_CloseThenFinishGivesAnEmptySummary` | A stream closed with no write |
+| `RecordRoute_WriteCompletedBeforeTheAwait_GoesOnWithoutSuspending` | No post, and the next write still works |
+| `RecordRoute_PullServerError_WriteGivesFalse_FinishGivesTheError` | A `Write()` gives false, then the next at once |
+| `RecordRoute_PushServerError_WriteGivesFalse_FinishGivesTheError` | The same under `kPush` |
+| `RecordRoute_WriteAfterTheServerErrorArrived_ThatWriteGivesFalse` | The failed write itself gives false |
+| `RecordRoute_TryCancel_WriteGivesFalse_FinishGivesCancelled` | A cancel refuses the next write |
+| `RecordRoute_PullFinishBeforeClose_EndsTheRpcCancelled` | An early `Finish()` cancels the RPC the close holds open |
+| `RecordRoute_PushFinishBeforeAnyWrite_EndsTheRpcCancelled` | The same with no write, under `kPush` |
+| `RecordRoute_FinishBeforeCloseAfterTheServerError_GivesTheError` | The server's status, once it has arrived |
+| `RecordRoute_FrameDestroyedMidWrite_CancelsAndWaitsForOnDone` | Frees nothing under gRPC, and posts nothing |
+| `RecordRoute_FrameDestroyedBetweenWrites_ReleasesTheWriteFlow` | The open write flow no longer stalls the teardown |
+| `RecordRoute_PullSourceSendsEveryElement_ThenFinishGivesTheSummary` | Every element, in order, then the summary |
+| `RecordRoute_PushSourceSendsEveryElement_ThenFinishGivesTheSummary` | The same under `kPush` |
+| `RecordRoute_SourceOfAnEmptyRange_FinishGivesAnEmptySummary` | An empty range closes the stream at once |
+| `RecordRoute_SourceOfADeque_SendsEveryElement` | A range other than a vector is copied, in order |
+| `RecordRoute_SourceOfATransformView_SendsEveryElement` | A view is copied too |
+| `RecordRoute_SourceTryCancel_FinishGivesCancelled` | A cancel ends a held upload |
+| `RecordRoute_SourceFrameDestroyedWhileFinishWaits_CancelsAndWaitsForOnDone` | Frees nothing, and posts nothing |
+
+A write started before the client has the server's status can still succeed after the server has ended the RPC,
+since gRPC buffers it, so the server error tests write until a `Write()` gives false, pausing 5 milliseconds between
+writes, and check only that a false comes, that every later call gives false at once, and the status. Which write
+fails is set by `WriteAfterTheServerErrorArrived`: it writes once, pauses the loop thread 1 second while the
+server fails, then writes again. That write, started once the status has arrived, fails, held in 10 runs of 10. The
+same pause lets `FinishBeforeCloseAfterTheServerError` show that a cancel sent once the status has arrived changes
+nothing, as for the reader.
+
+`WriteCompletedBeforeTheAwait` takes the awaitable `Write()` returns, pauses the loop thread 1 second before
+awaiting it, so the write has completed, and checks the executor was given no coroutine meanwhile.
+`FrameDestroyedMidWrite` keeps a write in flight with a test reactor whose `OnWriteDone()` sleeps 1 second,
+and destroys the frame suspended in that `Write()`. Both destruction tests also check the reactor was released well
+under the 5 seconds of `kOnDoneTimeout`, and that nothing was posted after the destruction.
+
+The whole file held in 30 local runs, and in 5 under GCC's AddressSanitizer and UndefinedBehaviorSanitizer.
+
+Nine mutants of `coro::Writer` and `coro::Source`, each run once against the whole file, locally:
+
+| Mutant | Caught by |
+| ------ | --------- |
+| No `Rearm()` after a completed write | Both `WritesEveryPoint`, and every test that writes after a pause |
+| `Rearm()` before `SendRequest()`, as the reader re-arms before `ResumeRead()` | The first write: `Rearm()`'s assert |
+| The write callback ignoring `ok` | `WriteAfterTheServerErrorArrived` |
+| An early `Finish()` not cancelling | All three early `Finish()` tests, waiting for the close |
+| `Close()` not closing the request stream | Every test that closes, waiting for the close |
+| The `Writer` destructor not abandoning the write hand-over | `FrameDestroyedMidWrite`: the destroyed frame resumed |
+| `Source` dropping the last element | Every `Source` test with elements |
+| `Source::Finish()` cancelling, as the `Writer`'s early `Finish()` does | Every `Source` test that ends on its own |
+| The `Source` destructor not abandoning the done hand-over | `SourceFrameDestroyedWhileFinishWaits`: resumed |
+
+The write callback ignoring `ok` was first missed: the next `Write()` is refused anyway, since the failed write ended
+the write flow, and the server error tests could not tell which write failed. `WriteAfterTheServerErrorArrived` was
+added for it. The second mutant is the order the reader uses, and the reason the writer differs: a fresh hand-over is
+not ended, so nothing can be re-armed before the first write, and the writer re-arms after each one instead.
+
+### Bidirectional join coverage
+
+[coro_task_test.cpp][coro-task-test] tests `coro::WhenAll()` with no RPC: its tasks suspend on a hand-out handle the
+test resumes, or on a `ResumeHandover` ended from the test's thread and resumed on the `AppLoop`.
+
+| Test | Checks |
+| ------ | --------- |
+| `BothFinishWithoutSuspending_GivesBothValuesAtOnce` | Both values, a move-only one too, and no suspension |
+| `FirstFinishesFirst_TheSecondsEndResumesTheAwaiter` | Nothing before the second ends, then both values |
+| `SecondFinishesFirst_TheFirstsEndResumesTheAwaiter` | The same, the values still in the order of the tasks |
+| `OneFinishesWithoutSuspending_TheJoinWaitsForTheOther` | The join waits for the task that suspended |
+| `VoidTasks_JoinOnceBothHaveRun` | Two `Task<>` join, each giving a `std::monostate` |
+| `FrameDestroyedWhileBothWait_DestroysBothTasks` | Every argument and local of both suspended tasks released |
+| `FrameDestroyedWhileOneWaits_DestroysTheFinishedTaskToo` | The finished task's frame released too |
+| `CurrentTask_BothTasksRunInTheAwaitersTask` | Both tasks, and the awaiter after, under the root's number |
+| `CurrentTask_LastBranchResumedOutsideTheTask_AwaiterGoesOnInItsTask` | The join, not the branch, restores it |
+
+[reactor_coro_bidi_test.cpp][coro-bidi-test] runs `RouteChat` through `coro::Bidi`, under `Delivery::kPush`,
+`Submission::kApplicationPushes` and `ReadPacing::kContinuous`, the one configuration it takes. Most tests run a
+reading coroutine and a writing one on the same `Bidi`, joined by `WhenAll()` before `Finish()`. Its service records
+every note it reads and echoes it back, and finishes once the client closes its stream. It can instead echo nothing,
+answer the close with a burst of replies before finishing, or finish with a given status once it has read a given
+number of notes.
+
+| Test | Checks |
+| ------ | --------- |
+| `RouteChat_EveryNoteSent_EveryReplyReceived` | 20 notes read in order, 20 echoes, every resumption on the loop |
+| `RouteChat_NoNote_CloseEndsBothSides` | A close with no write ends the read side too |
+| `RouteChat_ReadSideEndsWhileWritesGoOn_WriteGivesFalse` | The reader ends on the server's end, unclosed writes fail |
+| `RouteChat_ServerError_ReadEnds_FinishGivesTheError` | The same with an error, which `Finish()` gives |
+| `RouteChat_WritesEndWhileReadsGoOn_EveryLaterReplyReceived` | 50 replies after the close, all read |
+| `RouteChat_ReplyQueuedBeforeTheAwait_GoesOnWithoutSuspending` | No post for a queued reply, then the end still waits |
+| `RouteChat_TryCancel_EndsBothSides_FinishGivesCancelled` | A cancel from the writer ends the reader too |
+| `RouteChat_FinishBeforeClose_EndsTheRpcCancelled` | An early `Finish()` cancels, on the loop |
+| `RouteChat_FinishBeforeReadingTheQueuedReplies_GivesTheServersStatus` | The queue dropped, the status arrived kept |
+| `RouteChat_FinishBeforeCloseAfterTheServerError_GivesTheError` | The server's status, once it has arrived |
+| `RouteChat_FinishWhileTheReaderWaits_TheReaderGetsTheEnd` | The waiting reader ends, a later `Read()` too |
+| `RouteChat_FrameDestroyedWithBothSidesInFlight_CancelsAndWaitsForOnDone` | A read waiting, a write in flight |
+
+`ReadSideEndsWhileWritesGoOn` writes 5 milliseconds apart, and checks that the reader gets every echo then the end,
+while the writer was never closed, and that a later write gives false. Which coroutine the loop runs first once the
+server has ended is not fixed, so the test does not check whether the reader ended before the refused write: a first
+version did, and failed on its first run. `FinishBeforeReadingTheQueuedReplies` closes, pauses the loop thread 1
+second so the server's burst and status arrive, then awaits `Finish()` without reading: the status is the server's
+OK, not a `CANCELLED` nobody sent. `FrameDestroyedWithBothSidesInFlight` keeps a write in flight with a test reactor
+whose `OnWriteDone()` sleeps 1 second, against a service that echoes nothing, so the reader waits too, and checks the
+reactor was released well under the 5 seconds of `kOnDoneTimeout`, and that nothing was posted after the
+destruction.
+
+`FinishWhileTheReaderWaits` came from the pre-PR review: `Finish()` awaited by the writing coroutine while the reading
+one waits. Its first run aborted on `Read()`'s assert, since the reader, ended by the cancel, read once more after
+`Finish()` had destroyed the reactor; `Read()`, `Write()` and `Close()` now assert only what they need, and give
+nothing or false at once.
+
+The same review pointed at a window no test provokes: when a frame holding a `Bidi` is destroyed while both flows
+wait, the flows' frames go first, and a read or write callback that comes before the `Bidi`'s destructor abandons its
+hand-overs could hand the executor a destroyed flow. The window is the few instructions between the two, on the
+application thread, which a test cannot stretch without changing the code under test, so it is not provoked. Every
+awaitable has the same rule, which their scenarios state: a frame is destroyed while suspended only once the loop no
+longer runs. The `Bidi`'s comment and [reactor_coro.md](/applications/reactor/reactor_coro.md) say it too.
+
+The whole file held in 10 local runs, and in 5 under GCC's AddressSanitizer and UndefinedBehaviorSanitizer.
+
+Mutants, each run once against its test file, locally:
+
+| Mutant | Caught by |
+| ------ | --------- |
+| A branch that ends first not clearing the task number | `CurrentTask_BothTasksRunInTheAwaitersTask` |
+| The second branch started under the first one's task number | `CurrentTask_BothTasksRunInTheAwaitersTask` |
+| The awaiter suspending even when both tasks have ended | `BothFinishWithoutSuspending`: the root never ends |
+| The `Join` not destroying its branch frames | Both frame destruction tests |
+| The awaiter's task number not restored by the join | `LastBranchResumedOutsideTheTask` |
+| A queued message not waking a waiting `Read()` | `FinishBeforeClose`: the reader waits for the end |
+| The end of the stream not waking a waiting `Read()` | Seven tests: the reader never ends |
+| The read hand-over not re-armed after a wait | Four tests: `Read()` ends the stream at the next wait |
+| An early `Finish()` not cancelling | `FinishBeforeClose` and `FinishWhileTheReaderWaits` |
+| The `Bidi` destructor not abandoning the read hand-over | `FrameDestroyedWithBothSidesInFlight`: a crash |
+| An early `Finish()` not dropping the queue | None: the `Bidi` frees it moments later anyway |
+| `convoy_chat_coro` not showing its first reply | The smoke matrix: 2 replies received, 3 owed |
+
+The awaiter's task number was first restored only by the hand-over that resumed the last branch, and its mutant
+survived every test: `LastBranchResumedOutsideTheTask` was added for it. The queue the
+early `Finish()` drops is freed with the `Bidi` once the frame ends, right after, so dropping it earlier shows in no
+test; it stays for the rule that an early `Finish()` releases what is queued.
+
+### Coroutine teardown coverage
+
+[reactor_coro_halt_test.cpp][coro-halt-test] runs the coroutine level's shutdown against the real EventLoop, in a
+process of its own, since EventLoop cannot restart after `Halt()`. Its service holds every RPC open, answering nothing,
+until the client cancels it.
+
+| Test | Checks |
+| ------ | --------- |
+| `EveryAwaitableInFlight_HaltThenDestroy_ReleasesEveryReactorAfterOnDone` | All cancelled, each freed after `OnDone()` |
+
+One coroutine of each awaitable kind is suspended mid-RPC:
+
+- a `Unary` in `Finish()`;
+- a `Reader` in `Read()`;
+- a `Writer` between writes, its write flow open, in `EventLoopExecutor::After()`;
+- a `Source` in `Finish()`;
+- a `Bidi`, joined, with one flow in `Read()` and the other between writes.
+
+The test then halts the loop, which discards the timers and any resumption still to come. It destroys the root tasks
+on its own thread, as `main()` does once `EventLoop::Run()` has returned. It checks that the destruction took well
+under the 5 seconds after which a reactor would be leaked, that the server saw all five RPCs cancelled, and that no
+coroutine resumed. It held in 5 runs under GCC's AddressSanitizer and UndefinedBehaviorSanitizer.
+
+| Mutant | Caught by |
+| ------ | --------- |
+| `DestroyAfterOnDone()` freeing the reactor after `TryCancel()`, without waiting for `OnDone()` | ASan: use after free |
 
 ### Naming convention
 
@@ -898,6 +1094,9 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [reactor-eventloop]: /applications/reactor/reactor_eventloop.h
 [coro-unary-test]: /applications/reactor/tests/reactor_coro_unary_test.cpp
 [coro-reader-test]: /applications/reactor/tests/reactor_coro_reader_test.cpp
+[coro-writer-test]: /applications/reactor/tests/reactor_coro_writer_test.cpp
+[coro-bidi-test]: /applications/reactor/tests/reactor_coro_bidi_test.cpp
+[coro-halt-test]: /applications/reactor/tests/reactor_coro_halt_test.cpp
 [reactor-coro]: /applications/reactor/reactor_coro.h
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp
 [callback-smoke-test]: /applications/callback/tests/callback_smoke_test.sh

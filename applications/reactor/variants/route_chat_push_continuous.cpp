@@ -132,7 +132,10 @@ void RouteChat::SendNextNote() {
   const bool accepted = last ? reactor_->SendLastRequest(std::move(note)) : reactor_->SendRequest(std::move(note));
   if (!accepted) {
     logger_.info("         | write rejected, {} note(s) left unsent", pending_.size() + 1);
+    return;
   }
+  // One line per note sent, which the smoke matrix counts against the coroutine twin's.
+  logger_.info("sent     | #{}", ++sent_seq_);
 }
 
 }  // namespace rg_demo::push::continuous
