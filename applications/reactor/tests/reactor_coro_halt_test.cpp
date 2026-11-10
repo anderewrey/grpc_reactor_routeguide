@@ -250,7 +250,10 @@ TEST_F(ReactorCoroHaltTest, EveryAwaitableInFlight_HaltThenDestroy_ReleasesEvery
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   ASSERT_EQ(test_service_.Started(), kRpcs);
-  EXPECT_EQ(roots->Size(), static_cast<std::size_t>(kRpcs));
+  // Each coroutine went on writing its frame on the loop after it signalled, up to its suspension. Halt() only
+  // asks the loop to stop, and does not join its thread, so the loop runs one last handler first: the frames are
+  // destroyed on this thread only once the loop has run everything queued before it.
+  OnLoop([&] { EXPECT_EQ(roots->Size(), static_cast<std::size_t>(kRpcs)); });
 
   // The loop stops: the timers the writers wait on, and any resumption still to come, are discarded.
   EventLoop::Halt();

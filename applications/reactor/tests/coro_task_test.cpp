@@ -821,6 +821,11 @@ TEST(CoroWhenAllTest, CurrentTask_BothTasksRunInTheAwaitersTask) {
   EXPECT_EQ(waiting.get_future().get(), CurrentTask::kNone);
   second.End();
   ASSERT_EQ(done.get_future().wait_for(std::chrono::seconds(10)), std::future_status::ready);
+  // The root ends on the loop after signalling done, and removes itself from its owner there: the owner is read,
+  // then destroyed, only once the loop has run that end.
+  std::promise<std::size_t> left;
+  loop.Post([&] { left.set_value(roots.Size()); });
+  EXPECT_EQ(left.get_future().get(), 0U);
 
   EXPECT_NE(id, CurrentTask::kNone);
   EXPECT_EQ(between, CurrentTask::kNone);
