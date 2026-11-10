@@ -7,10 +7,12 @@
 /// and ReadPacing::kContinuous, against an in-process server, with coroutines resumed on the AppLoop task queue
 /// that stands in for the application's event loop: every message owned and in order, the stream running ahead
 /// of a slow coroutine, a waiting Read() woken by a message and by the end of the stream, an early Finish() that
-/// drops the messages queued, and a frame destroyed with messages queued.
+/// drops the messages queued, and those still to come, and a frame destroyed with messages queued. Every
+/// coroutine records the thread it resumes on after each co_await, and every test checks it is the loop's.
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <future>
@@ -46,8 +48,9 @@ using ListFeaturesReactor = routeguide::ListFeatures::ClientReactor<kDelivery, k
 using UnboundedReactor = ListFeaturesReactor<Delivery::kPush, ReadPacing::kContinuous>;
 using UnboundedReader = Reader<UnboundedReactor>;
 
-// The reactor's type chooses the buffer, and every combination with no reader is refused: a Reader over it
-// does not compile, as its primary template's static_assert says.
+// The reactor's type chooses the buffer, and the combinations with no reader map to none. A Reader over one of
+// them does not compile, as its primary template's static_assert says: a test cannot show that, but the buffer
+// it rests on is checked here.
 static_assert(BufferFor(Delivery::kPull, ReadPacing::kTurnByTurn) == Buffer::kNone);
 static_assert(BufferFor(Delivery::kPush, ReadPacing::kTurnByTurn) == Buffer::kNone);
 static_assert(BufferFor(Delivery::kPush, ReadPacing::kContinuous) == Buffer::kUnbounded);
@@ -60,67 +63,168 @@ static_assert(!BufferOf(static_cast<routeguide::Feature*>(nullptr)));
 // What Read() gives, as for the reader without a buffer.
 static_assert(std::is_same_v<UnboundedReader::MessageT, std::optional<routeguide::Feature>>);
 
+/// Polls `condition` every 5 milliseconds, for kTimeout at most.
+/// @return whether it held in time
+template <class F>
+bool PollUntil(F condition) {
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  while (!condition()) {
+    if (std::chrono::steady_clock::now() > deadline) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return true;
+}
+
 /// What a test coroutine saw, written on the loop, read by the test once `done` is ready.
 struct Seen {
   std::vector<std::string> names;        // of every message Read() gave, in order
-  std::vector<std::thread::id> threads;  // each message was given on
+  std::vector<std::thread::id> resumed;  // the thread after each co_await
   bool read_after_end_gave_nothing = false;
   std::size_t queued_after_pause = 0;  // Queued() once the coroutine paused
-  int posts_after_pause = -1;          // suspensions while reading on after the pause
+  int posts_after_pause = -1;          // suspensions while reading the messages queued during the pause
   grpc::Status status;
+
+  /// Called after each co_await: records the thread the coroutine resumed on.
+  void Resumed() { resumed.push_back(std::this_thread::get_id()); }
 };
 
-/// Pauses the loop thread, so no code of the coroutine runs while the stream goes on: 200 milliseconds, then on
-/// until `queued` messages wait, should a loaded machine need longer.
-void PauseUntilQueued(const UnboundedReader& reader, std::size_t queued) {
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
-  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
-  while (reader.Queued() < queued && std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+/// A kPush, kContinuous ListFeatures reactor whose reactions the test can observe and hold: it says when its
+/// OnDone() has begun, so the server's status has arrived, and when its second message has arrived, which it can
+/// hold back from the reader until the test releases it. One test at a time uses it, hence its static state.
+class HookedReactor final
+    : public RpcReactor::Client::ActiveReadReactor<routeguide::Feature, Delivery::kPush, ReadPacing::kContinuous> {
+  using Base = RpcReactor::Client::ActiveReadReactor<routeguide::Feature, Delivery::kPush, ReadPacing::kContinuous>;
+
+ public:
+  using Callbacks =
+      RpcReactor::Client::ActiveReadCallbacks<routeguide::Feature, Delivery::kPush, ReadPacing::kContinuous>;
+
+  HookedReactor(routeguide::RouteGuide::Stub& stub, std::unique_ptr<grpc::ClientContext> context,
+                const routeguide::Rectangle& request, Callbacks&& cbs)
+      : Base(std::move(context), std::move(cbs)) {
+    stub.async()->ListFeatures(this->context_.get(), &request, this);
+    this->StartRead(&this->response_);
+    this->StartCall();
   }
-}
+
+  /// Starts a test: nothing has arrived, and the second message is held back or not.
+  static void Reset(bool hold_second) {
+    hold_second_ = hold_second;
+    second_arrived_ = false;
+    done_began_ = false;
+  }
+  /// Lets the second message reach the reader.
+  static void ReleaseSecond() { hold_second_ = false; }
+  /// @return once the second message has arrived, or false after kTimeout
+  static bool WaitForTheSecond() { return PollUntil([] { return second_arrived_.load(); }); }
+  /// @return once OnDone() has begun, with the RPC's status, or false after kTimeout
+  static bool WaitForOnDone() { return PollUntil([] { return done_began_.load(); }); }
+
+ protected:
+  void OnReadDone(bool ok) override {
+    if (ok && ++reads_ == 2) {
+      second_arrived_ = true;
+      PollUntil([] { return !hold_second_.load(); });
+    }
+    Base::OnReadDone(ok);
+  }
+  void OnDone(const grpc::Status& status) override {
+    done_began_ = true;
+    Base::OnDone(status);
+  }
+
+ private:
+  int reads_ = 0;  // only touched by OnReadDone(), whose runs the read between them orders
+  static inline std::atomic<bool> hold_second_{false};
+  static inline std::atomic<bool> second_arrived_{false};
+  static inline std::atomic<bool> done_began_{false};
+};
+using HookedReader = Reader<HookedReactor>;
 
 /// Reads the whole stream, reads once more after its end, then finishes.
 Task<> ReadAll(Executor* executor, routeguide::RouteGuide::Stub* stub, Seen* seen, std::promise<void>* done) {
   UnboundedReader reader{*executor, *stub, routeguide::Rectangle{}};
   while (auto feature = co_await reader.Read()) {
+    seen->Resumed();
     seen->names.push_back(feature->name());
-    seen->threads.push_back(std::this_thread::get_id());
   }
+  seen->Resumed();
   seen->read_after_end_gave_nothing = !co_await reader.Read();
+  seen->Resumed();
   seen->status = co_await reader.Finish();
+  seen->Resumed();
   done->set_value();
 }
 
-/// Reads one message, pauses the loop thread until the other two are queued, then reads them, counting the
-/// suspensions that takes, then reads to the end and finishes.
+/// Reads one message of a three-message stream, then blocks the loop thread, so no code of the coroutine runs
+/// while the stream goes on, until the other two are queued, then reads them, counting the suspensions that
+/// takes, then reads to the end and finishes.
 Task<> ReadOnePauseThenReadOn(coro_reader_test::CountingExecutor* executor, routeguide::RouteGuide::Stub* stub,
                               Seen* seen, std::promise<void>* done) {
   UnboundedReader reader{*executor, *stub, routeguide::Rectangle{}};
   if (auto first = co_await reader.Read()) seen->names.push_back(first->name());
-  PauseUntilQueued(reader, 2);
+  seen->Resumed();
+  PollUntil([&] { return reader.Queued() == 2; });
   seen->queued_after_pause = reader.Queued();
   const int posts = executor->Posts();
   for (int i = 0; i < 2; ++i) {
     if (auto feature = co_await reader.Read()) seen->names.push_back(feature->name());
+    seen->Resumed();
   }
   seen->posts_after_pause = executor->Posts() - posts;
-  while (auto feature = co_await reader.Read()) seen->names.push_back(feature->name());
+  while (auto feature = co_await reader.Read()) {
+    seen->Resumed();
+    seen->names.push_back(feature->name());
+  }
+  seen->Resumed();
   seen->status = co_await reader.Finish();
+  seen->Resumed();
   done->set_value();
 }
 
-/// Reads `reads` messages of a three-message stream, pauses the loop thread until the others wait, then awaits
-/// Finish() without reading to the end of the stream.
-Task<> ReadSomePauseThenFinish(Executor* executor, routeguide::RouteGuide::Stub* stub, int reads, Seen* seen,
-                               std::promise<void>* done) {
+/// Reads one message of a stream the server holds open after three, blocks the loop thread until the other two
+/// are queued, then awaits Finish().
+Task<> ReadOneUntilQueuedThenFinish(Executor* executor, routeguide::RouteGuide::Stub* stub, Seen* seen,
+                                    std::promise<void>* done) {
   UnboundedReader reader{*executor, *stub, routeguide::Rectangle{}};
-  for (int i = 0; i < reads; ++i) {
-    if (auto feature = co_await reader.Read()) seen->names.push_back(feature->name());
-  }
-  PauseUntilQueued(reader, static_cast<std::size_t>(3 - reads));
+  if (auto first = co_await reader.Read()) seen->names.push_back(first->name());
+  seen->Resumed();
+  PollUntil([&] { return reader.Queued() == 2; });
   seen->queued_after_pause = reader.Queued();
   seen->status = co_await reader.Finish();
+  seen->Resumed();
+  done->set_value();
+}
+
+/// Reads `reads` messages of a three-message stream, blocks the loop thread until OnDone() has begun, so the
+/// server's status has arrived and the other messages are queued, then awaits Finish() without reading on.
+Task<> ReadSomeUntilOnDoneThenFinish(Executor* executor, routeguide::RouteGuide::Stub* stub, int reads, Seen* seen,
+                                     std::promise<void>* done) {
+  HookedReader reader{*executor, *stub, routeguide::Rectangle{}};
+  for (int i = 0; i < reads; ++i) {
+    if (auto feature = co_await reader.Read()) seen->names.push_back(feature->name());
+    seen->Resumed();
+  }
+  EXPECT_TRUE(HookedReactor::WaitForOnDone());
+  seen->queued_after_pause = reader.Queued();
+  seen->status = co_await reader.Finish();
+  seen->Resumed();
+  done->set_value();
+}
+
+/// Reads one message, waits until the second one has arrived and is held back from the reader, calls Finish(),
+/// which closes the queue, then lets the second one through, and awaits the end.
+Task<> FinishWhileTheSecondIsHeld(Executor* executor, routeguide::RouteGuide::Stub* stub, Seen* seen,
+                                  std::promise<void>* done) {
+  HookedReader reader{*executor, *stub, routeguide::Rectangle{}};
+  if (auto first = co_await reader.Read()) seen->names.push_back(first->name());
+  seen->Resumed();
+  EXPECT_TRUE(HookedReactor::WaitForTheSecond());
+  seen->queued_after_pause = reader.Queued();
+  auto finish = reader.Finish();
+  HookedReactor::ReleaseSecond();
+  seen->status = co_await finish;
+  seen->Resumed();
   done->set_value();
 }
 
@@ -130,19 +234,22 @@ Task<> ReadAllSignallingTheFirst(Executor* executor, routeguide::RouteGuide::Stu
   UnboundedReader reader{*executor, *stub, routeguide::Rectangle{}};
   *out = &reader;
   while (auto feature = co_await reader.Read()) {
+    seen->Resumed();
     seen->names.push_back(feature->name());
     if (seen->names.size() == 1) first->set_value();
   }
+  seen->Resumed();
   seen->status = co_await reader.Finish();
+  seen->Resumed();
   done->set_value();
 }
 
-/// Reads one message, pauses so the next ones queue, then never reads again, nor resumes.
-Task<> ReadOnePauseThenStall(Executor* executor, routeguide::RouteGuide::Stub* stub, std::promise<void>* read_one) {
+/// Reads one message, blocks the loop thread until the next two are queued, then never reads again, nor resumes.
+Task<> ReadOneUntilQueuedThenStall(Executor* executor, routeguide::RouteGuide::Stub* stub,
+                                   std::promise<void>* read_one) {
   UnboundedReader reader{*executor, *stub, routeguide::Rectangle{}};
   static_cast<void>(co_await reader.Read());
-  PauseUntilQueued(reader, 2);
-  EXPECT_EQ(reader.Queued(), 2U);
+  EXPECT_TRUE(PollUntil([&] { return reader.Queued() == 2; }));
   read_one->set_value();
   co_await Forever{};
   ADD_FAILURE() << "a destroyed frame never resumes";
@@ -159,11 +266,12 @@ Task<> ReadOneThenWait(Executor* executor, routeguide::RouteGuide::Stub* stub, s
 
 class ReactorCoroUnboundedReaderTest : public coro_reader_test::CoroReaderTestBase {
  protected:
-  /// Runs `make_task` to its end, and returns what it saw.
+  /// Runs `make_task` to its end, checks it resumed on the loop each time, and returns what it saw.
   template <class MakeTask>
   Seen Run(MakeTask make_task) {
     Seen seen;
     RunToEnd([&](std::promise<void>* done) { return make_task(&seen, done); });
+    ExpectResumedOnTheLoop(seen);
     return seen;
   }
 
@@ -187,6 +295,7 @@ class ReactorCoroUnboundedReaderTest : public coro_reader_test::CoroReaderTestBa
     OnLoop([&] { reader->TryCancel(); });
     EXPECT_EQ(done.get_future().wait_for(kTimeout), std::future_status::ready);
     EXPECT_EQ(RootsLeft(roots), 0U);
+    ExpectResumedOnTheLoop(seen);
     return seen;
   }
 
@@ -204,7 +313,15 @@ class ReactorCoroUnboundedReaderTest : public coro_reader_test::CoroReaderTestBa
     test_service_.OpenGate();
     EXPECT_EQ(done.get_future().wait_for(kTimeout), std::future_status::ready);
     EXPECT_EQ(RootsLeft(roots), 0U);
+    ExpectResumedOnTheLoop(seen);
     return seen;
+  }
+
+ private:
+  /// Every co_await of the coroutine resumed it on the loop's thread.
+  void ExpectResumedOnTheLoop(const Seen& seen) {
+    EXPECT_FALSE(seen.resumed.empty());
+    EXPECT_EQ(seen.resumed, std::vector<std::thread::id>(seen.resumed.size(), LoopThread()));
   }
 };
 
@@ -225,7 +342,7 @@ TEST_F(ReactorCoroUnboundedReaderTest, ListFeatures_ReadsEveryMessageInOrder_The
   const Seen seen = Run([&](Seen* s, std::promise<void>* done) { return ReadAll(&executor_, stub_.get(), s, done); });
 
   EXPECT_EQ(seen.names, Names(kMessages));
-  EXPECT_EQ(seen.threads, std::vector<std::thread::id>(kMessages, LoopThread()));
+  EXPECT_EQ(seen.resumed.size(), kMessages + 3U);
   EXPECT_TRUE(seen.read_after_end_gave_nothing);
   EXPECT_TRUE(seen.status.ok());
 }
@@ -250,7 +367,7 @@ TEST_F(ReactorCoroUnboundedReaderTest, ListFeatures_ServerErrorMidStream_ReadsWh
   EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::NOT_FOUND);
 }
 
-/// @test The stream runs ahead of a slow coroutine: while it pauses after the first message, the rest of the
+/// @test The stream runs ahead of a slow coroutine: while it blocks after the first message, the rest of the
 /// stream is queued, so it reads them on without suspending once, and Finish() gives OK.
 TEST_F(ReactorCoroUnboundedReaderTest, ListFeatures_StreamRunsAheadOfASlowCoroutine_MessagesQueue) {
   test_service_.Send(3);
@@ -287,17 +404,19 @@ TEST_F(ReactorCoroUnboundedReaderTest, ListFeatures_WaitingRead_ResumesWithNothi
   EXPECT_TRUE(seen.status.ok());
 }
 
-/// @test An early Finish(), with messages queued on a stream the server has finished OK, drops them and gives
+/// @test An early Finish(), with messages queued on a stream whose OK status has arrived, drops them and gives
 /// CANCELLED rather than the server's OK: the coroutine did not read every message.
 TEST_F(ReactorCoroUnboundedReaderTest, ListFeatures_FinishWithMessagesQueued_DropsThemAndGivesCancelled) {
   test_service_.Send(3);
+  HookedReactor::Reset(false);
   const Seen seen = Run([&](Seen* s, std::promise<void>* done) {
-    return ReadSomePauseThenFinish(&executor_, stub_.get(), 1, s, done);
+    return ReadSomeUntilOnDoneThenFinish(&executor_, stub_.get(), 1, s, done);
   });
 
   EXPECT_EQ(seen.names, Names(1));
   EXPECT_EQ(seen.queued_after_pause, 2U);
   EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::CANCELLED);
+  EXPECT_EQ(seen.status.error_message(), HookedReader::kDroppedMessage);
 }
 
 /// @test An early Finish(), with messages queued on a stream the server holds open, cancels the RPC, which only
@@ -305,7 +424,7 @@ TEST_F(ReactorCoroUnboundedReaderTest, ListFeatures_FinishWithMessagesQueued_Dro
 TEST_F(ReactorCoroUnboundedReaderTest, ListFeatures_FinishWithMessagesQueuedOnAHeldStream_EndsTheRpcCancelled) {
   test_service_.HoldAfter(3);
   const Seen seen = Run([&](Seen* s, std::promise<void>* done) {
-    return ReadSomePauseThenFinish(&executor_, stub_.get(), 1, s, done);
+    return ReadOneUntilQueuedThenFinish(&executor_, stub_.get(), s, done);
   });
 
   EXPECT_EQ(seen.names, Names(1));
@@ -313,12 +432,13 @@ TEST_F(ReactorCoroUnboundedReaderTest, ListFeatures_FinishWithMessagesQueuedOnAH
   EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::CANCELLED);
 }
 
-/// @test An early Finish(), once every message is read, on a stream the server has finished, gives the server's
-/// OK: nothing was dropped, and the status had arrived before the cancel.
+/// @test An early Finish(), once every message is read, on a stream whose OK status has arrived, gives that OK:
+/// nothing was dropped.
 TEST_F(ReactorCoroUnboundedReaderTest, ListFeatures_FinishAfterEveryMessageOfAFinishedStream_GivesOk) {
   test_service_.Send(3);
+  HookedReactor::Reset(false);
   const Seen seen = Run([&](Seen* s, std::promise<void>* done) {
-    return ReadSomePauseThenFinish(&executor_, stub_.get(), 3, s, done);
+    return ReadSomeUntilOnDoneThenFinish(&executor_, stub_.get(), 3, s, done);
   });
 
   EXPECT_EQ(seen.names, Names(3));
@@ -326,54 +446,19 @@ TEST_F(ReactorCoroUnboundedReaderTest, ListFeatures_FinishAfterEveryMessageOfAFi
   EXPECT_TRUE(seen.status.ok());
 }
 
-/// A kPush, kContinuous ListFeatures reactor whose second read is handed over late, so a coroutine can await
-/// Finish() while that message is on its way, after the server has finished.
-class SlowSecondReadReactor final
-    : public RpcReactor::Client::ActiveReadReactor<routeguide::Feature, Delivery::kPush, ReadPacing::kContinuous> {
-  using Base = RpcReactor::Client::ActiveReadReactor<routeguide::Feature, Delivery::kPush, ReadPacing::kContinuous>;
-
- public:
-  using Callbacks =
-      RpcReactor::Client::ActiveReadCallbacks<routeguide::Feature, Delivery::kPush, ReadPacing::kContinuous>;
-
-  SlowSecondReadReactor(routeguide::RouteGuide::Stub& stub, std::unique_ptr<grpc::ClientContext> context,
-                        const routeguide::Rectangle& request, Callbacks&& cbs)
-      : Base(std::move(context), std::move(cbs)) {
-    stub.async()->ListFeatures(this->context_.get(), &request, this);
-    this->StartRead(&this->response_);
-    this->StartCall();
-  }
-
- protected:
-  void OnReadDone(bool ok) override {
-    if (ok && ++reads_ == 2) std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    Base::OnReadDone(ok);
-  }
-
- private:
-  int reads_ = 0;  // only touched by OnReadDone(), whose runs the read between them orders
-};
-
-/// Reads one message, then awaits Finish() while the second one is on its way.
-Task<> ReadOneThenFinish(Executor* executor, routeguide::RouteGuide::Stub* stub, Seen* seen,
-                         std::promise<void>* done) {
-  Reader<SlowSecondReadReactor> reader{*executor, *stub, routeguide::Rectangle{}};
-  if (auto first = co_await reader.Read()) seen->names.push_back(first->name());
-  seen->queued_after_pause = reader.Queued();
-  seen->status = co_await reader.Finish();
-  done->set_value();
-}
-
-/// @test A message that arrives after an early Finish() found the queue empty is dropped too, and the status is
-/// CANCELLED, even though the server finished OK before the cancel.
+/// @test A message that arrives once an early Finish() has found the queue empty is dropped too, and the status
+/// says so: the reactor holds the second message back until Finish() has closed the queue.
 TEST_F(ReactorCoroUnboundedReaderTest, ListFeatures_MessageArrivingAfterAnEarlyFinish_IsDroppedAndGivesCancelled) {
   test_service_.Send(2);
-  const Seen seen =
-      Run([&](Seen* s, std::promise<void>* done) { return ReadOneThenFinish(&executor_, stub_.get(), s, done); });
+  HookedReactor::Reset(true);
+  const Seen seen = Run([&](Seen* s, std::promise<void>* done) {
+    return FinishWhileTheSecondIsHeld(&executor_, stub_.get(), s, done);
+  });
 
   EXPECT_EQ(seen.names, Names(1));
   EXPECT_EQ(seen.queued_after_pause, 0U);
   EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::CANCELLED);
+  EXPECT_EQ(seen.status.error_message(), HookedReader::kDroppedMessage);
 }
 
 /// @test A frame destroyed with messages queued, on a stream the server holds open, cancels the RPC, destroys the
@@ -382,7 +467,7 @@ TEST_F(ReactorCoroUnboundedReaderTest, ListFeatures_MessageArrivingAfterAnEarlyF
 TEST_F(ReactorCoroUnboundedReaderTest, ListFeatures_FrameDestroyedWithMessagesQueued_CancelsAndWaitsForOnDone) {
   test_service_.HoldAfter(3);
   DestroyAfterOneMessage(
-      [&](std::promise<void>* read_one) { return ReadOnePauseThenStall(&executor_, stub_.get(), read_one); });
+      [&](std::promise<void>* read_one) { return ReadOneUntilQueuedThenStall(&executor_, stub_.get(), read_one); });
 }
 
 /// @test A frame destroyed while its Read() waits on an empty queue, on a stream the server holds open, does the

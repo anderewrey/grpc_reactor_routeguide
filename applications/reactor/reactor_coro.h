@@ -446,7 +446,8 @@ class Reader<ReactorT> {
 ///
 /// The reactor lives in the Reader, so in the coroutine's frame, and so does the queue. A frame destroyed with
 /// messages queued cancels the RPC, destroys the reactor once its OnDone() has run, then frees the queue, so no
-/// callback can still reach it. Should OnDone() never come, the reactor is leaked rather than freed under gRPC.
+/// callback can still reach it. Should OnDone() never come, the reactor is leaked rather than freed under gRPC, and
+/// a callback it still runs would reach the freed reader, as for every awaitable of the level.
 ///
 /// Non-copyable and non-movable: the reactor's callbacks refer to it.
 /// @tparam ReactorT a service-specific reactor, deriving from Client::ActiveReadReactor under Delivery::kPush and
@@ -468,6 +469,10 @@ class Reader<ReactorT> {
  public:
   /// What Read() gives: a message, owned, or nothing once the stream has ended and the queue is empty.
   using MessageT = std::optional<ResponseT>;
+
+  /// The message of the CANCELLED status an early Finish() gives when it dropped a message, whatever the status
+  /// the RPC itself ended with.
+  static constexpr const char* kDroppedMessage = "Finish() before the end of the stream: unread messages dropped";
 
   /// Constructs the reactor, which sends the request and arms the first read at once.
   /// @param executor resumes the awaiting coroutine on the application thread, and must outlive this object
@@ -494,7 +499,7 @@ class Reader<ReactorT> {
   Reader& operator=(Reader&&) = delete;
 
   /// Sends a best-effort cancel. Callable from the application thread at any time: the stream then ends, so
-  /// once the messages already queued are read, a Read() gives nothing, and Finish() returns CANCELLED.
+  /// once the messages already queued are read, a Read() gives nothing, and Finish() mostly returns CANCELLED.
   void TryCancel() {
     if (reactor_) reactor_->TryCancel();
   }
@@ -526,6 +531,7 @@ class Reader<ReactorT> {
   /// Awaited exactly once: resumes on the application thread once the RPC has ended. Awaited before Read() has
   /// given nothing, it ends the RPC first: it drops the messages queued, and those still to come, and cancels
   /// it. The status is then CANCELLED when a message was dropped, else the server's own once it had arrived.
+  /// That happens when Finish() is called, not when it is awaited: a message arriving in between is dropped.
   /// @return an awaitable whose co_await gives the RPC's status
   [[nodiscard]] auto Finish() {
     struct Awaiter {
@@ -539,11 +545,12 @@ class Reader<ReactorT> {
       // Stopping early: no message will be asked for, so the queue is dropped, and a read callback still to
       // come drops its message too.
       ended_ = true;
+      Queue dropped;  // freed out of the lock, as this block ends
       {
         const std::lock_guard lock(mutex_);
         closed_ = true;
         if (!queue_.empty()) dropped_ = true;
-        queue_.clear();
+        dropped.swap(queue_);
       }
       reactor_->CancelAndRelease();
     }
@@ -552,6 +559,7 @@ class Reader<ReactorT> {
 
  private:
   using Callbacks = Client::ActiveReadCallbacks<ResponseT, Client::Delivery::kPush, Client::ReadPacing::kContinuous>;
+  using Queue = std::deque<std::unique_ptr<ResponseT>>;
 
   /// The level's own code, on the gRPC thread: queues the message under the lock, or drops it once Finish()
   /// closed the queue, and wakes the Read() waiting, if any, out of the lock. The end of the stream wakes it the
@@ -590,14 +598,17 @@ class Reader<ReactorT> {
   /// @return true when the coroutine suspends
   template <class Awaiter>
   bool TakeOrWait(std::coroutine_handle<> waiter, Awaiter& awaiter) {
+    std::unique_ptr<ResponseT> oldest;
+    bool wait = false;
     {
       const std::lock_guard lock(mutex_);
-      if (!queue_.empty()) {
-        awaiter.message = PopLocked();
-        return false;
-      }
-      if (stream_ended_) return false;
-      waiting_ = true;
+      oldest = PopLocked();
+      wait = !oldest && !stream_ended_;
+      waiting_ = wait;
+    }
+    if (!wait) {
+      if (oldest) awaiter.message = std::move(*oldest);  // moved out of the lock, with no copy of its content
+      return false;
     }
     awaiter.waited = true;
     return ready_.Suspend(waiter);
@@ -613,18 +624,24 @@ class Reader<ReactorT> {
     if (awaiter.waited) {
       ready_.Resumed();
       ready_.Rearm();
-      const std::lock_guard lock(mutex_);
-      if (!queue_.empty()) awaiter.message = PopLocked();
+      std::unique_ptr<ResponseT> oldest;
+      {
+        const std::lock_guard lock(mutex_);
+        oldest = PopLocked();
+      }
+      if (oldest) awaiter.message = std::move(*oldest);
     }
     if (!awaiter.message) ended_ = true;
     return std::move(awaiter.message);
   }
 
-  /// Under the lock: moves the oldest message out of the queue, with no copy of its content.
-  MessageT PopLocked() {
-    const std::unique_ptr<ResponseT> oldest = std::move(queue_.front());
+  /// Under the lock: takes the oldest message out of the queue, for the caller to move out of the lock.
+  /// @return the oldest message, or null when the queue is empty
+  std::unique_ptr<ResponseT> PopLocked() {
+    if (queue_.empty()) return nullptr;
+    std::unique_ptr<ResponseT> oldest = std::move(queue_.front());
     queue_.pop_front();
-    return MessageT{std::move(*oldest)};
+    return oldest;
   }
 
   /// On the application thread, once the RPC has ended: takes the status out of the reactor, then destroys the
@@ -639,15 +656,13 @@ class Reader<ReactorT> {
     return status;
   }
 
-  static constexpr const char* kDroppedMessage = "Finish() before the end of the stream: unread messages dropped";
-
   Executor& executor_;
   ResumeHandover ready_;  // re-armed after each wait of a Read() for the queue
   ResumeHandover done_;
   bool ended_ = false;  // Read() gave nothing, or Finish() came first. Application thread only
   // Guards what follows, shared by the read callbacks on a gRPC thread and the coroutine.
   mutable std::mutex mutex_;
-  std::deque<std::unique_ptr<ResponseT>> queue_;  // oldest first
+  Queue queue_;                // oldest first
   bool waiting_ = false;       // a Read() waits, or is about to: the next callback completes the hand-over
   bool stream_ended_ = false;  // the read callback reported the end of the stream
   bool closed_ = false;        // an early Finish() came: the read callback drops its message

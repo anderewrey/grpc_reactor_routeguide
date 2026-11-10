@@ -300,10 +300,11 @@ wait. `OnDone()` has a hand-over of its own, as for the reader without a buffer.
 
 Once the stream has ended, `Read()` gives every message still queued, then nothing. To stop early, await `Finish()`
 without reading on: it drops the messages queued, and any message still to come, then cancels the RPC with
-`CancelAndRelease()`. It gives `CANCELLED` when a message was dropped, even if the server's status, already arrived,
-was OK: the coroutine did not read everything the server sent. When nothing was dropped, it gives the server's own
-status once that had arrived, as the reader without a buffer does. That reader never needs the first case, since
-nothing can wait behind it.
+`CancelAndRelease()`. It gives `CANCELLED` when a message was dropped, even if the server's status, already arrived, was
+OK: the coroutine did not read everything the server sent. Its message is then the reader's `kDroppedMessage`. All of
+that happens when `Finish()` is called, not when it is awaited, so a message arriving in between is dropped too. When
+nothing was dropped, it gives the server's own status once that had arrived, as the reader without a buffer does. That
+reader never needs the first case, since nothing can wait behind it.
 
 ### `DestroyAfterOnDone(reactor, timeout)`
 
