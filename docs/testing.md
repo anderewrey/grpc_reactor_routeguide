@@ -563,6 +563,10 @@ client cancels it, so a coroutine waiting in `Read()` is known to wait.
 | `ListFeatures_PushTryCancel_WaitingReadGivesNothing_FinishGivesCancelled` | The same under `kPush` |
 | `ListFeatures_FrameDestroyedWhileReadWaits_CancelsAndWaitsForOnDone` | Frees nothing under gRPC, and posts nothing |
 | `ListFeatures_FrameDestroyedWithAMessageHeld_ReleasesTheHold` | A held message no longer stalls the teardown |
+| `ListFeatures_PullOnDoneBeforeFinish_FinishGivesTheStatus` | `OnDone()` first: `Finish()` goes on with the status |
+| `ListFeatures_PushOnDoneBeforeFinish_FinishGivesTheStatus` | The same under `kPush` |
+| `ListFeatures_PullFinishBeforeOnDone_FinishWaitsForTheStatus` | `Finish()` first: it waits for `OnDone()` |
+| `ListFeatures_PushFinishBeforeOnDone_FinishWaitsForTheStatus` | The same under `kPush` |
 
 The two read-ahead tests tell the deliveries apart. The coroutine reads one message, pauses the loop thread for 200
 milliseconds, cancels, then reads what is left. Under `kPull`, the second message arrived during the pause, since
@@ -574,6 +578,11 @@ The last test destroys a frame suspended outside `Read()`, while the reactor hol
 under `kPush`. No read is armed then, and the hold suppresses `OnDone()`, so the destruction must release it. Otherwise
 it waits the 5 seconds of `kOnDoneTimeout`, then leaks the reactor, which the test's time limit and LeakSanitizer
 report.
+
+The last four tests order the end of the last read and `OnDone()` against `Finish()`, the two events the reader hands
+over separately. A pause of the loop thread before `Finish()` lets `OnDone()` run first. A test reactor whose
+`OnDone()` sleeps 300 milliseconds before it runs makes `Finish()` come first. Should the timing not hold, both orders
+still give the status, so these tests can lose their power, never fail on correct code.
 
 Whether a `Read()` suspends depends on whether its read ended first, which a test can only arrange by waiting on
 timing. So the re-armed hand-over is tested directly in [coro_task_test.cpp][coro-task-test]:
@@ -599,6 +608,17 @@ server:
 | `OnDone()` ending the read hand-over instead of its own | Every test that awaits `Finish()` |
 | The destructor destroying the reactor without waiting for `OnDone()` | `FrameDestroyedWithAMessageHeld`, under ASan |
 | `After()` not restoring the task number | `After_ResumesOnTheApplicationThread_OnceTheDelayIsOver` |
+
+Two more mutants share one hand-over between the reads and `OnDone()`, as the reader would without `done_`. Each was
+run 50 times against each ordering test, locally:
+
+| Mutant | Caught by |
+| ------ | --------- |
+| `Finish()` re-arms the read hand-over, then suspends on it | Every time: both `OnDoneBeforeFinish`, `PullFinishBeforeOnDone` |
+| `Finish()` suspends on the read hand-over as it is | Every time: `PushFinishBeforeOnDone`. 33 of 50: `PullOnDoneBeforeFinish` |
+
+The first loses an end that came before `Finish()`, and waits forever, or trips `Rearm()`'s assert. The second
+returns at once, since the last read left the hand-over ended, with a status `OnDone()` has not set yet.
 
 The second mutant opens a window, between `GetResponse()` arming the next read and the late `Rearm()`, in which an end
 of read is lost. A test catches it only when a message arrives in that window, which no test can arrange without
