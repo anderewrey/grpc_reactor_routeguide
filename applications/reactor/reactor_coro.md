@@ -198,12 +198,12 @@ A unary RPC a coroutine awaits. `ReactorT` is a service-specific reactor derivin
 | Destructor | Cancels an RPC still in flight, and destroys the reactor once `OnDone()` has run |
 
 Non-copyable and non-movable, since the reactor's callback refers to it. The response is always owned by the coroutine,
-and `Delivery` decides how:
+as a `ResponseT` under both deliveries, empty unless the status is OK. `Delivery` decides only how it becomes owned:
 
-| Delivery | `UnaryResult::response` | How it becomes owned |
-|----------|-------------------------|----------------------|
-| `kPull` | `ResponseT` | Swapped out of the reactor by `GetResponse()`, empty unless the status is OK |
-| `kPush` | `std::unique_ptr<ResponseT>` | Handed over by the done callback, never null, empty on a failed RPC |
+| Delivery | How it becomes owned |
+|----------|----------------------|
+| `kPull` | Swapped out of the reactor by `GetResponse()` |
+| `kPush` | Moved out of the message the done callback hands over, with no copy |
 
 ### `Reader<ReactorT>`
 
@@ -222,20 +222,24 @@ const grpc::Status status = co_await reader.Finish();
 |--------|-----|
 | `Reader(executor, stub, request, context)` | Sends the request, and arms the first read. The context is optional |
 | `co_await Read()` | Resumes with the next message, owned, or with nothing once the stream has ended |
-| `co_await Finish()` | Once `Read()` has given nothing: resumes once the RPC has ended, with its `grpc::Status` |
+| `co_await Finish()` | Resumes once the RPC has ended, with its `grpc::Status`. Before the end, it cancels first |
 | `TryCancel()` | Cancels an RPC still in flight: `Read()` then gives nothing, and `Finish()` gives `CANCELLED` |
 | Destructor | Cancels an RPC in flight, releases a message still held, destroys the reactor after `OnDone()` |
 
 Non-copyable and non-movable, since the reactor's callbacks refer to it. A `Read()` awaited again after the end gives
-nothing at once. `Finish()` asserts that `Read()` has given nothing: while the reactor holds a message, the RPC cannot
-end. To stop early, call `TryCancel()`, then read until `Read()` gives nothing.
+nothing at once. To stop early, await `Finish()` without reading on: while the reactor holds a message, or a read is
+armed, the RPC cannot end, so `Finish()` ends it with the reactor's `CancelAndRelease()`. It cancels the RPC, and
+releases the message held, and any message a read already in flight delivers, without arming a read. The status is
+then `CANCELLED`, unless the coroutine had read every message and the server's own status had already arrived. Then
+`Finish()` gives that status, such as OK.
 
-Every message is owned by the coroutine, and `Delivery` decides how, and when the next one is read:
+Every message is owned by the coroutine, as a `std::optional<ResponseT>` under both deliveries. `Delivery` decides how
+it becomes owned, and when the next one is read:
 
-| Delivery | `Read()` gives | How it becomes owned | Next read armed |
-|----------|----------------|----------------------|-----------------|
-| `kPull` | `std::optional<ResponseT>` | Swapped out of the reactor by `GetResponse()` | At once, by `GetResponse()` |
-| `kPush` | `std::unique_ptr<ResponseT>` | Handed over by the read callback | By the next `Read()`: `ResumeRead()` |
+| Delivery | How it becomes owned | Next read armed |
+|----------|----------------------|-----------------|
+| `kPull` | Swapped out of the reactor by `GetResponse()` | At once, by `GetResponse()` |
+| `kPush` | Moved out of the message the read callback hands over, with no copy | By the next `Read()`: `ResumeRead()` |
 
 So under `kPull` the next message can arrive while the coroutine works on this one, and under `kPush` nothing is read
 until the coroutine asks for it, which is what a reader that waits for a person needs.

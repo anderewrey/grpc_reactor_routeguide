@@ -131,6 +131,7 @@ compile, so a misuse is caught at build time rather than at runtime.
 | `SendRequest()`, `SendLastRequest()`, `CloseRequestStream()` | The two writing reactors under `kApplicationPushes` |
 | The `next_request` slot | The two writing reactors under `kReactorPulls` |
 | `Status()`, `TryCancel()`, `CancelAndWait()` | Every variant |
+| `CancelAndRelease()` | `ActiveReadReactor` |
 
 Under `kApplicationPushes`, the `next_request` slot is an empty placeholder, which a function cannot be bound to.
 
@@ -374,6 +375,7 @@ These methods are exposed to application code with naming that reflects applicat
 | `ResumeRead()`         | Arm the read following a held message        | `Delivery::kPush` only, see below            |
 | `TryCancel()`          | Cancel the entire RPC                        | Thread-safe, any thread                      |
 | `CancelAndWait()`      | Cancel, then wait until `OnDone()` has run   | For tearing down mid-RPC, see below          |
+| `CancelAndRelease()`   | `CancelAndWait()` without the wait           | `ActiveReadReactor` only, see below          |
 | `Status()`             | Get final RPC status                         | Valid after `OnDone`                         |
 
 The three write methods exist only under `Submission::kApplicationPushes`, and the `next_request` slot only under
@@ -401,6 +403,10 @@ waits for `OnDone()`:
 It returns `true` once `OnDone()` has run, when the reactor may be destroyed, and `false` on a timeout, when it may
 not. It must not be called from another reaction, during which `OnDone()` cannot run. From inside `OnDone()`, such as
 from the `done` callback, it returns `true` at once.
+
+`CancelAndRelease()`, on `ActiveReadReactor` only, is the first half of `CancelAndWait()`: it cancels and releases
+the same way, then returns without waiting. Nothing then holds the RPC open, so `OnDone()` follows, and the
+application awaits it its own way, as `coro::Reader::Finish()` does when a coroutine stops reading before the end.
 
 Which reactor offers `GetResponse()` and `ResumeRead()` depends on both template parameters. A call that the table
 marks as not offered does not compile.

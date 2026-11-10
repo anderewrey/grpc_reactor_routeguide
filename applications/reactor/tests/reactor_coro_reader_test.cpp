@@ -6,8 +6,9 @@
 /// Tests coro::Reader, the reader without a buffer of reactor_coro.h, against an in-process server, with
 /// coroutines resumed on the AppLoop task queue that stands in for the application's event loop: every message
 /// owned and in order under both deliveries, the end of the stream, a server error, kPull's read-ahead against
-/// kPush's reading only when asked, a cancel while a read waits, and a frame destroyed mid-stream. The re-armed
-/// hand-over inside the reader is tested on its own, with no RPC and no timing, in coro_task_test.cpp.
+/// kPush's reading only when asked, a cancel while a read waits, a frame destroyed mid-stream, Finish() given
+/// the status whether OnDone() runs before or after it is awaited, and Finish() awaited before the end. The
+/// re-armed hand-over inside the reader is tested on its own, with no RPC and no timing, in coro_task_test.cpp.
 
 #include <gtest/gtest.h>
 
@@ -45,9 +46,9 @@ using ListFeaturesReader = Reader<routeguide::ListFeatures::ClientReactor<kDeliv
 
 constexpr auto kTimeout = std::chrono::seconds(10);
 
-// What Read() gives under each delivery.
+// What Read() gives, the same under both deliveries.
 static_assert(std::is_same_v<ListFeaturesReader<Delivery::kPull>::MessageT, std::optional<routeguide::Feature>>);
-static_assert(std::is_same_v<ListFeaturesReader<Delivery::kPush>::MessageT, std::unique_ptr<routeguide::Feature>>);
+static_assert(std::is_same_v<ListFeaturesReader<Delivery::kPush>::MessageT, std::optional<routeguide::Feature>>);
 
 /// Streams features named "feature 1" to "feature N", then finishes OK, with an error, or not at all: a held
 /// stream stops after a given number of features, and ends only once the client cancels it.
@@ -448,4 +449,189 @@ TEST_F(ReactorCoroReaderTest, ListFeatures_FrameDestroyedWithAMessageHeld_Releas
   });
 }
 
+/// A ListFeatures reactor whose OnDone() waits before it runs, so the coroutine awaits Finish() first.
+template <Delivery kDelivery>
+class SlowDoneReactor final
+    : public RpcReactor::Client::ActiveReadReactor<routeguide::Feature, kDelivery, ReadPacing::kTurnByTurn> {
+  using Base = RpcReactor::Client::ActiveReadReactor<routeguide::Feature, kDelivery, ReadPacing::kTurnByTurn>;
+
+ public:
+  using Callbacks = RpcReactor::Client::ActiveReadCallbacks<routeguide::Feature, kDelivery, ReadPacing::kTurnByTurn>;
+
+  SlowDoneReactor(routeguide::RouteGuide::Stub& stub, std::unique_ptr<grpc::ClientContext> context,
+                  const routeguide::Rectangle& request, Callbacks&& cbs)
+      : Base(std::move(context), std::move(cbs)) {
+    stub.async()->ListFeatures(this->context_.get(), &request, this);
+    this->StartRead(&this->response_);
+    this->StartCall();
+  }
+
+ protected:
+  void OnDone(const grpc::Status& status) override {
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    Base::OnDone(status);
+  }
+};
+
+/// Reads the whole stream, then awaits Finish(), after pausing the loop thread when `pause` is set, so that
+/// OnDone() has run by then.
+template <class ReaderT>
+Task<> ReadAllThenFinish(Executor* executor, routeguide::RouteGuide::Stub* stub, bool pause, Seen* seen,
+                         std::promise<void>* done) {
+  ReaderT reader{*executor, *stub, routeguide::Rectangle{}};
+  while (auto feature = co_await reader.Read()) seen->names.push_back(feature->name());
+  if (pause) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  seen->status = co_await reader.Finish();
+  done->set_value();
+}
+
+/// The end of the read and OnDone() are two hand-overs: whichever order they come in, Finish() gives the status.
+class ReactorCoroReaderOrderTest : public ReactorCoroReaderTest {
+ protected:
+  template <class ReaderT>
+  Seen RunReadAllThenFinish(bool pause) {
+    test_service_.Send(3);
+    test_service_.FailAfter(2, grpc::StatusCode::NOT_FOUND);
+    Seen seen;
+    RunToEnd([&](std::promise<void>* done) {
+      return ReadAllThenFinish<ReaderT>(&executor_, stub_.get(), pause, &seen, done);
+    });
+    return seen;
+  }
+  /// Reads every message, then pauses, so OnDone() has run when Finish() is awaited.
+  template <Delivery kDelivery>
+  Seen OnDoneFirst() {
+    return RunReadAllThenFinish<ListFeaturesReader<kDelivery>>(true);
+  }
+  /// Reads every message, then awaits Finish() while OnDone() is delayed.
+  template <Delivery kDelivery>
+  Seen FinishFirst() {
+    return RunReadAllThenFinish<Reader<SlowDoneReactor<kDelivery>>>(false);
+  }
+};
+
+/// @test Under kPull, OnDone() runs before Finish() is awaited: Finish() goes on at once with the status.
+TEST_F(ReactorCoroReaderOrderTest, ListFeatures_PullOnDoneBeforeFinish_FinishGivesTheStatus) {
+  const Seen seen = OnDoneFirst<Delivery::kPull>();
+
+  EXPECT_EQ(seen.names, (std::vector<std::string>{"feature 1", "feature 2"}));
+  EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::NOT_FOUND);
+}
+
+/// @test The same under kPush.
+TEST_F(ReactorCoroReaderOrderTest, ListFeatures_PushOnDoneBeforeFinish_FinishGivesTheStatus) {
+  const Seen seen = OnDoneFirst<Delivery::kPush>();
+
+  EXPECT_EQ(seen.names, (std::vector<std::string>{"feature 1", "feature 2"}));
+  EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::NOT_FOUND);
+}
+
+/// @test Under kPull, Finish() is awaited before OnDone() runs: it waits for OnDone(), then gives its status.
+TEST_F(ReactorCoroReaderOrderTest, ListFeatures_PullFinishBeforeOnDone_FinishWaitsForTheStatus) {
+  const Seen seen = FinishFirst<Delivery::kPull>();
+
+  EXPECT_EQ(seen.names, (std::vector<std::string>{"feature 1", "feature 2"}));
+  EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::NOT_FOUND);
+}
+
+/// @test The same under kPush.
+TEST_F(ReactorCoroReaderOrderTest, ListFeatures_PushFinishBeforeOnDone_FinishWaitsForTheStatus) {
+  const Seen seen = FinishFirst<Delivery::kPush>();
+
+  EXPECT_EQ(seen.names, (std::vector<std::string>{"feature 1", "feature 2"}));
+  EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::NOT_FOUND);
+}
+
+/// Reads `reads` messages, then awaits Finish() without reading to the end of the stream, after pausing the loop
+/// thread when `pause` is set, so that a server which finishes on its own has done so by then.
+template <Delivery kDelivery>
+Task<> ReadSomeThenFinish(Executor* executor, routeguide::RouteGuide::Stub* stub, int reads, bool pause, Seen* seen,
+                          std::promise<void>* done) {
+  ListFeaturesReader<kDelivery> reader{*executor, *stub, routeguide::Rectangle{}};
+  for (int i = 0; i < reads; ++i) {
+    if (auto feature = co_await reader.Read()) seen->names.push_back(feature->name());
+  }
+  if (pause) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  seen->status = co_await reader.Finish();
+  done->set_value();
+}
+
+/// A Finish() awaited before Read() has given nothing ends the RPC.
+class ReactorCoroReaderEarlyFinishTest : public ReactorCoroReaderTest {
+ protected:
+  /// On a stream the server holds open after three messages, which only the cancel Finish() sends can end.
+  template <Delivery kDelivery>
+  Seen FinishAfter(int reads) {
+    test_service_.HoldAfter(3);
+    return Run<kDelivery>(reads, false);
+  }
+  /// On a stream the server finishes OK after three messages, and has finished by the time Finish() is awaited.
+  template <Delivery kDelivery>
+  Seen FinishOnAFinishedStreamAfter(int reads) {
+    test_service_.Send(3);
+    return Run<kDelivery>(reads, true);
+  }
+
+ private:
+  template <Delivery kDelivery>
+  Seen Run(int reads, bool pause) {
+    Seen seen;
+    RunToEnd([&](std::promise<void>* done) {
+      return ReadSomeThenFinish<kDelivery>(&executor_, stub_.get(), reads, pause, &seen, done);
+    });
+    return seen;
+  }
+};
+
+/// @test Under kPull, Finish() awaited mid-stream, with the next message read ahead, cancels the RPC, releases
+/// that message, and gives CANCELLED.
+TEST_F(ReactorCoroReaderEarlyFinishTest, ListFeatures_PullFinishMidStream_EndsTheRpcCancelled) {
+  const Seen seen = FinishAfter<Delivery::kPull>(1);
+
+  EXPECT_EQ(seen.names, (std::vector<std::string>{"feature 1"}));
+  EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::CANCELLED);
+}
+
+/// @test Under kPush, Finish() awaited mid-stream, with the given message's read not armed, releases its hold,
+/// and gives CANCELLED.
+TEST_F(ReactorCoroReaderEarlyFinishTest, ListFeatures_PushFinishMidStream_EndsTheRpcCancelled) {
+  const Seen seen = FinishAfter<Delivery::kPush>(1);
+
+  EXPECT_EQ(seen.names, (std::vector<std::string>{"feature 1"}));
+  EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::CANCELLED);
+}
+
+/// @test Under kPull, Finish() awaited after the last message, while the read armed for the next one waits, gives
+/// CANCELLED.
+TEST_F(ReactorCoroReaderEarlyFinishTest, ListFeatures_PullFinishAfterTheLastMessage_EndsTheRpcCancelled) {
+  const Seen seen = FinishAfter<Delivery::kPull>(3);
+
+  EXPECT_EQ(seen.names, ThreeNames());
+  EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::CANCELLED);
+}
+
+/// @test Under kPush, Finish() awaited after the last message, before the Read() that would give nothing, gives
+/// CANCELLED.
+TEST_F(ReactorCoroReaderEarlyFinishTest, ListFeatures_PushFinishAfterTheLastMessage_EndsTheRpcCancelled) {
+  const Seen seen = FinishAfter<Delivery::kPush>(3);
+
+  EXPECT_EQ(seen.names, ThreeNames());
+  EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::CANCELLED);
+}
+/// @test Under kPull, Finish() awaited once every message is read, on a stream the server has finished, gives the
+/// server's OK rather than CANCELLED: the status had arrived before the cancel.
+TEST_F(ReactorCoroReaderEarlyFinishTest, ListFeatures_PullFinishAfterTheLastMessageOfAFinishedStream_GivesOk) {
+  const Seen seen = FinishOnAFinishedStreamAfter<Delivery::kPull>(3);
+
+  EXPECT_EQ(seen.names, ThreeNames());
+  EXPECT_TRUE(seen.status.ok());
+}
+
+/// @test The same under kPush, with the last message's read never armed.
+TEST_F(ReactorCoroReaderEarlyFinishTest, ListFeatures_PushFinishAfterTheLastMessageOfAFinishedStream_GivesOk) {
+  const Seen seen = FinishOnAFinishedStreamAfter<Delivery::kPush>(3);
+
+  EXPECT_EQ(seen.names, ThreeNames());
+  EXPECT_TRUE(seen.status.ok());
+}
 }  // namespace
