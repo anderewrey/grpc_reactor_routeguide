@@ -49,14 +49,12 @@ bool DestroyAfterOnDone(std::unique_ptr<ReactorT>& reactor, std::chrono::millise
 }
 
 /// What an awaited unary RPC ends with: its status, and its response, owned by the coroutine.
-/// @tparam MessageT ResponseT under Delivery::kPull, std::unique_ptr<ResponseT> under Delivery::kPush
-template <class MessageT>
+/// @tparam ResponseT the RPC's response message
+template <class ResponseT>
 struct UnaryResult {
   grpc::Status status;  ///< The RPC's outcome
-  /// The response. Under Delivery::kPull it is swapped out of the reactor, and is empty unless the status is
-  /// OK. Under Delivery::kPush it is the reactor's own message, never null, and empty on a failed RPC, so the
-  /// status is what says whether its content is meaningful.
-  MessageT response;
+  /// The response, empty unless the status is OK: the status is what says whether its content is meaningful.
+  ResponseT response;
 };
 
 /// A unary RPC a coroutine awaits: the request is sent on construction, and `co_await Finish()` resumes the
@@ -65,12 +63,13 @@ struct UnaryResult {
 ///     coro::Unary<routeguide::GetFeature::ClientReactor<Delivery::kPull>> call{executor, stub, point};
 ///     auto [status, feature] = co_await call.Finish();
 ///
-/// The response is always owned by the coroutine. Delivery decides how it becomes owned:
+/// The response is always owned by the coroutine, as a ResponseT under both deliveries. Delivery decides only
+/// how it becomes owned:
 ///
-/// | Delivery | Finish() returns the response as  | How                                          |
-/// |----------|-----------------------------------|----------------------------------------------|
-/// | kPull    | ResponseT                         | Swapped out of the reactor by GetResponse()  |
-/// | kPush    | std::unique_ptr<ResponseT>        | The message the done callback hands over     |
+/// | Delivery | How                                                                  |
+/// |----------|----------------------------------------------------------------------|
+/// | kPull    | Swapped out of the reactor by GetResponse()                          |
+/// | kPush    | Moved out of the message the done callback hands over, with no copy  |
 ///
 /// The reactor lives in the Unary, so in the coroutine's frame. Finish() destroys it on the application
 /// thread once its OnDone() has run. A Unary destroyed before, such as in a frame destroyed while suspended,
@@ -96,10 +95,8 @@ class Unary {
   static constexpr bool kPull = kDelivery == Client::Delivery::kPull;
 
  public:
-  /// What Finish() returns the response as.
-  using MessageT = std::conditional_t<kPull, ResponseT, std::unique_ptr<ResponseT>>;
   /// What Finish() returns.
-  using ResultT = UnaryResult<MessageT>;
+  using ResultT = UnaryResult<ResponseT>;
 
   /// Constructs the reactor, which sends the request at once.
   /// @param executor resumes the awaiting coroutine on the application thread, and must outlive this object
@@ -168,7 +165,7 @@ class Unary {
     if constexpr (kPull) {
       static_cast<void>(reactor_->GetResponse(result.response));  // false on a failed RPC: left empty
     } else {
-      result.response = std::move(pushed_);
+      result.response = std::move(*pushed_);  // never null: the reactor hands its message over even on a failure
     }
     // OnDone() may still be returning, on its gRPC thread, from the callback that resumed this coroutine.
     DestroyAfterOnDone(reactor_, kOnDoneTimeout);
@@ -194,10 +191,12 @@ class Unary {
 /// flight, and the stream waits for the coroutine. Delivery decides how each message becomes owned, and when
 /// the next one is read:
 ///
-/// | Delivery | Read() gives                | How                                   | Next read armed            |
-/// |----------|-----------------------------|---------------------------------------|----------------------------|
-/// | kPull    | std::optional<ResponseT>    | Swapped out of the reactor            | At once, by GetResponse()  |
-/// | kPush    | std::unique_ptr<ResponseT>  | The message the read callback hands   | At the next Read(), only   |
+/// Read() gives a std::optional<ResponseT> under both deliveries.
+///
+/// | Delivery | How                                                         | Next read armed            |
+/// |----------|-------------------------------------------------------------|----------------------------|
+/// | kPull    | Swapped out of the reactor                                  | At once, by GetResponse()  |
+/// | kPush    | Moved out of the message the read callback hands, no copy   | At the next Read(), only   |
 ///
 /// So under kPull the next message can arrive while the coroutine works on this one, and under kPush
 /// nothing is read until the coroutine asks for it.
@@ -232,7 +231,7 @@ class Reader {
 
  public:
   /// What Read() gives: a message, owned, or nothing once the stream has ended.
-  using MessageT = std::conditional_t<kPull, std::optional<ResponseT>, std::unique_ptr<ResponseT>>;
+  using MessageT = std::optional<ResponseT>;
 
   /// Constructs the reactor, which sends the request and arms the first read at once.
   /// @param executor resumes the awaiting coroutine on the application thread, and must outlive this object
@@ -339,7 +338,9 @@ class Reader {
     } else {
       if (pushed_) {
         held_ = true;
-        return std::move(pushed_);
+        MessageT message{std::move(*pushed_)};
+        pushed_.reset();
+        return message;
       }
     }
     ended_ = true;

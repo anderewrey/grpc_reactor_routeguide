@@ -171,7 +171,11 @@ what that costs:
 | Delivery | How the coroutine gets an owned message | Cost per message | Read-ahead |
 |---|---|---|---|
 | `kPull` | `Read()` swaps it out with `GetResponse()` | No allocation | `GetResponse()` arms the next read at once |
-| `kPush` | `Read()` takes the `std::unique_ptr` the callback hands out | One allocation | None until the next `Read()` |
+| `kPush` | `Read()` moves it out of the `std::unique_ptr` the callback hands out | One allocation | None until the next `Read()` |
+
+Either way, `Read()` gives a `std::optional<ResponseT>`, and a unary `Finish()` a plain `ResponseT`: a message moves
+out of its heap object with a swap, so `kPush` pays no copy for it, and the coroutine's code is the same under both
+deliveries.
 
 The read-ahead column is the difference `turn_by_turn_guidance` already turns on. Under `kPull`, `GetResponse()` takes
 the message and arms the next read in one call, so the next message can arrive while the coroutine works on this one.
@@ -348,8 +352,8 @@ Every non-trivial claim needs a test or a demonstrable run:
    for a deadline, and its `Finish()` returns a `UnaryResult` of the status and the owned response.
    [testing.md](/docs/testing.md#unary-awaitable-coverage) lists what the tests prove.
 3. The reader without a buffer: both `turn_by_turn_coro` variants, then `turn_by_turn_guidance_coro`. Done:
-   `coro::Reader` in `reactor_coro.h`. Its `Read()` gives `std::optional<ResponseT>` under `kPull` and
-   `std::unique_ptr<ResponseT>` under `kPush`, both empty at the end of the stream, and its `Finish()` gives the
+   `coro::Reader` in `reactor_coro.h`. Its `Read()` gives a `std::optional<ResponseT>` under both deliveries, empty
+   at the end of the stream, and its `Finish()` gives the
    `grpc::Status`, once `Read()` has given nothing: while the reactor holds a message, the RPC cannot end. To stop
    early, a coroutine calls `TryCancel()`, then reads until `Read()` gives nothing.
    `ResumeHandover` became re-armable rather than one per read: whatever ends a read on a gRPC thread must find the

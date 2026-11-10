@@ -20,6 +20,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -41,6 +42,11 @@ template <Delivery kDelivery>
 using GetFeatureCall = Unary<routeguide::GetFeature::ClientReactor<kDelivery>>;
 
 constexpr auto kTimeout = std::chrono::seconds(10);
+
+// What Finish() returns, the same under both deliveries.
+using FeatureResult = RpcReactor::coro::UnaryResult<routeguide::Feature>;
+static_assert(std::is_same_v<GetFeatureCall<Delivery::kPull>::ResultT, FeatureResult>);
+static_assert(std::is_same_v<GetFeatureCall<Delivery::kPush>::ResultT, FeatureResult>);
 
 /// Answers GetFeature with a feature named after the point's latitude, or with an error. A held answer waits
 /// for Release(), or for the client's cancel.
@@ -209,8 +215,7 @@ TEST_F(ReactorCoroUnaryTest, GetFeature_PushOk_ReturnsOwnedResponseOnTheLoop) {
   const auto seen = RunCall<Delivery::kPush>();
 
   EXPECT_TRUE(seen.result.status.ok());
-  ASSERT_NE(seen.result.response, nullptr);
-  EXPECT_EQ(seen.result.response->name(), "place 7");
+  EXPECT_EQ(seen.result.response.name(), "place 7");
   EXPECT_EQ(seen.resumed_on, LoopThread());
   EXPECT_EQ(executor_.Posts(), 1);
 }
@@ -224,14 +229,13 @@ TEST_F(ReactorCoroUnaryTest, GetFeature_PullServerError_ReturnsTheStatusAndAnEmp
   EXPECT_TRUE(seen.result.response.name().empty());
 }
 
-/// @test Under kPush, a failed RPC still hands over a message, never null and empty.
+/// @test Under kPush, a failed RPC gives an empty response too.
 TEST_F(ReactorCoroUnaryTest, GetFeature_PushServerError_ReturnsTheStatusAndAnEmptyMessage) {
   test_service_.FailWith(grpc::StatusCode::NOT_FOUND);
   const auto seen = RunCall<Delivery::kPush>();
 
   EXPECT_EQ(seen.result.status.error_code(), grpc::StatusCode::NOT_FOUND);
-  ASSERT_NE(seen.result.response, nullptr);
-  EXPECT_TRUE(seen.result.response->name().empty());
+  EXPECT_TRUE(seen.result.response.name().empty());
 }
 
 Task<> CancelThenFinish(Executor* executor, routeguide::RouteGuide::Stub* stub, Seen<Delivery::kPull>* seen,

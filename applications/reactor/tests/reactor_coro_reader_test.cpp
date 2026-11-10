@@ -46,9 +46,9 @@ using ListFeaturesReader = Reader<routeguide::ListFeatures::ClientReactor<kDeliv
 
 constexpr auto kTimeout = std::chrono::seconds(10);
 
-// What Read() gives under each delivery.
+// What Read() gives, the same under both deliveries.
 static_assert(std::is_same_v<ListFeaturesReader<Delivery::kPull>::MessageT, std::optional<routeguide::Feature>>);
-static_assert(std::is_same_v<ListFeaturesReader<Delivery::kPush>::MessageT, std::unique_ptr<routeguide::Feature>>);
+static_assert(std::is_same_v<ListFeaturesReader<Delivery::kPush>::MessageT, std::optional<routeguide::Feature>>);
 
 /// Streams features named "feature 1" to "feature N", then finishes OK, with an error, or not at all: a held
 /// stream stops after a given number of features, and ends only once the client cancels it.

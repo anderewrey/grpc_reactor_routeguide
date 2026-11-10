@@ -517,9 +517,9 @@ known to suspend.
 | Test | Checks |
 | ------ | --------- |
 | `GetFeature_PullOk_ReturnsOwnedResponseOnTheLoop` | One resumption, on the loop, with the response swapped out |
-| `GetFeature_PushOk_ReturnsOwnedResponseOnTheLoop` | The same under `kPush`, with the message handed over |
+| `GetFeature_PushOk_ReturnsOwnedResponseOnTheLoop` | The same under `kPush`, moved out of the message handed over |
 | `GetFeature_PullServerError_ReturnsTheStatusAndAnEmptyResponse` | A failed RPC is a status, with an empty response |
-| `GetFeature_PushServerError_ReturnsTheStatusAndAnEmptyMessage` | Under `kPush`, the message is never null |
+| `GetFeature_PushServerError_ReturnsTheStatusAndAnEmptyMessage` | The same under `kPush` |
 | `GetFeature_TryCancel_FinishReturnsCancelled` | A cancel ends a held RPC, and `Finish()` returns `CANCELLED` |
 | `GetFeature_FrameDestroyedMidRpc_CancelsAndWaitsForOnDone` | Frees nothing under gRPC, and posts nothing |
 
@@ -553,7 +553,7 @@ client cancels it, so a coroutine waiting in `Read()` is known to wait.
 | Test | Checks |
 | ------ | --------- |
 | `ListFeatures_PullReadsEveryMessage_ThenNothing_ThenFinishOk` | Each message owned, in order, on the loop, then none |
-| `ListFeatures_PushReadsEveryMessage_ThenNothing_ThenFinishOk` | The same under `kPush`, each message handed over |
+| `ListFeatures_PushReadsEveryMessage_ThenNothing_ThenFinishOk` | The same under `kPush`, each moved out of its hand-over |
 | `ListFeatures_EmptyStream_FirstReadGivesNothing` | An empty stream ends at the first `Read()` |
 | `ListFeatures_PullServerErrorMidStream_ReadsWhatCameThenFinishGivesTheError` | An error is a status |
 | `ListFeatures_PushServerErrorMidStream_ReadsWhatCameThenFinishGivesTheError` | The same, `kPush` |
