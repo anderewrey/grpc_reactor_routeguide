@@ -222,13 +222,15 @@ const grpc::Status status = co_await reader.Finish();
 |--------|-----|
 | `Reader(executor, stub, request, context)` | Sends the request, and arms the first read. The context is optional |
 | `co_await Read()` | Resumes with the next message, owned, or with nothing once the stream has ended |
-| `co_await Finish()` | Once `Read()` has given nothing: resumes once the RPC has ended, with its `grpc::Status` |
+| `co_await Finish()` | Resumes once the RPC has ended, with its `grpc::Status`. Before the end, it cancels first |
 | `TryCancel()` | Cancels an RPC still in flight: `Read()` then gives nothing, and `Finish()` gives `CANCELLED` |
 | Destructor | Cancels an RPC in flight, releases a message still held, destroys the reactor after `OnDone()` |
 
 Non-copyable and non-movable, since the reactor's callbacks refer to it. A `Read()` awaited again after the end gives
-nothing at once. `Finish()` asserts that `Read()` has given nothing: while the reactor holds a message, the RPC cannot
-end. To stop early, call `TryCancel()`, then read until `Read()` gives nothing.
+nothing at once. To stop early, await `Finish()` without reading on: while the reactor holds a message, or a read is
+armed, the RPC cannot end, so `Finish()` ends it with the reactor's `CancelAndRelease()`. It cancels the RPC, and
+releases the message held, and any message a read already in flight delivers, without arming a read. The status is
+then `CANCELLED`, unless the RPC had already ended.
 
 Every message is owned by the coroutine, as a `std::optional<ResponseT>` under both deliveries. `Delivery` decides how
 it becomes owned, and when the next one is read:

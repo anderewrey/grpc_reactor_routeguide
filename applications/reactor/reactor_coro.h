@@ -180,7 +180,8 @@ class Unary {
 
 /// A server-streaming RPC a coroutine reads one message at a time: the request is sent on construction,
 /// `co_await Read()` resumes the coroutine on the application thread with the next message, owned, or with
-/// nothing once the stream has ended, and `co_await Finish()` then gives the RPC's status.
+/// nothing once the stream has ended, and `co_await Finish()` then gives the RPC's status. A coroutine that
+/// stops reading before the end awaits Finish() all the same: it cancels the RPC, and gives CANCELLED.
 ///
 ///     coro::Reader<routeguide::ListFeatures::ClientReactor<Delivery::kPush, ReadPacing::kTurnByTurn>> reader{
 ///         executor, stub, rect};
@@ -279,8 +280,9 @@ class Reader {
     return Awaiter{*this};
   }
 
-  /// Awaited exactly once, once Read() has given nothing: resumes on the application thread once the RPC
-  /// has ended.
+  /// Awaited exactly once: resumes on the application thread once the RPC has ended. Awaited before Read()
+  /// has given nothing, it ends the RPC first: it cancels it, and releases the message the reactor holds,
+  /// which would otherwise keep it open, so the status is CANCELLED unless the RPC had already ended.
   /// @return an awaitable whose co_await gives the RPC's status
   [[nodiscard]] auto Finish() noexcept {
     struct Awaiter {
@@ -290,7 +292,12 @@ class Reader {
       grpc::Status await_resume() const { return reader.TakeStatus(); }
     };
     assert(reactor_ && "Finish() is awaited exactly once");
-    assert(ended_ && "Finish() follows the Read() that gave nothing: the RPC cannot end while a message is held");
+    if (!ended_) {
+      // Stopping early: no read will be asked for, and the message held, if any, is dropped.
+      ended_ = true;
+      held_ = false;
+      reactor_->CancelAndRelease();
+    }
     return Awaiter{*this};
   }
 

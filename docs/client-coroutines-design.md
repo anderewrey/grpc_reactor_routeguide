@@ -353,9 +353,9 @@ Every non-trivial claim needs a test or a demonstrable run:
    [testing.md](/docs/testing.md#unary-awaitable-coverage) lists what the tests prove.
 3. The reader without a buffer: both `turn_by_turn_coro` variants, then `turn_by_turn_guidance_coro`. Done:
    `coro::Reader` in `reactor_coro.h`. Its `Read()` gives a `std::optional<ResponseT>` under both deliveries, empty
-   at the end of the stream, and its `Finish()` gives the
-   `grpc::Status`, once `Read()` has given nothing: while the reactor holds a message, the RPC cannot end. To stop
-   early, a coroutine calls `TryCancel()`, then reads until `Read()` gives nothing.
+   at the end of the stream, and its `Finish()` gives the `grpc::Status`. Awaited before the end, `Finish()` ends the
+   RPC first, since a held message or an armed read keeps it open: it cancels it and releases what is held, through
+   the reactor's `CancelAndRelease()`, and gives `CANCELLED` unless the RPC had already ended.
    `ResumeHandover` became re-armable rather than one per read: whatever ends a read on a gRPC thread must find the
    hand-over already in place, so the reader would keep one per read as a member anyway, and one re-armed with
    `Rearm()`, which asserts that the last read has ended, says the same with less. It is re-armed before the call that

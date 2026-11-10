@@ -6,9 +6,9 @@
 /// Tests coro::Reader, the reader without a buffer of reactor_coro.h, against an in-process server, with
 /// coroutines resumed on the AppLoop task queue that stands in for the application's event loop: every message
 /// owned and in order under both deliveries, the end of the stream, a server error, kPull's read-ahead against
-/// kPush's reading only when asked, a cancel while a read waits, a frame destroyed mid-stream, and Finish() given
-/// the status whether OnDone() runs before or after it is awaited. The re-armed hand-over inside the reader is
-/// tested on its own, with no RPC and no timing, in coro_task_test.cpp.
+/// kPush's reading only when asked, a cancel while a read waits, a frame destroyed mid-stream, Finish() given
+/// the status whether OnDone() runs before or after it is awaited, and Finish() awaited before the end. The
+/// re-armed hand-over inside the reader is tested on its own, with no RPC and no timing, in coro_task_test.cpp.
 
 #include <gtest/gtest.h>
 
@@ -540,5 +540,68 @@ TEST_F(ReactorCoroReaderOrderTest, ListFeatures_PushFinishBeforeOnDone_FinishWai
 
   EXPECT_EQ(seen.names, (std::vector<std::string>{"feature 1", "feature 2"}));
   EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::NOT_FOUND);
+}
+
+/// Reads `reads` messages, then awaits Finish() without reading to the end of the stream.
+template <Delivery kDelivery>
+Task<> ReadSomeThenFinish(Executor* executor, routeguide::RouteGuide::Stub* stub, int reads, Seen* seen,
+                          std::promise<void>* done) {
+  ListFeaturesReader<kDelivery> reader{*executor, *stub, routeguide::Rectangle{}};
+  for (int i = 0; i < reads; ++i) {
+    if (auto feature = co_await reader.Read()) seen->names.push_back(feature->name());
+  }
+  seen->status = co_await reader.Finish();
+  done->set_value();
+}
+
+/// A Finish() awaited before Read() has given nothing ends the RPC: the stream is held open by the server, so it
+/// can only end by the cancel Finish() sends.
+class ReactorCoroReaderEarlyFinishTest : public ReactorCoroReaderTest {
+ protected:
+  template <Delivery kDelivery>
+  Seen FinishAfter(int reads) {
+    test_service_.HoldAfter(3);
+    Seen seen;
+    RunToEnd([&](std::promise<void>* done) {
+      return ReadSomeThenFinish<kDelivery>(&executor_, stub_.get(), reads, &seen, done);
+    });
+    return seen;
+  }
+};
+
+/// @test Under kPull, Finish() awaited mid-stream, with the next message read ahead, cancels the RPC, releases
+/// that message, and gives CANCELLED.
+TEST_F(ReactorCoroReaderEarlyFinishTest, ListFeatures_PullFinishMidStream_EndsTheRpcCancelled) {
+  const Seen seen = FinishAfter<Delivery::kPull>(1);
+
+  EXPECT_EQ(seen.names, (std::vector<std::string>{"feature 1"}));
+  EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::CANCELLED);
+}
+
+/// @test Under kPush, Finish() awaited mid-stream, with the given message's read not armed, releases its hold,
+/// and gives CANCELLED.
+TEST_F(ReactorCoroReaderEarlyFinishTest, ListFeatures_PushFinishMidStream_EndsTheRpcCancelled) {
+  const Seen seen = FinishAfter<Delivery::kPush>(1);
+
+  EXPECT_EQ(seen.names, (std::vector<std::string>{"feature 1"}));
+  EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::CANCELLED);
+}
+
+/// @test Under kPull, Finish() awaited after the last message, while the read armed for the next one waits, gives
+/// CANCELLED.
+TEST_F(ReactorCoroReaderEarlyFinishTest, ListFeatures_PullFinishAfterTheLastMessage_EndsTheRpcCancelled) {
+  const Seen seen = FinishAfter<Delivery::kPull>(3);
+
+  EXPECT_EQ(seen.names, ThreeNames());
+  EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::CANCELLED);
+}
+
+/// @test Under kPush, Finish() awaited after the last message, before the Read() that would give nothing, gives
+/// CANCELLED.
+TEST_F(ReactorCoroReaderEarlyFinishTest, ListFeatures_PushFinishAfterTheLastMessage_EndsTheRpcCancelled) {
+  const Seen seen = FinishAfter<Delivery::kPush>(3);
+
+  EXPECT_EQ(seen.names, ThreeNames());
+  EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::CANCELLED);
 }
 }  // namespace

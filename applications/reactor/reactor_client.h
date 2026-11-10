@@ -442,6 +442,15 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
   /// @return true once OnDone() has run, so the reactor may be destroyed; false on a timeout, when it may
   ///         not be
   bool CancelAndWait(std::chrono::milliseconds timeout) {
+    CancelAndRelease();
+    return done_latch_->WaitFor(timeout);
+  }
+
+  /// CancelAndWait() without the wait: cancels the RPC, and releases a message still held, and any message
+  /// a read already in flight delivers, without arming a read. Nothing then holds the RPC open, so OnDone()
+  /// follows. For an application that stops reading before the stream ends, and awaits OnDone() its own way.
+  /// Callable from the application thread, under the same conditions as CancelAndWait().
+  void CancelAndRelease() {
     context_->TryCancel();
     // Published before the held message is claimed, so a release call racing this one arms no read.
     stream_no_more_ = true;
@@ -449,7 +458,6 @@ class ActiveReadReactor : public grpc::ClientReadReactor<ResponseT> {
     // own reaction, see ReleaseIfTornDown().
     tearing_down_ = true;
     ReleaseHeldRead();
-    return done_latch_->WaitFor(timeout);
   }
 
   /// Obtain the status of the RPC set by the `OnDone` event. Calling this

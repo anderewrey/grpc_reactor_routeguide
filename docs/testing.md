@@ -567,6 +567,10 @@ client cancels it, so a coroutine waiting in `Read()` is known to wait.
 | `ListFeatures_PushOnDoneBeforeFinish_FinishGivesTheStatus` | The same under `kPush` |
 | `ListFeatures_PullFinishBeforeOnDone_FinishWaitsForTheStatus` | `Finish()` first: it waits for `OnDone()` |
 | `ListFeatures_PushFinishBeforeOnDone_FinishWaitsForTheStatus` | The same under `kPush` |
+| `ListFeatures_PullFinishMidStream_EndsTheRpcCancelled` | An early `Finish()` cancels, releasing the read-ahead |
+| `ListFeatures_PushFinishMidStream_EndsTheRpcCancelled` | The same under `kPush`, releasing the message given |
+| `ListFeatures_PullFinishAfterTheLastMessage_EndsTheRpcCancelled` | The same once every message is given |
+| `ListFeatures_PushFinishAfterTheLastMessage_EndsTheRpcCancelled` | The same under `kPush` |
 
 The two read-ahead tests tell the deliveries apart. The coroutine reads one message, pauses the loop thread for 200
 milliseconds, cancels, then reads what is left. Under `kPull`, the second message arrived during the pause, since
@@ -579,10 +583,14 @@ under `kPush`. No read is armed then, and the hold suppresses `OnDone()`, so the
 it waits the 5 seconds of `kOnDoneTimeout`, then leaks the reactor, which the test's time limit and LeakSanitizer
 report.
 
-The last four tests order the end of the last read and `OnDone()` against `Finish()`, the two events the reader hands
+The four ordering tests order the end of the last read and `OnDone()` against `Finish()`, the two events the reader hands
 over separately. A pause of the loop thread before `Finish()` lets `OnDone()` run first. A test reactor whose
 `OnDone()` sleeps 300 milliseconds before it runs makes `Finish()` come first. Should the timing not hold, both orders
 still give the status, so these tests can lose their power, never fail on correct code.
+
+The four early `Finish()` tests stop reading before the end, on a stream the server holds open after three messages,
+so the cancel `Finish()` sends is the only way it can end. Before `Finish()` ended the RPC itself, each one tripped
+its assert in a debug build, and waited forever with asserts compiled out.
 
 Whether a `Read()` suspends depends on whether its read ended first, which a test can only arrange by waiting on
 timing. So the re-armed hand-over is tested directly in [coro_task_test.cpp][coro-task-test]:
@@ -609,6 +617,11 @@ server:
 | The destructor destroying the reactor without waiting for `OnDone()` | `FrameDestroyedWithAMessageHeld`, under ASan |
 | `After()` not restoring the task number | `After_ResumesOnTheApplicationThread_OnceTheDelayIsOver` |
 
+The second mutant opens a window, between `GetResponse()` arming the next read and the late `Rearm()`, in which an end
+of read is lost. A test catches it only when a message arrives in that window, which no test can arrange without
+timing: it failed in the run above, and may pass in another. Re-arming first is what closes the window, and the
+re-armed hand-over tests show that an end which comes before the await is kept.
+
 Two more mutants share one hand-over between the reads and `OnDone()`, as the reader would without `done_`. Each was
 run 50 times against each ordering test, locally:
 
@@ -620,10 +633,17 @@ run 50 times against each ordering test, locally:
 The first loses an end that came before `Finish()`, and waits forever, or trips `Rearm()`'s assert. The second
 returns at once, since the last read left the hand-over ended, with a status `OnDone()` has not set yet.
 
-The second mutant opens a window, between `GetResponse()` arming the next read and the late `Rearm()`, in which an end
-of read is lost. A test catches it only when a message arrives in that window, which no test can arrange without
-timing: it failed in the run above, and may pass in another. Re-arming first is what closes the window, and the
-re-armed hand-over tests show that an end which comes before the await is kept.
+Three more mutants of the early `Finish()`, each run 5 times against each of its tests, locally:
+
+| Mutant | Caught by |
+| ------ | --------- |
+| `Finish()` only calls `TryCancel()` | Every time: both `MidStream` tests, `PushFinishAfterTheLastMessage` |
+| `CancelAndRelease()` releasing no held message | The same three, `PullFinishMidStream` 4 times of 5 |
+| `CancelAndRelease()` not raising `tearing_down_` | `ReactorTeardownTest.Read_MessageHeldAfterTheCancel` |
+
+`PullFinishAfterTheLastMessage` holds no message, only a read armed for the next one, which the cancel ends, so it
+catches none of them, and shows that a cancel alone is enough there. The third mutant opens the race of a message
+arriving as the cancel is sent, which [the teardown tests](#teardown-coverage) land deterministically.
 
 ### Naming convention
 
