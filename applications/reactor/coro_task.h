@@ -16,6 +16,7 @@
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
+#include <variant>
 
 /// The core of the coroutine level: a task type, an owner for root tasks, the interface of the executor
 /// that resumes them, and the hand-over every awaitable uses to reach that executor. It knows C++20
@@ -48,6 +49,8 @@ class Executor {
 
 class RootTasks;
 class ResumeHandover;
+template <class A, class B>
+class Join;
 
 /// Which root task the calling thread runs, for the logs: on the application thread, the task whose code runs
 /// now, or kNone between tasks. Spawn() numbers each root task from 1, and the task's number follows it across
@@ -66,6 +69,8 @@ class CurrentTask {
  private:
   friend RootTasks;
   friend ResumeHandover;
+  template <class A, class B>
+  friend class Join;
 
   /// Sets the current task until it is destroyed, then restores the one before.
   class Scope {
@@ -371,5 +376,147 @@ class RootTasks {
   // Shared by every owner, so task numbers are unique in the process, whichever thread spawns.
   static inline std::atomic<CurrentTask::Id> last_id_{CurrentTask::kNone};
 };
+
+/// What WhenAll() gives for a Task<T>: its value, or std::monostate for a Task<void>.
+template <class T>
+using Joined = std::conditional_t<std::is_void_v<T>, std::monostate, T>;
+
+/// The awaitable behind WhenAll(): runs two tasks at once, each in a branch frame of its own, and resumes the
+/// awaiting coroutine once both have finished, with both values.
+///
+/// Both tasks start when the Join is awaited, the first up to its first suspension, then the second. The second
+/// of the two to finish resumes the awaiter by symmetric transfer. When both finish without suspending, the
+/// awaiter goes on without suspending at all, as for a Task, so no stack grows.
+///
+/// Both branches run in the awaiter's task, for the logs: CurrentTask gives the same number in either.
+///
+/// The Join owns the branch frames, and destroying it destroys them, and with them both tasks, finished or
+/// suspended: a frame destroyed while it awaits a Join destroys both tasks it was waiting for.
+///
+/// Non-copyable and non-movable: the branch frames refer to it.
+/// @tparam A the value of the first task, void included
+/// @tparam B the value of the second task, void included
+template <class A, class B>
+class Join {
+  struct BranchPromise;
+  using BranchHandle = std::coroutine_handle<BranchPromise>;
+
+  /// A branch frame: awaits one task, stores its value, then arrives at the Join, and stays suspended there
+  /// until the Join destroys it.
+  struct Branch {
+    using promise_type = BranchPromise;
+    BranchHandle handle;
+  };
+
+  struct BranchPromise {
+    Branch get_return_object() noexcept { return Branch{BranchHandle::from_promise(*this)}; }
+    static std::suspend_always initial_suspend() noexcept { return {}; }
+    static auto final_suspend() noexcept {
+      struct Arrive {
+        static bool await_ready() noexcept { return false; }
+        static std::coroutine_handle<> await_suspend(BranchHandle self) noexcept {
+          Join& join = *self.promise().join;
+          if (join.Arrive()) return join.awaiter_;
+          // The other branch still runs: the thread goes back to code outside the task.
+          CurrentTask::Set(CurrentTask::kNone);
+          return std::noop_coroutine();
+        }
+        static void await_resume() noexcept {}
+      };
+      return Arrive{};
+    }
+    static void return_void() noexcept {}
+    // A branch only awaits a Task, whose own promise ends the process first, so this never runs.
+    [[noreturn]] static void unhandled_exception() noexcept { std::terminate(); }
+
+    Join* join = nullptr;
+  };
+
+  template <class T>
+  static Branch Run(Task<T> task, std::optional<Joined<T>>* out) {
+    if constexpr (std::is_void_v<T>) {
+      co_await std::move(task);
+      out->emplace();
+    } else {
+      out->emplace(co_await std::move(task));
+    }
+  }
+
+ public:
+  /// What the awaiter gets: both values, in the order of the tasks.
+  using ResultT = std::pair<Joined<A>, Joined<B>>;
+
+  /// Takes both tasks, not started. Not noexcept: the branch frames are allocated here, not when awaited.
+  Join(Task<A> a, Task<B> b)
+      : first_(Run(std::move(a), &first_value_).handle), second_(Run(std::move(b), &second_value_).handle) {}
+
+  /// Destroys both branch frames, and with them both tasks, finished or suspended.
+  ~Join() {
+    first_.destroy();
+    second_.destroy();
+  }
+
+  Join(const Join&) = delete;
+  Join& operator=(const Join&) = delete;
+  Join(Join&&) = delete;
+  Join& operator=(Join&&) = delete;
+
+  static bool await_ready() noexcept { return false; }
+
+  /// Starts both tasks, each up to its first suspension or its end.
+  /// @return true when either suspended, so the awaiter suspends until the second to finish resumes it; false
+  ///         when both have already finished, so the awaiter goes on
+  bool await_suspend(std::coroutine_handle<> awaiter) noexcept {
+    // Set here, at the Join's final address in the awaiter's frame.
+    first_.promise().join = this;
+    second_.promise().join = this;
+    awaiter_ = awaiter;
+    const CurrentTask::Id task = CurrentTask::Get();
+    task_ = task;
+    first_.resume();
+    // The first may have suspended through a ResumeHandover, which left the thread under no task.
+    CurrentTask::Set(task);
+    second_.resume();
+    // The starter arrives last of the three: when both branches have arrived already, it goes on.
+    const bool suspended = !Arrive();
+    CurrentTask::Set(suspended ? CurrentTask::kNone : task);
+    return suspended;
+  }
+
+  /// Gives both values, in the awaiter's task again, whichever branch resumed it.
+  ResultT await_resume() {
+    assert(first_value_ && second_value_);
+    CurrentTask::Set(task_);
+    return ResultT{std::move(*first_value_), std::move(*second_value_)};
+  }
+
+ private:
+  /// Called once by each branch as it ends, and once by the starter after starting both.
+  /// @return true for the third and last to arrive, which resumes the awaiter, or lets it go on
+  bool Arrive() noexcept { return pending_.fetch_sub(1, std::memory_order_acq_rel) == 1; }
+
+  std::optional<Joined<A>> first_value_;
+  std::optional<Joined<B>> second_value_;
+  BranchHandle first_;
+  BranchHandle second_;
+  std::coroutine_handle<> awaiter_;
+  CurrentTask::Id task_ = CurrentTask::kNone;  // the awaiter's, restored when it goes on
+  // The branches and the starter still to arrive. Atomic for an executor that resumes a branch on another
+  // thread while await_suspend() still runs.
+  std::atomic<int> pending_{3};
+};
+
+/// Runs two tasks at once, and gives both values once both have finished. Lazy, as every Task: both start
+/// when the returned task is awaited or spawned.
+///
+///     auto [replies, sent] = co_await coro::WhenAll(ReadAll(chat), WriteAll(chat, notes));
+///
+/// @param a the first task, not started
+/// @param b the second task, not started
+/// @return a task giving both values, std::monostate for a Task<void>
+template <class A, class B>
+Task<typename Join<A, B>::ResultT> WhenAll(Task<A> a, Task<B> b) {
+  co_return co_await Join<A, B>(std::move(a), std::move(b));
+}
 
 }  // namespace RpcReactor::coro

@@ -118,6 +118,10 @@ re-armed hand-over inside it is tested on its own in coro_task_test.cpp. Both ar
 [reactor_coro_writer_test.cpp][coro-writer-test] tests `coro::Writer`, the awaited writes, and `coro::Source`, the range
 the reactor pulls, the same way. Both are described in [writer coverage](#writer-coverage).
 
+[reactor_coro_bidi_test.cpp][coro-bidi-test] tests `coro::Bidi`, the bidirectional stream, read by one coroutine and
+written by another, joined by `coro::WhenAll()`, the same way. `WhenAll()` itself is tested on its own in
+coro_task_test.cpp. Both are described in [bidirectional join coverage](#bidirectional-join-coverage).
+
 ### Callback application smoke test
 
 [callback_smoke_test.sh][callback-smoke-test] runs the callback example applications themselves,
@@ -511,6 +515,9 @@ Under the first mutant, the stack test overflows under GCC, and the five other t
 by one of the two `CurrentTask` tests: not setting it in `Spawn()`, not restoring it in `ResumeHandover::Resumed()`, not
 clearing it when a task suspends through the hand-over, and not clearing it when a root task ends.
 
+`WhenAll()`'s tests are in the same file, under `CoroWhenAllTest`, and described in
+[bidirectional join coverage](#bidirectional-join-coverage).
+
 ### Unary awaitable coverage
 
 [reactor_coro_unary_test.cpp][coro-unary-test] runs `GetFeature` through `coro::Unary`. Its service can hold an answer
@@ -719,6 +726,77 @@ The write callback ignoring `ok` was first missed: the next `Write()` is refused
 the write flow, and the server error tests could not tell which write failed. `WriteAfterTheServerErrorArrived` was
 added for it. The second mutant is the order the reader uses, and the reason the writer differs: a fresh hand-over is
 not ended, so nothing can be re-armed before the first write, and the writer re-arms after each one instead.
+
+### Bidirectional join coverage
+
+[coro_task_test.cpp][coro-task-test] tests `coro::WhenAll()` with no RPC: its tasks suspend on a hand-out handle the
+test resumes, or on a `ResumeHandover` ended from the test's thread and resumed on the `AppLoop`.
+
+| Test | Checks |
+| ------ | --------- |
+| `BothFinishWithoutSuspending_GivesBothValuesAtOnce` | Both values, a move-only one too, and no suspension |
+| `FirstFinishesFirst_TheSecondsEndResumesTheAwaiter` | Nothing before the second ends, then both values |
+| `SecondFinishesFirst_TheFirstsEndResumesTheAwaiter` | The same, the values still in the order of the tasks |
+| `OneFinishesWithoutSuspending_TheJoinWaitsForTheOther` | The join waits for the task that suspended |
+| `VoidTasks_JoinOnceBothHaveRun` | Two `Task<>` join, each giving a `std::monostate` |
+| `FrameDestroyedWhileBothWait_DestroysBothTasks` | Every argument and local of both suspended tasks released |
+| `FrameDestroyedWhileOneWaits_DestroysTheFinishedTaskToo` | The finished task's frame released too |
+| `CurrentTask_BothTasksRunInTheAwaitersTask` | Both tasks, and the awaiter after, under the root's number |
+| `CurrentTask_LastBranchResumedOutsideTheTask_AwaiterGoesOnInItsTask` | The join, not the branch, restores it |
+
+[reactor_coro_bidi_test.cpp][coro-bidi-test] runs `RouteChat` through `coro::Bidi`, under `Delivery::kPush`,
+`Submission::kApplicationPushes` and `ReadPacing::kContinuous`, the one configuration it takes. Most tests run a
+reading coroutine and a writing one on the same `Bidi`, joined by `WhenAll()` before `Finish()`. Its service records
+every note it reads and echoes it back, and finishes once the client closes its stream. It can instead echo nothing,
+answer the close with a burst of replies before finishing, or finish with a given status once it has read a given
+number of notes.
+
+| Test | Checks |
+| ------ | --------- |
+| `RouteChat_EveryNoteSent_EveryReplyReceived` | 20 notes read in order, 20 echoes, every resumption on the loop |
+| `RouteChat_NoNote_CloseEndsBothSides` | A close with no write ends the read side too |
+| `RouteChat_ReadSideEndsWhileWritesGoOn_WriteGivesFalse` | The reader ends on the server's end, unclosed writes fail |
+| `RouteChat_ServerError_ReadEnds_FinishGivesTheError` | The same with an error, which `Finish()` gives |
+| `RouteChat_WritesEndWhileReadsGoOn_EveryLaterReplyReceived` | 50 replies after the close, all read |
+| `RouteChat_ReplyQueuedBeforeTheAwait_GoesOnWithoutSuspending` | No post for a queued reply, then the end still waits |
+| `RouteChat_TryCancel_EndsBothSides_FinishGivesCancelled` | A cancel from the writer ends the reader too |
+| `RouteChat_FinishBeforeClose_EndsTheRpcCancelled` | An early `Finish()` cancels, on the loop |
+| `RouteChat_FinishBeforeReadingTheQueuedReplies_GivesTheServersStatus` | The queue dropped, the status arrived kept |
+| `RouteChat_FinishBeforeCloseAfterTheServerError_GivesTheError` | The server's status, once it has arrived |
+| `RouteChat_FrameDestroyedWithBothSidesInFlight_CancelsAndWaitsForOnDone` | A read waiting, a write in flight |
+
+`ReadSideEndsWhileWritesGoOn` writes 5 milliseconds apart, and checks that the reader gets every echo then the end,
+while the writer was never closed, and that a later write gives false. Which coroutine the loop runs first once the
+server has ended is not fixed, so the test does not check whether the reader ended before the refused write: a first
+version did, and failed on its first run. `FinishBeforeReadingTheQueuedReplies` closes, pauses the loop thread 1
+second so the server's burst and status arrive, then awaits `Finish()` without reading: the status is the server's
+OK, not a `CANCELLED` nobody sent. `FrameDestroyedWithBothSidesInFlight` keeps a write in flight with a test reactor
+whose `OnWriteDone()` sleeps 1 second, against a service that echoes nothing, so the reader waits too, and checks the
+reactor was released well under the 5 seconds of `kOnDoneTimeout`, and that nothing was posted after the
+destruction.
+
+The whole file held in 10 local runs, and in 5 under GCC's AddressSanitizer and UndefinedBehaviorSanitizer.
+
+Mutants, each run once against its test file, locally:
+
+| Mutant | Caught by |
+| ------ | --------- |
+| A branch that ends first not clearing the task number | `CurrentTask_BothTasksRunInTheAwaitersTask` |
+| The second branch started under the first one's task number | `CurrentTask_BothTasksRunInTheAwaitersTask` |
+| The awaiter suspending even when both tasks have ended | `BothFinishWithoutSuspending`: the root never ends |
+| The `Join` not destroying its branch frames | Both frame destruction tests |
+| The awaiter's task number not restored by the join | `LastBranchResumedOutsideTheTask` |
+| A queued message not waking a waiting `Read()` | `FinishBeforeClose`: the reader waits for the end |
+| The end of the stream not waking a waiting `Read()` | Six tests: the reader never ends |
+| The read hand-over not re-armed after a wait | Four tests: `Read()` ends the stream at the next wait |
+| An early `Finish()` not cancelling | `FinishBeforeClose`: the open write flow holds the RPC |
+| The `Bidi` destructor not abandoning the read hand-over | `FrameDestroyedWithBothSidesInFlight`: a crash |
+| An early `Finish()` not dropping the queue | None: the `Bidi` frees it moments later anyway |
+
+The awaiter's task number was first restored only by the hand-over that resumed the last branch, and its mutant
+survived every test: `LastBranchResumedOutsideTheTask` was added for it. The queue the
+early `Finish()` drops is freed with the `Bidi` once the frame ends, right after, so dropping it earlier shows in no
+test; it stays for the rule that an early `Finish()` releases what is queued.
 
 ### Naming convention
 
@@ -968,6 +1046,7 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [coro-unary-test]: /applications/reactor/tests/reactor_coro_unary_test.cpp
 [coro-reader-test]: /applications/reactor/tests/reactor_coro_reader_test.cpp
 [coro-writer-test]: /applications/reactor/tests/reactor_coro_writer_test.cpp
+[coro-bidi-test]: /applications/reactor/tests/reactor_coro_bidi_test.cpp
 [reactor-coro]: /applications/reactor/reactor_coro.h
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp
 [callback-smoke-test]: /applications/callback/tests/callback_smoke_test.sh

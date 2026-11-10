@@ -1,7 +1,7 @@
 # Client coroutines: design draft
 
 > [!NOTE]
-> This is a design draft, built step by step. Steps 1 to 3 and 5 of the [suggested order](#suggested-order) exist, and
+> This is a design draft, built step by step. Steps 1 to 3, 5 and 6 of the [suggested order](#suggested-order) exist, and
 > [reactor_coro.md](/applications/reactor/reactor_coro.md) is their reference. Once the level is built and its claims
 > are proven by tests and runs, this draft's reasoning moves into [architecture.md](/docs/architecture.md), and this
 > file goes away.
@@ -385,7 +385,22 @@ Every non-trivial claim needs a test or a demonstrable run:
    `live_route_recording_coro` awaits each GPS fix with `EventLoopExecutor::After()`, then its write: a fix that
    came while a write was in flight waits for the coroutine, so no queue is kept.
    [testing.md](/docs/testing.md#writer-coverage) lists what the tests prove.
-6. The bidirectional join: `route_chat_push_continuous_coro`, then `convoy_chat_coro`.
+6. The bidirectional join: `route_chat_push_continuous_coro`, then `convoy_chat_coro`. Done: `coro::WhenAll()` in
+   `coro_task.h`, and `coro::Bidi` in `reactor_coro.h`. `WhenAll()` joins two tasks of any value types, `void`
+   included, and gives both values as a `std::pair`. Each task runs in a branch frame the join owns, so destroying
+   a frame that waits on a join destroys both tasks, and the last of the two branches and the starter to arrive
+   resumes the awaiter, or lets it go on without suspending, as `Task` does. Both branches run in the awaiter's
+   task number, which the join restores when the awaiter goes on, whatever resumed the last branch.
+   A `Bidi`'s read callbacks queue each message on the gRPC thread, under a lock, since `kContinuous` never waits,
+   and wake the reading coroutine through a re-armed `ResumeHandover` only when it found nothing to take. The queue,
+   its lock and that hand-over are one private class of the `Bidi`, the minimum the buffered reader of step 4 also
+   needs, so the two can share one once both exist. The write side is the `Writer`'s. An early `Finish()`, before
+   the read stream ended or the writes were closed, cancels and drops the queue, and gives the reactor's status:
+   `CANCELLED`, or the server's own status had it already arrived, never a status nobody sent. No
+   `CancelAndRelease()` is needed: under `kContinuous` no read hold exists, and the cancel ends the armed read, whose
+   `OnReadDone(false)` releases the idle write hold. The flows take the `Bidi` by pointer, since a reference
+   parameter dangles across a suspension.
+   [testing.md](/docs/testing.md#bidirectional-join-coverage) lists what the tests prove.
 7. Teardown and cancellation tests.
 
 ## The language standard: C++20

@@ -26,6 +26,7 @@ set(REACTOR_TESTS
     reactor_coro_unary_test
     reactor_coro_reader_test
     reactor_coro_writer_test
+    reactor_coro_bidi_test
 )
 
 foreach(test_name IN LISTS REACTOR_TESTS)

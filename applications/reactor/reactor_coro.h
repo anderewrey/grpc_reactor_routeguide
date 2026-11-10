@@ -12,7 +12,9 @@
 #include <concepts>
 #include <coroutine>
 #include <cstddef>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <ranges>
 #include <type_traits>
@@ -723,6 +725,326 @@ class Source {
   std::vector<RequestT> requests_;
   std::size_t next_ = 0;
   std::unique_ptr<typename Traits::ResponseT> pushed_;  // Delivery::kPush only, set by the done callback
+  std::unique_ptr<ReactorT> reactor_;  // declared last, so the callbacks' targets exist before the RPC starts
+};
+
+// ---------------------------------------------------------------------------------------------------------
+// The bidirectional stream: Bidi, read by one coroutine and written by another, which a join awaits before
+// Finish().
+// ---------------------------------------------------------------------------------------------------------
+
+/// A bidirectional-streaming RPC two coroutines share: one reads, one writes, and the task that joins them
+/// awaits Finish(). `co_await Read()` gives the next message, owned, or nothing once the stream has ended;
+/// `co_await Write(request)` resumes once the write has completed; `co_await Close()` ends the request stream;
+/// and `co_await Finish()` gives the RPC's status, once both sides are done.
+///
+///     coro::Bidi<routeguide::RouteChat::ClientReactor<Delivery::kPush, Submission::kApplicationPushes,
+///                                                     ReadPacing::kContinuous>> chat{executor, stub};
+///     co_await coro::WhenAll(ShowEach(chat), SendEach(chat, notes));  // Read() until empty; Write(), Close()
+///     const grpc::Status status = co_await chat.Finish();
+///
+/// The reactor runs under ReadPacing::kContinuous, so the read side never waits for the coroutine: every
+/// message the reactor hands over is queued, on its gRPC thread, and Read() takes them in order, at once when
+/// one is queued. The queue is unbounded, as the reading coroutine is the application's to keep up with.
+/// Delivery::kPush hands each message over owned, so queueing it moves it, with no copy.
+///
+/// The write side is a Writer's: one write in flight at most, Write() giving false once the RPC has ended,
+/// and Close() never suspending.
+///
+/// Stopping early is awaiting Finish() before Read() has given nothing, or before Close() with the RPC still
+/// running: it cancels the RPC and drops the messages still queued. The status is then CANCELLED, unless the
+/// server's own status had already arrived.
+///
+/// The reactor lives in the Bidi, so in the frame of the coroutine that declares it, which must outlive both
+/// sides: the joined task. Finish() destroys it on the application thread once its OnDone() has run. A Bidi
+/// destroyed before, such as in a frame destroyed while both sides are suspended, cancels the RPC and
+/// destroys the reactor once OnDone() has run, or leaks it should OnDone() never come.
+///
+/// Non-copyable and non-movable: the reactor's callbacks refer to it.
+/// @tparam ReactorT a service-specific reactor, deriving from Client::ActiveBidiReactor under Delivery::kPush,
+///         Submission::kApplicationPushes and ReadPacing::kContinuous, and constructed from a stub, a context
+///         and the bidirectional callbacks
+template <class ReactorT>
+class Bidi {
+  /// The request, the response, the delivery, the submission and the pacing of the generic bidirectional
+  /// reactor ReactorT derives from.
+  template <class RequestT_, class ResponseT_, Client::Delivery kDelivery_, Client::Submission kSubmission_,
+            Client::ReadPacing kPacing_>
+  struct Traits_ {
+    using RequestT = RequestT_;
+    using ResponseT = ResponseT_;
+    static constexpr Client::Delivery kDelivery = kDelivery_;
+    static constexpr Client::Submission kSubmission = kSubmission_;
+    static constexpr Client::ReadPacing kPacing = kPacing_;
+  };
+  template <class RequestT_, class ResponseT_, Client::Delivery kDelivery_, Client::Submission kSubmission_,
+            Client::ReadPacing kPacing_>
+  static Traits_<RequestT_, ResponseT_, kDelivery_, kSubmission_, kPacing_> TraitsOf(
+      const Client::ActiveBidiReactor<RequestT_, ResponseT_, kDelivery_, kSubmission_, kPacing_>*);
+
+  using Traits = decltype(TraitsOf(static_cast<ReactorT*>(nullptr)));
+  static_assert(Traits::kDelivery == Client::Delivery::kPush,
+                "a Bidi queues each message the reactor hands over, owned: Delivery::kPush");
+  static_assert(Traits::kSubmission == Client::Submission::kApplicationPushes,
+                "a Bidi's writing coroutine starts each write: Submission::kApplicationPushes");
+  static_assert(Traits::kPacing == Client::ReadPacing::kContinuous,
+                "a Bidi's read side never waits for the coroutine: ReadPacing::kContinuous");
+
+ public:
+  /// What Write() sends.
+  using RequestT = Traits::RequestT;
+  /// The messages the server sends.
+  using ResponseT = Traits::ResponseT;
+  /// What Read() gives: a message, owned, or nothing once the stream has ended.
+  using MessageT = std::optional<ResponseT>;
+
+  /// Constructs the reactor, which starts the RPC and arms the first read. Nothing is sent until the first
+  /// Write().
+  /// @param executor resumes the awaiting coroutines on the application thread, and must outlive this object
+  /// @param stub the service stub, which must outlive the RPC
+  /// @param context of the RPC, for a deadline or metadata: a fresh one by default
+  template <class StubT>
+  Bidi(Executor& executor, StubT& stub,
+       std::unique_ptr<grpc::ClientContext> context = std::make_unique<grpc::ClientContext>())
+      : executor_(executor),
+        reactor_(std::make_unique<ReactorT>(stub, std::move(context), MakeCallbacks())) {}
+
+  /// Cancels an RPC still in flight, and destroys the reactor once its OnDone() has run. The messages still
+  /// queued are dropped with the Bidi.
+  ~Bidi() {
+    inbox_.Abandon();
+    write_.Abandon();
+    done_.Abandon();
+    DestroyAfterOnDone(reactor_, kOnDoneTimeout);
+  }
+
+  Bidi(const Bidi&) = delete;
+  Bidi& operator=(const Bidi&) = delete;
+  Bidi(Bidi&&) = delete;
+  Bidi& operator=(Bidi&&) = delete;
+
+  /// Sends a best-effort cancel. Callable from the application thread at any time: both sides then end, so
+  /// Read() gives nothing once the messages already queued are taken, Write() gives false, and Finish()
+  /// returns CANCELLED.
+  void TryCancel() {
+    if (reactor_) reactor_->TryCancel();
+  }
+
+  /// Takes the next message: at once when one is queued, or once the reactor hands one over. Awaited by one
+  /// coroutine at a time, until it gives nothing; awaited again after, it gives nothing at once.
+  /// @return an awaitable whose co_await gives the next message, owned, or nothing once the stream has ended
+  [[nodiscard]] auto Read() noexcept {
+    struct Awaiter {
+      Bidi& bidi;
+      bool waits = false;  // await_ready() found nothing to take, so a read callback hands the coroutine over
+      bool await_ready() noexcept {
+        waits = !bidi.read_ended_ && !bidi.inbox_.ReadyOrWait();
+        return !waits;
+      }
+      bool await_suspend(std::coroutine_handle<> waiter) const noexcept { return bidi.inbox_.Suspend(waiter); }
+      MessageT await_resume() const { return bidi.TakeRead(waits); }
+    };
+    assert(reactor_ && "Read() comes before Finish()");
+    return Awaiter{*this};
+  }
+
+  /// Sends a request. The write starts here, so a Write() is always awaited, at once.
+  /// @param request to send, moved into the reactor
+  /// @return an awaitable whose co_await gives true once the request was written, or false, at once or once
+  ///         the write failed, when the RPC has ended and the request was not sent
+  [[nodiscard]] auto Write(RequestT request) {
+    struct Awaiter {
+      Bidi& bidi;
+      bool started;
+      bool await_ready() const noexcept { return !started; }
+      bool await_suspend(std::coroutine_handle<> waiter) const noexcept { return bidi.write_.Suspend(waiter); }
+      bool await_resume() const { return started && bidi.TakeWrite(); }
+    };
+    assert(reactor_ && !closed_ && "Write() comes before Close() and Finish()");
+    // Refused once the RPC has ended: cancelled, a write failed, the read side ended, or OnDone() has run.
+    // Never because a write is in flight, since the coroutine resumed from the last one before it could call
+    // this.
+    const bool started = !write_ended_ && reactor_->SendRequest(std::move(request));
+    if (!started) write_ended_ = true;
+    return Awaiter{*this, started};
+  }
+
+  /// Ends the request stream: no Write() may follow. The server may go on sending, which Read() still gives.
+  /// It never suspends: the close completing is seen by Finish(), which waits for the RPC to end.
+  /// @return an awaitable whose co_await gives true once the close is started, or false when the RPC has
+  ///         ended
+  [[nodiscard]] auto Close() {
+    struct Awaiter {
+      bool closing;
+      static bool await_ready() noexcept { return true; }
+      static void await_suspend(std::coroutine_handle<> /*waiter*/) noexcept {}
+      bool await_resume() const noexcept { return closing; }
+    };
+    assert(reactor_ && !closed_ && "Close() is called once, before Finish()");
+    closed_ = true;
+    const bool closing = !write_ended_ && reactor_->CloseRequestStream();
+    if (!closing) write_ended_ = true;
+    return Awaiter{closing};
+  }
+
+  /// Awaited exactly once, by the task that joins both sides, once both are done: resumes on the application
+  /// thread once the RPC has ended. Awaited before Read() has given nothing, or before Close() with the RPC
+  /// still running, it ends the RPC first: it cancels it, which ends both sides, and drops the messages still
+  /// queued. The status is then CANCELLED, unless the server's own status had already arrived.
+  /// @return an awaitable whose co_await gives the RPC's status
+  [[nodiscard]] auto Finish() noexcept {
+    struct Awaiter {
+      Bidi& bidi;
+      static bool await_ready() noexcept { return false; }
+      bool await_suspend(std::coroutine_handle<> waiter) const noexcept { return bidi.done_.Suspend(waiter); }
+      grpc::Status await_resume() const { return bidi.TakeStatus(); }
+    };
+    assert(reactor_ && "Finish() is awaited exactly once");
+    if (!read_ended_ || (!closed_ && !write_ended_)) {
+      // Stopping early: no read or write will be asked for. The open write flow would keep the RPC open,
+      // and so would a server that waits for the client's close.
+      read_ended_ = true;
+      write_ended_ = true;
+      reactor_->TryCancel();
+      inbox_.Clear();
+    }
+    return Awaiter{*this};
+  }
+
+ private:
+  /// The read side's unbounded queue: filled on gRPC threads by the read callbacks, drained on the application
+  /// thread by Read(), which waits on its hand-over when it finds nothing.
+  class Inbox {
+   public:
+    /// On a gRPC thread: queues a message, and hands the reading coroutine over if it waits.
+    void Push(ResponseT message, Executor& executor) {
+      bool wake = false;
+      {
+        const std::lock_guard lock(mutex_);
+        queue_.push_back(std::move(message));
+        wake = std::exchange(waiting_, false);
+      }
+      if (wake) handover_.Complete(executor);
+    }
+
+    /// On a gRPC thread: records the end of the stream, and hands the reading coroutine over if it waits.
+    void End(Executor& executor) {
+      bool wake = false;
+      {
+        const std::lock_guard lock(mutex_);
+        ended_ = true;
+        wake = std::exchange(waiting_, false);
+      }
+      if (wake) handover_.Complete(executor);
+    }
+
+    /// On the application thread: whether a message, or the end of the stream, is there to take at once. When
+    /// neither is, records that the coroutine waits, under the lock, so exactly one later Push() or End() hands
+    /// it over, whether it comes before or after the coroutine suspends.
+    bool ReadyOrWait() {
+      const std::lock_guard lock(mutex_);
+      if (!queue_.empty() || ended_) return true;
+      waiting_ = true;
+      return false;
+    }
+
+    /// On the application thread, after ReadyOrWait() said to wait.
+    bool Suspend(std::coroutine_handle<> waiter) noexcept { return handover_.Suspend(waiter); }
+
+    /// On the application thread, after a wait: the coroutine runs its task again, and the hand-over is
+    /// re-armed for the next wait, which no callback can end before ReadyOrWait() asks for it.
+    void Resumed() noexcept {
+      handover_.Resumed();
+      handover_.Rearm();
+    }
+
+    /// On the application thread: the next message, or nothing once the stream has ended.
+    MessageT Take() {
+      const std::lock_guard lock(mutex_);
+      if (queue_.empty()) return MessageT{};
+      MessageT message{std::move(queue_.front())};
+      queue_.pop_front();
+      return message;
+    }
+
+    /// On the application thread: drops every message queued.
+    void Clear() {
+      const std::lock_guard lock(mutex_);
+      queue_.clear();
+    }
+
+    /// Before the Bidi cancels its RPC on destruction: a callback from then on posts nothing.
+    void Abandon() noexcept { handover_.Abandon(); }
+
+   private:
+    std::mutex mutex_;
+    std::deque<ResponseT> queue_;  // guarded by mutex_
+    bool ended_ = false;           // guarded by mutex_: the stream has ended, so no message will come
+    bool waiting_ = false;         // guarded by mutex_: a Read() found nothing, and waits for the hand-over
+    ResumeHandover handover_;      // re-armed after each wait
+  };
+
+  using Callbacks = Client::ActiveBidiCallbacks<RequestT, ResponseT, Client::Delivery::kPush,
+                                                Client::Submission::kApplicationPushes,
+                                                Client::ReadPacing::kContinuous>;
+
+  /// The level's own code, on the gRPC thread. The read callbacks queue the message, or record the end of
+  /// the stream, and hand the reading coroutine to the executor when it waits. The write callback records the
+  /// outcome of the write, then hands the writing coroutine over. OnDone() has its own hand-over, since it can
+  /// come before either coroutine has resumed.
+  Callbacks MakeCallbacks() {
+    Callbacks cbs;
+    cbs.read_ok = [this](auto*, std::unique_ptr<ResponseT> response) {
+      inbox_.Push(std::move(*response), executor_);
+    };
+    cbs.read_nok = [this](auto*) { inbox_.End(executor_); };
+    cbs.write_done = [this](auto*, bool ok) {
+      write_ok_ = ok;  // published by Complete()
+      write_.Complete(executor_);
+    };
+    cbs.done = [this](auto*, const grpc::Status&) { done_.Complete(executor_); };
+    return cbs;
+  }
+
+  /// On the application thread, once there is something to take: the next message, owned, or the end of the
+  /// stream, which no Read() goes past.
+  /// @param waited whether the coroutine waited for a read callback
+  MessageT TakeRead(bool waited) {
+    if (waited) inbox_.Resumed();
+    if (read_ended_) return MessageT{};
+    MessageT message = inbox_.Take();
+    if (!message) read_ended_ = true;
+    return message;
+  }
+
+  /// On the application thread, once a write has ended: whether it succeeded. The hand-over is re-armed here,
+  /// before the next Write() can start a write that ends on a gRPC thread at once.
+  bool TakeWrite() {
+    write_.Resumed();
+    write_.Rearm();
+    if (!write_ok_) write_ended_ = true;
+    return write_ok_;
+  }
+
+  /// On the application thread, once the RPC has ended: takes the status out of the reactor, then destroys
+  /// the reactor once its OnDone() has returned.
+  grpc::Status TakeStatus() {
+    done_.Resumed();
+    grpc::Status status = reactor_->Status();
+    // OnDone() may still be returning, on its gRPC thread, from the callback that resumed this coroutine.
+    DestroyAfterOnDone(reactor_, kOnDoneTimeout);
+    return status;
+  }
+
+  Executor& executor_;
+  Inbox inbox_;
+  ResumeHandover write_;  // re-armed after each write
+  ResumeHandover done_;
+  // Application thread only.
+  bool read_ended_ = false;   // Read() gave nothing, or Finish() stopped the reads: none will be asked for
+  bool write_ended_ = false;  // the RPC has ended for the writes: none can start
+  bool closed_ = false;       // Close() was called
+  bool write_ok_ = false;     // set by the write callback before it hands the coroutine over
   std::unique_ptr<ReactorT> reactor_;  // declared last, so the callbacks' targets exist before the RPC starts
 };
 

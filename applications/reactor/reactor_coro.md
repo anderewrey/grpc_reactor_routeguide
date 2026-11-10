@@ -8,8 +8,8 @@ exists, and why each choice was made, is in the [design draft](/docs/client-coro
 > [!NOTE]
 > The level is built step by step, as the design draft's
 > [suggested order](/docs/client-coroutines-design.md#suggested-order) lists. Today it has the task core, the unary
-> awaitable, the reader without a buffer, and the writers. The buffered readers and the bidirectional join come next,
-> and each adds its section here.
+> awaitable, the reader without a buffer, the writers, and the bidirectional join. The buffered readers come next, and
+> add their section here.
 
 ## The words you need
 
@@ -32,7 +32,7 @@ The level has two headers of its own, and shares the EventLoop adapter with the 
 
 | Header | Knows | Holds |
 |--------|-------|-------|
-| [coro_task.h](/applications/reactor/coro_task.h) | C++20 coroutines only | `Task`, `RootTasks`, `Executor`, `ResumeHandover`, `CurrentTask` |
+| [coro_task.h](/applications/reactor/coro_task.h) | C++20 coroutines only | `Task`, `RootTasks`, `Executor`, `ResumeHandover`, `CurrentTask`, `WhenAll()` |
 | [reactor_coro.h](/applications/reactor/reactor_coro.h) | Generic reactors, task core | Every awaitable, its helpers |
 | [reactor_eventloop.h](/applications/reactor/reactor_eventloop.h) | EventLoop | `EventLoopExecutor`, beside the callback level's `EventConnection` |
 
@@ -123,6 +123,27 @@ A lazily started coroutine that produces one `T`, or nothing for `Task<>`, for t
 Move-only, and `[[nodiscard]]`. A body that ends without suspending lets its awaiter go on without any transfer, so a
 loop of such awaits keeps a flat stack on every compiler, see
 [the task type](/docs/client-coroutines-design.md#the-task-type-written-here-not-taken-from-a-library).
+
+### `WhenAll(a, b)`
+
+Runs two tasks at once, and gives both values once both have finished, as a `std::pair`, with `std::monostate` for a
+`Task<>`. Lazy, as every task: both start when the task it returns is awaited.
+
+```cpp
+auto [shown, sent] = co_await coro::WhenAll(ShowReplies(&chat), SendNotes(&chat, std::move(notes)));
+```
+
+| Property | Choice |
+|----------|--------|
+| Start | The first task up to its first suspension, then the second |
+| Resumption of awaiter | By the second of the two to finish, by symmetric transfer; none when both finish at once |
+| Task number | Both run in the awaiter's task, which goes on in it whichever task resumed it |
+| Ownership | Destroying the awaiter's frame while it waits destroys both tasks, finished or suspended |
+
+The awaitable behind it, `Join`, runs each task in a small branch frame of its own, which it owns and destroys. Each
+branch counts itself in as it ends, and the awaiter counts itself in once it has started both: the last of the
+three resumes, or lets the awaiter go on without suspending, as a `Task` does, so no stack grows. A branch that ends
+first leaves the thread under no task, as a suspension through `ResumeHandover` does.
 
 ### `RootTasks`
 
@@ -327,6 +348,66 @@ the application thread.
 write, so its `Finish()` is awaited at once, and the coroutine skips nothing by awaiting it: the reactor sends the whole
 range on its own. `TryCancel()`, or destroying the `Source`, stops it.
 
+### `Bidi<ReactorT>`
+
+A bidirectional-streaming RPC two coroutines share: one reads, one writes, and the task that joins them with
+`WhenAll()` awaits `Finish()`. `ReactorT` is a service-specific reactor deriving from `ActiveBidiReactor` under
+`Delivery::kPush`, `Submission::kApplicationPushes` and `ReadPacing::kContinuous`, such as
+`routeguide::RouteChat::ClientReactor<Delivery::kPush, Submission::kApplicationPushes, ReadPacing::kContinuous>`.
+Another configuration does not compile.
+
+```cpp
+coro::Task<> RouteChat::Run(std::vector<routeguide::RouteNote> notes) {
+  Chat chat{executor_, stub_};  // declared before the join, so both flows end before it does
+  auto [shown, sent] = co_await coro::WhenAll(ShowReplies(&chat), SendNotes(&chat, std::move(notes)));
+  const grpc::Status status = co_await chat.Finish();
+}
+coro::Task<unsigned> RouteChat::ShowReplies(Chat* chat) {
+  unsigned shown = 0;
+  while (auto reply = co_await chat->Read()) ++shown;
+  co_return shown;
+}
+coro::Task<std::size_t> RouteChat::SendNotes(Chat* chat, std::vector<routeguide::RouteNote> notes) {
+  std::size_t sent = 0;
+  for (auto& note : notes) {
+    if (!co_await chat->Write(std::move(note))) break;  // the RPC has ended
+    ++sent;
+  }
+  static_cast<void>(co_await chat->Close());
+  co_return sent;
+}
+```
+
+| Member | Use |
+|--------|-----|
+| `Bidi(executor, stub, context)` | Starts the RPC and arms the first read. Sends nothing until the first `Write()` |
+| `co_await Read()` | The next message, owned, at once when one is queued, or nothing once the stream has ended |
+| `co_await Write(request)` | Resumes once the write has completed: true, or false when the RPC has ended |
+| `co_await Close()` | Ends the request stream, without suspending: the server may go on sending |
+| `co_await Finish()` | Resumes once the RPC has ended, with its status. Awaited early, it cancels first |
+| `TryCancel()` | Cancels an RPC still in flight: both sides end, and `Finish()` gives `CANCELLED` |
+| Destructor | Cancels an RPC in flight, drops the queued messages, destroys the reactor after `OnDone()` |
+
+Non-copyable and non-movable, since the reactor's callbacks refer to it. The flows take it by pointer, not by
+reference, since a reference parameter of a coroutine dangles once it suspends, which clang-tidy checks.
+
+The read side never waits for the coroutine: under `kContinuous` the reactor arms each read itself, and the read
+callback queues the message it hands over, on its gRPC thread, in an unbounded queue under a lock. `Read()` takes the
+next one at once when one is queued. When none is, it records that it waits, under the same lock, so exactly one later
+read callback hands it to the executor, whether that comes before or after the coroutine suspends. Under `kPush` the
+message is queued whole, moved, with no copy.
+
+The write side is a `Writer`'s: one write in flight at most, a `Write()` that gives false sent nothing, and `Close()`
+never suspends. The read side ending, at the server's end or on a cancel, ends the writes too: the next `Write()`
+gives false. The writes ending, with `Close()`, leaves the reads running until the server ends its stream.
+
+`Finish()` is awaited exactly once, by the task that joined both flows. Awaited early, before `Read()` has given
+nothing, or before `Close()` with the RPC still running, it cancels the RPC, which ends both sides, and drops the
+messages still queued. The status is then `CANCELLED`, unless the server's own status had already arrived, which it
+then gives: a status nobody sent is never made up. A write flow that returns without `Close()` while the server
+waits for the client's close leaves the join waiting for a read side that never ends, so the write flow closes on
+every path, as in the example.
+
 ### `DestroyAfterOnDone(reactor, timeout)`
 
 Cancels a reactor's RPC, and destroys the reactor once its `OnDone()` has run. Should `OnDone()` not come within the
@@ -339,6 +420,7 @@ timeout, it leaks the reactor rather than freeing it under gRPC, and returns fal
   and the two diffs each has.
 - [Coroutine core coverage](/docs/testing.md#coroutine-core-coverage),
   [unary awaitable coverage](/docs/testing.md#unary-awaitable-coverage),
-  [reader coverage](/docs/testing.md#reader-coverage) and [writer coverage](/docs/testing.md#writer-coverage) list
-  what each test proves, and the mutants each caught.
+  [reader coverage](/docs/testing.md#reader-coverage), [writer coverage](/docs/testing.md#writer-coverage) and
+  [bidirectional join coverage](/docs/testing.md#bidirectional-join-coverage) list what each test proves, and the
+  mutants each caught.
 - [The design draft](/docs/client-coroutines-design.md) explains why each choice was made.
