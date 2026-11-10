@@ -721,6 +721,7 @@ Task<> StepAfterSuspending(int* steps, std::coroutine_handle<>* handle) {
 Task<> AwaitVoidJoin(Task<std::pair<std::monostate, std::monostate>> joined, bool* joined_out) {
   static_cast<void>(co_await std::move(joined));
   *joined_out = true;
+  co_return;  // cppcheck takes the function for a plain one when its only co_await is cast to void
 }
 
 /// @test Two Task<void> join too, each giving a std::monostate.
