@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "applications/reactor/reactor_eventloop.h"
+#include "applications/reactor/usecases/convoy_chat_coro.h"
 #include "applications/reactor/usecases/gpx_track_upload_coro.h"
 #include "applications/reactor/usecases/live_route_recording_coro.h"
 #include "applications/reactor/usecases/turn_by_turn_guidance_coro.h"
@@ -43,13 +44,18 @@
  *   recorded track is handed over for its summary, and the reactor pulls each point from it.
  * - rg_demo::usecase::coro::LiveRouteRecording, RecordRoute under kPush and kApplicationPushes through
  *   coro::Writer: the coroutine awaits each GPS fix, then its write, and hands the summary to the trip history.
+ * - rg_demo::usecase::coro::ConvoyChat, RouteChat under kPush, kApplicationPushes and kContinuous through
+ *   coro::Bidi: a typing flow awaits each typed note, then its write, while a reading flow shows every note
+ *   received, both joined with coro::WhenAll() before Finish().
  *
  * Reading the output: WhatsHere logs the answer, then the card, as its callback twin does. TurnByTurnGuidance
  * logs a "resumed  | #k driver confirmed" line once the driver confirms stop #k, and RESPONSE #k+1 never comes
  * before it, then "stream ended after N messages", the number of stops its callback twin shows.
  * GpxTrackUpload logs the summary of every point of the track. LiveRouteRecording logs each GPS fix as
  * "gps      |", sent once it came, or after waiting for a write in flight, as the tunnel's fixes do, then the
- * summary of every fix, as its callback twin does. Every line is on the application thread.
+ * summary of every fix, as its callback twin does. ConvoyChat logs each typed note as "typed    |", sent once
+ * typed, or after waiting for a write in flight, then a "totals   |" line of notes typed and shown, as its
+ * callback twin does. Every line is on the application thread.
  *
  * See docs/client-coroutines-design.md for the design of the coroutine level, and usecases/README.md for the
  * situation behind each use case.
@@ -75,6 +81,7 @@ int main(int argc, char** argv) {
   rg_demo::usecase::coro::TurnByTurnGuidance turn_by_turn_guidance{executor, *stub};
   rg_demo::usecase::coro::GpxTrackUpload gpx_track_upload{executor, *stub};
   rg_demo::usecase::coro::LiveRouteRecording live_route_recording{executor, *stub};
+  rg_demo::usecase::coro::ConvoyChat convoy_chat{executor, *stub};
 
   // A known place, Patriots Path, as route_guide_reactor_usecases asks about.
   const auto patriots_path = rg_utils::MakePoint(407838351, -746143763);
@@ -90,6 +97,13 @@ int main(int argc, char** argv) {
                                              rg_utils::MakePoint(407870000, -745800000),
                                              rg_utils::MakePoint(407850000, -746000000),
                                              patriots_path};
+  // The notes the convoy's drivers type, the ones route_guide_reactor_usecases sends. Three are left at the same
+  // place, so the server echoes the earlier ones back to whoever leaves the next.
+  const std::vector<routeguide::RouteNote> convoy_notes{
+      rg_utils::MakeRouteNote("Convoy leaving the depot", 409000000, -744000000),
+      rg_utils::MakeRouteNote("Debris on the right lane", 409100000, -744100000),
+      rg_utils::MakeRouteNote("Copy, slowing down", 409100000, -744100000),
+      rg_utils::MakeRouteNote("Debris cleared", 409100000, -744100000)};
   // The route's stops, the features of the rectangle route_guide_reactor_usecases reads.
   const auto rect = rg_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000);
 
@@ -101,6 +115,8 @@ int main(int argc, char** argv) {
   gpx_track_upload.Start(gpx_track);
   spdlog::info("-------------- Use case: live route recording (RecordRoute kPush kApplicationPushes, coroutine) ----");
   live_route_recording.Start(drive);
+  spdlog::info("-------------- Use case: convoy chat (RouteChat kPush kApplicationPushes kContinuous, coroutine) ---");
+  convoy_chat.Start(convoy_notes);
   rg_demo::RunUntilDone();  // Scheduler component: processes queued events on this thread until every scenario ends
   spdlog::info("-------------- LEAVING APPLICATION --------------");
   return 0;

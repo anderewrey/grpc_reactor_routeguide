@@ -124,6 +124,7 @@ with a `_coro` suffix, and runs in an application of its own:
 | `list_features_push_turn_by_turn_coro` | `coro::Reader`: `co_await Read()`, reading when asked | Its callback parent |
 | `record_route_push_coro` | `coro::Writer`: `co_await Write()`, `Close()`, `Finish()` | Its callback parent |
 | `record_route_pull_producer_coro` | `coro::Source`: a range the reactor pulls, `Finish()` | Its callback parent |
+| `route_chat_push_continuous_coro` | `coro::Bidi`, `coro::WhenAll()`: read and write flows | Its callback parent |
 | `whats_here_coro` | `coro::Unary`: `co_await Finish()` | `whats_here`, its callback twin |
 | `whats_here_coro` | `coro::Unary`: `co_await Finish()` | `get_feature_pull_coro`, the variant it clones |
 | `turn_by_turn_guidance_coro` | `coro::Reader`: `co_await Read()`, reading when asked | Its callback twin |
@@ -132,6 +133,8 @@ with a `_coro` suffix, and runs in an application of its own:
 | `live_route_recording_coro` | `coro::Writer`: a GPS fix, then `co_await Write()` | The push variant it clones |
 | `gpx_track_upload_coro` | `coro::Source`: the track the reactor pulls | Its callback twin |
 | `gpx_track_upload_coro` | `coro::Source`: the track the reactor pulls | The producer variant it clones |
+| `convoy_chat_coro` | `coro::Bidi`: a typed note, then `co_await Write()` | Its callback twin |
+| `convoy_chat_coro` | `coro::Bidi`: a typed note, then `co_await Write()` | The bidi variant it clones |
 
 Against its parent, a coroutine scenario changes the style only: the same reactor configuration, consumed by one
 coroutine instead of handlers. Against its coroutine variant, a coroutine use case changes the use only.

@@ -149,21 +149,26 @@ the client with `--point_delay_ms=5`, so the sync and callback clients' RecordRo
 than gRPC's example's random 0.5 to 1.5 s. It then
 writes the client's digest: one line per logger, with the number of messages the scenario received, counted from its
 `read_ok` and `skipped` lines when it logs any, else from its `RESPONSE` lines. The RouteChat loggers make one `chat`
-line instead, the replies of all of them together. Both servers answer each note with the notes already left at its
-location, by any RPC, taking those notes and storing the new one at once, so each pair of notes at one location makes
-exactly one reply. What one chat receives depends on how the chats interleave; their total does not.
+line instead, the replies of all of them together. Both servers answer each note with every note already left at its
+location, by any RPC, and store the new one, so each pair of notes at one location makes exactly one reply. What one
+chat receives depends on how the chats interleave; their total does not. The cell checks that total against the
+replies the server owed: it counts the notes the server's log shows it read, per location, and fails unless the chats
+received n(n-1)/2 replies for each location's n notes. A chat whose logger logs one line per note it sends,
+`typed    |` or `sent     |`, also makes a `notes:<logger>` line, the notes it sent.
 
 [smoke_matrix_compare.sh][smoke-matrix-compare] then checks that:
 
 - each client's digest is the same against both servers;
 - each logger of a coroutine twin application, named after its callback parent's logger with a `.coro` suffix, such
   as `GetFeature.pull.coro` for `GetFeature.pull`, counts what the parent's logger counts, against the same server.
-  Every `.coro` logger must find its parent, and every twin application must have one.
+  Every `.coro` logger must find its parent, and every twin application must have one. A `notes:` line of a `.coro`
+  chat, such as `notes:ConvoyChat.coro`, is compared the same way, with `notes:ConvoyChat`.
 
 A scenario added to an application, a coroutine twin included, needs nothing in the matrix. A new application is one
-line in `SMOKE_SERVERS` or `SMOKE_CLIENTS`, and a new twin application one more line in `SMOKE_TWINS`. One limit: a
-coroutine twin of a RouteChat scenario goes into its application's `chat` line, which is compared across servers
-only, not with its parent.
+line in `SMOKE_SERVERS` or `SMOKE_CLIENTS`, and a new twin application one more line in `SMOKE_TWINS`. A coroutine twin
+of a RouteChat scenario goes into its application's `chat` line, which depends on every chat the application runs, so
+it is compared across servers and with the replies owed, not with the parent's: the twin is compared with its parent
+on the notes it sends instead, and its parent must log a line per note for that.
 
 The cells hold the same `RESOURCE_LOCK` on port 50051 as the callback smoke test, so they run one at a time. The
 servers are killed at the end of each cell, so their exit-time checks do not run, while every client runs to its end,
@@ -792,6 +797,7 @@ Mutants, each run once against its test file, locally:
 | An early `Finish()` not cancelling | `FinishBeforeClose`: the open write flow holds the RPC |
 | The `Bidi` destructor not abandoning the read hand-over | `FrameDestroyedWithBothSidesInFlight`: a crash |
 | An early `Finish()` not dropping the queue | None: the `Bidi` frees it moments later anyway |
+| `convoy_chat_coro` not showing its first reply | The smoke matrix: 2 replies received, 3 owed |
 
 The awaiter's task number was first restored only by the hand-over that resumed the last branch, and its mutant
 survived every test: `LastBranchResumedOutsideTheTask` was added for it. The queue the

@@ -12,9 +12,14 @@
 # The digest has one line per logger, "<logger> <messages>", where messages counts the messages the scenario
 # received: its read_ok and skipped lines when it logs any, which the callback reactors log from the gRPC thread
 # for every message, else its RESPONSE lines. The RouteChat loggers make one "chat <n>" line instead, the replies
-# of all of them together. Both servers answer each note with the notes already left at its location, taking those
-# and storing the new note at once, so each pair of notes at one location makes exactly one reply. What one chat
-# receives depends on how the chats interleave; their total does not.
+# of all of them together. Both servers answer each note with every note already left at its location, and store
+# the new one, so each pair of notes at one location makes exactly one reply. What one chat receives depends on
+# how the chats interleave; their total does not: it must equal the replies the server owes for the notes its log
+# shows it read, the sum of n(n-1)/2 over the locations, which proves every reply was received.
+#
+# A chat whose logger logs a line per note it sends, "typed    |" or "sent     |", also makes a
+# "notes:<logger> <n>" line, which smoke_matrix_compare.sh compares between a twin and its parent: a chat's replies
+# depend on the other chats of its application, but the notes it sends do not.
 #
 # Usage: smoke_matrix_cell.sh <server> <client> <digest>
 
@@ -27,7 +32,7 @@ work=$(mktemp -d)
 server_pid=
 
 # The loggers of the scenarios that share the server's RouteChat note history.
-chat_loggers='^(RouteChat.*|ConvoyChat|GuidedTourBriefing)$'
+chat_loggers='^(RouteChat.*|ConvoyChat(\.coro)?|GuidedTourBriefing)$'
 
 cleanup() {
   if [ -n "$server_pid" ]; then
@@ -89,7 +94,10 @@ check_sanitizers "$work/server.log"
 awk -F '\\]\\[' -v chat="$chat_loggers" '
   NF > 2 {
     logger = $2
-    if (logger ~ chat) chats[logger] = 1
+    if (logger ~ chat) {
+      chats[logger] = 1
+      if ($0 ~ /(typed    |sent     )\|/) notes[logger]++
+    }
     if ($0 ~ /(read_ok|skipped)  \|/) received[logger]++
     else if ($0 ~ /RESPONSE \|/) responses[logger]++
   }
@@ -103,8 +111,25 @@ awk -F '\\]\\[' -v chat="$chat_loggers" '
     for (l in received) if (!(l in chats)) print l, received[l]
     for (l in responses) if (!(l in received) && !(l in chats)) print l, responses[l]
     if (n > 0) print "chat", replies
+    for (l in notes) print "notes:" l, notes[l]
   }' "$log" | LC_ALL=C sort > "$work/digest"
 [ -s "$work/digest" ] || fail "no scenario received anything"
+
+# The replies the server owes: for the notes it read, keyed by their location, n(n-1)/2 per location.
+owed=$(awk '
+  /\[RouteChat\]/ && /REQUEST  \| RouteNote:/ {
+    key = match($0, /location \{[^}]*\}/) ? substr($0, RSTART, RLENGTH) : "none"
+    notes[key]++
+  }
+  END {
+    owed = 0
+    for (k in notes) owed += notes[k] * (notes[k] - 1) / 2
+    print owed
+  }' "$work/server.log")
+chat=$(awk '$1 == "chat" { print $2 }' "$work/digest")
+if [ -n "$chat" ] && [ "$chat" != "$owed" ]; then
+  fail "the chats received $chat replies, the server owed $owed"
+fi
 mv "$work/digest" "$digest"
 cat "$digest"
 echo "PASS"

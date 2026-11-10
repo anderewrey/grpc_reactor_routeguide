@@ -72,6 +72,8 @@ diff usecases/live_route_recording.cpp usecases/live_route_recording_coro.cpp   
 diff variants/record_route_push_coro.cpp usecases/live_route_recording_coro.cpp  # the GPS, and the trip history
 diff usecases/gpx_track_upload.cpp usecases/gpx_track_upload_coro.cpp             # hands the track to a Source
 diff variants/record_route_pull_producer_coro.cpp usecases/gpx_track_upload_coro.cpp  # checks the summary
+diff usecases/convoy_chat.cpp usecases/convoy_chat_coro.cpp                       # two flows, joined
+diff variants/route_chat_push_continuous_coro.cpp usecases/convoy_chat_coro.cpp   # awaits each typed note
 ```
 
 The first two are described in the reference, under

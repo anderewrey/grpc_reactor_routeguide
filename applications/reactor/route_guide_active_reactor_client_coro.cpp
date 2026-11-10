@@ -21,6 +21,7 @@
 #include "applications/reactor/variants/list_features_push_turn_by_turn_coro.h"
 #include "applications/reactor/variants/record_route_pull_producer_coro.h"
 #include "applications/reactor/variants/record_route_push_coro.h"
+#include "applications/reactor/variants/route_chat_push_continuous_coro.h"
 #include "applications/reactor/demo_support.h"
 #include "rg_service/rg_db.h"
 #include "rg_service/rg_utils.h"
@@ -53,6 +54,8 @@
  *   Finish() resumes it with the summary.
  * - rg_demo::pull::producer::coro::RecordRoute, RecordRoute under kPull and kReactorPulls through coro::Source:
  *   the coroutine hands the points over, the reactor pulls each one, and Finish() resumes it with the summary.
+ * - rg_demo::push::continuous::coro::RouteChat, RouteChat under kPush, kApplicationPushes and kContinuous through
+ *   coro::Bidi: one coroutine joins a read flow and a write flow with coro::WhenAll(), then awaits Finish().
  *
  * Reading the output: each scenario logs "rpc started" when its coroutine has sent the request, then, once
  * resumed, its RESPONSE lines and "rpc ended". The thread id in the log pattern shows every line on the
@@ -62,7 +65,9 @@
  * nothing is read until the coroutine asks; under kPull no such line exists, as the read is armed when the
  * message is taken. A writer logs "write #k done" once each write has resumed it, then its summary as one
  * RESPONSE line, as its callback parent does. The Source logs no line per point: its pulls run on a gRPC
- * thread, where no scenario code runs.
+ * thread, where no scenario code runs. The bidirectional join logs "sent     | #k" once each note's write has
+ * resumed its write flow, as its callback parent logs each note it sends, and a RESPONSE line per reply, then
+ * the totals of both flows once the join resumes it.
  *
  * See docs/client-coroutines-design.md for the design of the coroutine level.
  ************************/
@@ -89,6 +94,7 @@ int main(int argc, char** argv) {
   rg_demo::push::turn_by_turn::coro::ListFeatures list_features_push_turn_by_turn{executor, *stub};
   rg_demo::push::coro::RecordRoute record_route_push{executor, *stub};
   rg_demo::pull::producer::coro::RecordRoute record_route_pull_producer{executor, *stub};
+  rg_demo::push::continuous::coro::RouteChat route_chat_push_continuous{executor, *stub};
 
   // The same input as route_guide_active_reactor_client, so each run compares with its parent's.
   const auto rect = rg_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000);
@@ -96,6 +102,9 @@ int main(int argc, char** argv) {
   const std::vector<routeguide::Point> route{rg_utils::GetRandomPoint(feature_list),
                                              rg_utils::GetRandomPoint(feature_list),
                                              rg_utils::GetRandomPoint(feature_list)};
+  const std::vector<routeguide::RouteNote> notes{rg_utils::MakeRouteNote("First message", 0, 0),
+                                                 rg_utils::MakeRouteNote("Second message", 0, 0),
+                                                 rg_utils::MakeRouteNote("Third message", 10000000, 0)};
 
   // Every scenario is started before the loop runs, so all of the RPCs are in flight together. Nothing below
   // blocks: each Start() returns at its coroutine's first suspension.
@@ -109,6 +118,8 @@ int main(int argc, char** argv) {
   record_route_push.Start(route);
   spdlog::info("-------------- RecordRoute kPull kReactorPulls, coroutine --------------");
   record_route_pull_producer.Start(route);
+  spdlog::info("-------------- RouteChat kPush kContinuous, coroutine --------------");
+  route_chat_push_continuous.Start(notes);
   rg_demo::RunUntilDone();  // Scheduler component: processes queued events on this thread until every scenario ends
   spdlog::info("-------------- LEAVING APPLICATION --------------");
   return 0;

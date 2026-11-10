@@ -400,6 +400,11 @@ Every non-trivial claim needs a test or a demonstrable run:
    `CancelAndRelease()` is needed: under `kContinuous` no read hold exists, and the cancel ends the armed read, whose
    `OnReadDone(false)` releases the idle write hold. The flows take the `Bidi` by pointer, since a reference
    parameter dangles across a suspension.
+   The smoke matrix cannot compare a chat's replies with its parent's: the server echoes every note left at a
+   location by any RPC, so what one chat receives depends on the chats beside it. Each cell now checks instead that
+   its chats together received the replies the server owed for the notes its log shows, and each chat that logs a
+   line per note it sends is compared with its parent on that count. `route_chat_push_continuous` gained a
+   `sent     |` line for it.
    [testing.md](/docs/testing.md#bidirectional-join-coverage) lists what the tests prove.
 7. Teardown and cancellation tests.
 
