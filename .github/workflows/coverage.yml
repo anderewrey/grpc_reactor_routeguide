@@ -196,6 +196,7 @@ jobs:
             applications/reactor/tests/eventloop_executor_test \
             applications/reactor/tests/reactor_coro_unary_test \
             applications/reactor/tests/reactor_coro_reader_test \
+            applications/reactor/tests/reactor_coro_unbounded_reader_test \
             applications/reactor/tests/reactor_coro_latest_reader_test \
             applications/reactor/tests/reactor_coro_bounded_reader_test \
             applications/reactor/tests/client_reactor_integration_test \
