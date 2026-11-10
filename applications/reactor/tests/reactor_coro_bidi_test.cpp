@@ -441,7 +441,7 @@ TEST_F(ReactorCoroBidiTest, RouteChat_EveryNoteSent_EveryReplyReceived) {
   EXPECT_EQ(seen.closed, true);
   EXPECT_TRUE(seen.status.ok()) << seen.status.error_message();
   // kNotes writes, kNotes replies, the end of the stream, and Finish().
-  EXPECT_EQ(seen.threads, std::vector<std::thread::id>(2 * kNotes + 2, LoopThread()));
+  EXPECT_EQ(seen.threads, std::vector<std::thread::id>((2 * kNotes) + 2, LoopThread()));
 }
 
 /// @test No note at all: the writer closes at once, and the reader gets the end of the stream.
