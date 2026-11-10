@@ -425,8 +425,8 @@ class WriteTraits {
 
   /// The done callback of a writing awaitable, on the gRPC thread: records the response under kPush, then
   /// hands the coroutine to the executor. Under kPull the response and the status stay in the reactor.
-  static typename Callbacks::OnDoneCallback DoneCallback(Executor& executor, ResumeHandover& done,
-                                                         std::unique_ptr<ResponseT>& pushed) {
+  static Callbacks::OnDoneCallback DoneCallback(Executor& executor, ResumeHandover& done,
+                                                std::unique_ptr<ResponseT>& pushed) {
     if constexpr (kDelivery == Client::Delivery::kPull) {
       return [&executor, &done](auto*, const grpc::Status&, const ResponseT&) { done.Complete(executor); };
     } else {
@@ -575,7 +575,7 @@ class Writer {
   /// The level's own code, on the gRPC thread: records the outcome of a write, or the response under kPush,
   /// then hands the coroutine to the executor. OnDone() has its own hand-over, since it can come before the
   /// coroutine has resumed from a write that failed.
-  typename Traits::Callbacks MakeCallbacks() {
+  Traits::Callbacks MakeCallbacks() {
     typename Traits::Callbacks cbs;
     cbs.write_done = [this](auto*, bool ok) {
       write_ok_ = ok;  // published by Complete()
@@ -707,7 +707,7 @@ class Source {
   /// The level's own code. next_request runs once on the constructing thread, inside the reactor's
   /// constructor, then on a gRPC thread after each completed write, never two at once, and moves the next
   /// request out. The done callback records the response under kPush, then hands the coroutine over.
-  typename Traits::Callbacks MakeCallbacks() {
+  Traits::Callbacks MakeCallbacks() {
     typename Traits::Callbacks cbs;
     cbs.next_request = [this](auto*) -> std::optional<RequestT> {
       if (next_ == requests_.size()) return std::nullopt;  // the reactor closes the request stream
