@@ -86,7 +86,7 @@ struct Seen {
 /// message back until the test releases it, so the first Read() is known to give the first message, then counts
 /// the messages that have reached the reader, and says when its OnDone() has begun. One test at a time uses it,
 /// hence its static state.
-class HookedReactor final
+class LatestHookedReactor final
     : public RpcReactor::Client::ActiveReadReactor<routeguide::Feature, Delivery::kPull, ReadPacing::kContinuous> {
   using Base = RpcReactor::Client::ActiveReadReactor<routeguide::Feature, Delivery::kPull, ReadPacing::kContinuous>;
 
@@ -94,7 +94,7 @@ class HookedReactor final
   using Callbacks =
       RpcReactor::Client::ActiveReadCallbacks<routeguide::Feature, Delivery::kPull, ReadPacing::kContinuous>;
 
-  HookedReactor(routeguide::RouteGuide::Stub& stub, std::unique_ptr<grpc::ClientContext> context,
+  LatestHookedReactor(routeguide::RouteGuide::Stub& stub, std::unique_ptr<grpc::ClientContext> context,
                 const routeguide::Rectangle& request, Callbacks&& cbs)
       : Base(std::move(context), std::move(cbs)) {
     stub.async()->ListFeatures(this->context_.get(), &request, this);
@@ -132,7 +132,7 @@ class HookedReactor final
   static inline std::atomic<int> arrived_{0};
   static inline std::atomic<bool> done_began_{false};
 };
-using HookedReader = Reader<HookedReactor>;
+using LatestHookedReader = Reader<LatestHookedReactor>;
 
 /// Reads the whole stream, sleeping `pause` after each message, so a stream faster than that overwrites some,
 /// reads once more after its end, then finishes.
@@ -159,14 +159,14 @@ Task<> ReadAll(Executor* executor, routeguide::RouteGuide::Stub* stub, std::chro
 /// message reached the slot while no code of the coroutine ran, then reads to the end and finishes.
 Task<> ReadOneUntilOnDoneThenReadOn(Executor* executor, routeguide::RouteGuide::Stub* stub, Seen* seen,
                                     std::promise<void>* done) {
-  HookedReader reader{*executor, *stub, routeguide::Rectangle{}};
+  LatestHookedReader reader{*executor, *stub, routeguide::Rectangle{}};
   if (auto first = co_await reader.Read()) {
     seen->names.push_back(first->name());
     seen->overwritten.push_back(reader.Overwritten());
   }
   seen->Resumed();
-  HookedReactor::ReleaseSecond();
-  EXPECT_TRUE(HookedReactor::WaitForOnDone());
+  LatestHookedReactor::ReleaseSecond();
+  EXPECT_TRUE(LatestHookedReactor::WaitForOnDone());
   while (auto feature = co_await reader.Read()) {
     seen->Resumed();
     seen->names.push_back(feature->name());
@@ -186,11 +186,11 @@ inline constexpr int kUntilOnDone = 0;
 /// slot, or until OnDone() has begun for kUntilOnDone, then awaits Finish() without reading on.
 Task<> ReadOneThenFinish(Executor* executor, routeguide::RouteGuide::Stub* stub, int arrived, Seen* seen,
                          std::promise<void>* done) {
-  HookedReader reader{*executor, *stub, routeguide::Rectangle{}};
+  LatestHookedReader reader{*executor, *stub, routeguide::Rectangle{}};
   if (auto first = co_await reader.Read()) seen->names.push_back(first->name());
   seen->Resumed();
-  HookedReactor::ReleaseSecond();
-  EXPECT_TRUE(arrived == kUntilOnDone ? HookedReactor::WaitForOnDone() : HookedReactor::WaitForArrived(arrived));
+  LatestHookedReactor::ReleaseSecond();
+  EXPECT_TRUE(arrived == kUntilOnDone ? LatestHookedReactor::WaitForOnDone() : LatestHookedReactor::WaitForArrived(arrived));
   seen->status = co_await reader.Finish();
   seen->Resumed();
   done->set_value();
@@ -216,10 +216,10 @@ Task<> ReadAllSignallingTheFirst(Executor* executor, routeguide::RouteGuide::Stu
 /// reads again, nor resumes.
 Task<> ReadOneUntilTheSlotIsFullThenStall(Executor* executor, routeguide::RouteGuide::Stub* stub,
                                           std::promise<void>* read_one) {
-  HookedReader reader{*executor, *stub, routeguide::Rectangle{}};
+  LatestHookedReader reader{*executor, *stub, routeguide::Rectangle{}};
   static_cast<void>(co_await reader.Read());
-  HookedReactor::ReleaseSecond();
-  EXPECT_TRUE(HookedReactor::WaitForArrived(3));
+  LatestHookedReactor::ReleaseSecond();
+  EXPECT_TRUE(LatestHookedReactor::WaitForArrived(3));
   read_one->set_value();
   co_await Forever{};
   ADD_FAILURE() << "a destroyed frame never resumes";
@@ -238,7 +238,7 @@ class ReactorCoroLatestReaderTest : public coro_reader_test::CoroReaderTestBase 
  protected:
   void SetUp() override {
     CoroReaderTestBase::SetUp();
-    HookedReactor::Reset();
+    LatestHookedReactor::Reset();
   }
 
   /// Runs `make_task` to its end, checks it resumed on the loop each time, and returns what it saw.
@@ -425,7 +425,7 @@ TEST_F(ReactorCoroLatestReaderTest, ListFeatures_FinishWithAFullSlot_DropsItAndG
 
   EXPECT_EQ(seen.names, Names(1));
   EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::CANCELLED);
-  EXPECT_EQ(seen.status.error_message(), HookedReader::kDroppedMessage);
+  EXPECT_EQ(seen.status.error_message(), LatestHookedReader::kDroppedMessage);
 }
 
 /// @test An early Finish() with a message in the slot, on a stream whose OK status has arrived, gives CANCELLED
@@ -438,7 +438,7 @@ TEST_F(ReactorCoroLatestReaderTest, ListFeatures_FinishWithAFullSlotOfAFinishedS
 
   EXPECT_EQ(seen.names, Names(1));
   EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::CANCELLED);
-  EXPECT_EQ(seen.status.error_message(), HookedReader::kDroppedMessage);
+  EXPECT_EQ(seen.status.error_message(), LatestHookedReader::kDroppedMessage);
 }
 
 /// @test An early Finish() with an empty slot, once every message has arrived and the OK status too, gives that

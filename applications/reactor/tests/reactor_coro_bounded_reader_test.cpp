@@ -84,7 +84,7 @@ struct Seen {
 /// A kPush, kPerMessage ListFeatures reactor whose reactions the test can observe and hold: it counts the messages
 /// that have reached the reader, and can hold the second one back, before the reactor hands it over, until the
 /// test releases it. One test at a time uses it, hence its static state.
-class HookedReactor final
+class BoundedHookedReactor final
     : public RpcReactor::Client::ActiveReadReactor<routeguide::Feature, Delivery::kPush, ReadPacing::kPerMessage> {
   using Base = RpcReactor::Client::ActiveReadReactor<routeguide::Feature, Delivery::kPush, ReadPacing::kPerMessage>;
 
@@ -92,7 +92,7 @@ class HookedReactor final
   using Callbacks =
       RpcReactor::Client::ActiveReadCallbacks<routeguide::Feature, Delivery::kPush, ReadPacing::kPerMessage>;
 
-  HookedReactor(routeguide::RouteGuide::Stub& stub, std::unique_ptr<grpc::ClientContext> context,
+  BoundedHookedReactor(routeguide::RouteGuide::Stub& stub, std::unique_ptr<grpc::ClientContext> context,
                 const routeguide::Rectangle& request, Callbacks&& cbs)
       : Base(std::move(context), std::move(cbs)) {
     stub.async()->ListFeatures(this->context_.get(), &request, this);
@@ -131,7 +131,7 @@ class HookedReactor final
   static inline std::atomic<bool> second_arrived_{false};
   static inline std::atomic<int> arrived_{0};
 };
-using HookedReader = Reader<HookedReactor>;
+using BoundedHookedReader = Reader<BoundedHookedReactor>;
 
 /// How ReadAll() reads: the reader's capacity, and how often the coroutine pauses, never when 0.
 struct Pacing {
@@ -169,14 +169,14 @@ Task<> ReadAll(Executor* executor, routeguide::RouteGuide::Stub* stub, Pacing pa
 /// stream did meanwhile, then reads to the end and finishes.
 Task<> ReadOneHeldAWhileThenReadOn(Executor* executor, routeguide::RouteGuide::Stub* stub, std::size_t capacity,
                                    Seen* seen, std::promise<void>* done) {
-  HookedReader reader{*executor, *stub, routeguide::Rectangle{}, capacity};
+  BoundedHookedReader reader{*executor, *stub, routeguide::Rectangle{}, capacity};
   if (auto first = co_await reader.Read()) seen->names.push_back(first->name());
   seen->Resumed();
   EXPECT_TRUE(PollUntil([&] { return reader.Queued() == capacity; }));
   // Long enough for a stream that is not held to send the rest.
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   seen->queued_while_held = reader.Queued();
-  seen->arrived_while_held = HookedReactor::Arrived();
+  seen->arrived_while_held = BoundedHookedReactor::Arrived();
   while (auto feature = co_await reader.Read()) {
     seen->Resumed();
     seen->names.push_back(feature->name());
@@ -208,12 +208,12 @@ Task<> ReadOneUntilHeldThenFinish(Executor* executor, routeguide::RouteGuide::St
 /// Finish(), which closes the queue, then lets the second one through, and awaits the end.
 Task<> FinishWhileTheSecondIsInFlight(Executor* executor, routeguide::RouteGuide::Stub* stub, Seen* seen,
                                       std::promise<void>* done) {
-  HookedReader reader{*executor, *stub, routeguide::Rectangle{}, 2};
+  BoundedHookedReader reader{*executor, *stub, routeguide::Rectangle{}, 2};
   if (auto first = co_await reader.Read()) seen->names.push_back(first->name());
   seen->Resumed();
-  EXPECT_TRUE(HookedReactor::WaitForTheSecond());
+  EXPECT_TRUE(BoundedHookedReactor::WaitForTheSecond());
   auto finish = reader.Finish();
-  HookedReactor::ReleaseSecond();
+  BoundedHookedReactor::ReleaseSecond();
   seen->status = co_await finish;
   seen->Resumed();
   done->set_value();
@@ -243,7 +243,7 @@ class ReactorCoroBoundedReaderTest : public coro_reader_test::CoroReaderTestBase
  protected:
   void SetUp() override {
     CoroReaderTestBase::SetUp();
-    HookedReactor::Reset(false);
+    BoundedHookedReactor::Reset(false);
   }
 
   /// Runs `make_task` to its end, checks it resumed on the loop each time, and returns what it saw.
@@ -390,14 +390,14 @@ TEST_F(ReactorCoroBoundedReaderTest, ListFeatures_FinishWhileHeldAtCapacityOneOn
 /// dropped, holds nothing, and the status says so.
 TEST_F(ReactorCoroBoundedReaderTest, ListFeatures_MessageInFlightAtAnEarlyFinish_IsDroppedAndGivesCancelled) {
   test_service_.Send(3);
-  HookedReactor::Reset(true);
+  BoundedHookedReactor::Reset(true);
   const Seen seen = Run([&](Seen* s, std::promise<void>* done) {
     return FinishWhileTheSecondIsInFlight(&executor_, stub_.get(), s, done);
   });
 
   EXPECT_EQ(seen.names, Names(1));
   EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::CANCELLED);
-  EXPECT_EQ(seen.status.error_message(), HookedReader::kDroppedMessage);
+  EXPECT_EQ(seen.status.error_message(), BoundedHookedReader::kDroppedMessage);
 }
 
 /// @test A frame destroyed with the stream held cancels the RPC, releases the hold, destroys the reactor once
