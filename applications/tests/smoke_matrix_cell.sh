@@ -10,8 +10,10 @@
 # run.
 #
 # The digest has one line per logger, "<logger> <messages>", where messages counts the messages the scenario
-# received: its read_ok and skipped lines when it logs any, which the callback reactors log from the gRPC thread
-# for every message, else its RESPONSE lines. The RouteChat loggers make one "chat <n>" line instead, the replies
+# received: its read_ok lines when it logs any, which the callback reactors log from the gRPC thread for every
+# message, else its RESPONSE lines, plus its skipped lines either way. A skipped line is a message the scenario
+# received and chose not to handle: one a callback scenario declined in read_ok, or one a coroutine never took,
+# since its reader kept only the newest message. The RouteChat loggers make one "chat <n>" line instead, the replies
 # of all of them together. Both servers answer each note with the notes already left at its location, taking those
 # and storing the new note at once, so each pair of notes at one location makes exactly one reply. What one chat
 # receives depends on how the chats interleave; their total does not.
@@ -90,18 +92,22 @@ awk -F '\\]\\[' -v chat="$chat_loggers" '
   NF > 2 {
     logger = $2
     if (logger ~ chat) chats[logger] = 1
-    if ($0 ~ /(read_ok|skipped)  \|/) received[logger]++
+    seen[logger] = 1
+    if ($0 ~ /read_ok  \|/) read_ok[logger]++
+    else if ($0 ~ /skipped  \|/) skipped[logger]++
     else if ($0 ~ /RESPONSE \|/) responses[logger]++
+  }
+  function received(l) {
+    return ((l in read_ok) ? read_ok[l] : responses[l]) + skipped[l]
   }
   END {
     n = 0
     replies = 0
     for (l in chats) {
       n++
-      replies += (l in received) ? received[l] : responses[l]
+      replies += received(l)
     }
-    for (l in received) if (!(l in chats)) print l, received[l]
-    for (l in responses) if (!(l in received) && !(l in chats)) print l, responses[l]
+    for (l in seen) if (!(l in chats) && received(l) > 0) print l, received(l)
     if (n > 0) print "chat", replies
   }' "$log" | LC_ALL=C sort > "$work/digest"
 [ -s "$work/digest" ] || fail "no scenario received anything"

@@ -1,8 +1,7 @@
 # Client coroutines: design draft
 
 > [!NOTE]
-> This is a design draft, built step by step. Steps 1 to 3 of the [suggested order](#suggested-order) exist, step 4
-> is under way, and
+> This is a design draft, built step by step. Steps 1 to 4 of the [suggested order](#suggested-order) exist, and
 > [reactor_coro.md](/applications/reactor/reactor_coro.md) is their reference. Once the level is built and its claims
 > are proven by tests and runs, this draft's reasoning moves into [architecture.md](/docs/architecture.md), and this
 > file goes away.
@@ -378,14 +377,24 @@ Every non-trivial claim needs a test or a demonstrable run:
    time names the EventLoop adapter, and only that.
    [testing.md](/docs/testing.md#reader-coverage) lists what the tests prove.
 4. The buffered readers: their three variants, then `trip_recorder_coro`, `live_vehicle_position_coro` and
-   `offline_map_download_coro`. In progress. The unbounded buffer is done, with `list_features_push_continuous_coro`
+   `offline_map_download_coro`. Done. The unbounded buffer came first, with `list_features_push_continuous_coro`
    and `trip_recorder_coro`: `coro::Reader` became a class template with one specialization per `Buffer`, chosen by
-   `BufferOf()` the reactor, and its primary template refuses the other combinations with a `static_assert`. The
-   latest-only and bounded buffers are to come as two more specializations, and two more lines in `BufferFor()`.
+   `BufferOf()` the reactor, and its primary template refuses the other combinations with a `static_assert`.
    Awaited before the end, its `Finish()` drops the messages queued, and those still to come, and gives `CANCELLED`
    when it dropped one, even after the server's own OK: the coroutine did not read everything the server sent. The
    reader exposes `Queued()`, the backlog, since `trip_recorder_coro` cannot measure it on the gRPC thread as its
    callback twin does. [testing.md](/docs/testing.md#unbounded-buffer-coverage) lists what the tests prove.
+   The latest-only and bounded buffers followed as two more specializations, with the same guarded design and the
+   same early `Finish()` rule. The latest-only reader copies each lent message into a `LatestSlot`, under its own
+   lock, and keeps `std::optional<ResponseT>` as what `Read()` gives: `Overwritten()`, a second accessor, says how
+   many messages were overwritten since the previous one given, so `live_vehicle_position_coro` logs a `skipped`
+   line for each, and counts every fix, as its callback twin does from the gRPC thread. The smoke matrix's digest
+   counts those lines for a coroutine twin too. The bounded reader takes its capacity as a constructor argument, and
+   takes the `kPerMessage` hold decision itself, from its queue, so no scenario code runs in `read_ok`; the `Read()`
+   that takes the queue below the capacity releases the hold, and an early `Finish()` releases it through
+   `CancelAndRelease()`, the case most likely to hang, which its tests provoke.
+   [testing.md](/docs/testing.md#latest-only-buffer-coverage) and
+   [testing.md](/docs/testing.md#bounded-buffer-coverage) list what the tests prove.
 5. The writers: their two variants, then `live_route_recording_coro` and `gpx_track_upload_coro`.
 6. The bidirectional join: `route_chat_push_continuous_coro`, then `convoy_chat_coro`.
 7. Teardown and cancellation tests.

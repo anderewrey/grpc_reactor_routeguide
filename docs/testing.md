@@ -149,7 +149,10 @@ a non-zero exit status, a sanitizer report from either process, or a failed RPC 
 the client with `--point_delay_ms=5`, so the sync and callback clients' RecordRoute waits 5 ms between points rather
 than gRPC's example's random 0.5 to 1.5 s. It then
 writes the client's digest: one line per logger, with the number of messages the scenario received, counted from its
-`read_ok` and `skipped` lines when it logs any, else from its `RESPONSE` lines. The RouteChat loggers make one `chat`
+`read_ok` lines when it logs any, else from its `RESPONSE` lines, plus its `skipped` lines either way. A `skipped`
+line is a message received and not handled: declined in `read_ok` by a callback scenario, or never taken by a
+coroutine whose latest-only reader overwrote it, so a coroutine twin, which logs no `read_ok` line, still counts
+every message its parent counts. The RouteChat loggers make one `chat`
 line instead, the replies of all of them together. Both servers answer each note with the notes already left at its
 location, by any RPC, taking those notes and storing the new one at once, so each pair of notes at one location makes
 exactly one reply. What one chat receives depends on how the chats interleave; their total does not.
