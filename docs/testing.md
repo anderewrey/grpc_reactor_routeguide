@@ -116,8 +116,12 @@ re-armed hand-over inside it is tested on its own in coro_task_test.cpp. Both ar
 [reader coverage](#reader-coverage).
 
 [reactor_coro_unbounded_reader_test.cpp][coro-unbounded-reader-test] tests the reader with an unbounded buffer, the
-same way, as [unbounded buffer coverage](#unbounded-buffer-coverage) describes. Both reader tests share their service,
-their counting executor and their fixture, in [coro_reader_test_support.h][coro-reader-support].
+same way, as [unbounded buffer coverage](#unbounded-buffer-coverage) describes, and so do
+[reactor_coro_latest_reader_test.cpp][coro-latest-reader-test] for the latest-only buffer and
+[reactor_coro_bounded_reader_test.cpp][coro-bounded-reader-test] for the bounded one, as
+[latest-only buffer coverage](#latest-only-buffer-coverage) and [bounded buffer coverage](#bounded-buffer-coverage)
+describe. Every reader test shares its service, its counting executor and its fixture, in
+[coro_reader_test_support.h][coro-reader-support].
 
 ### Callback application smoke test
 
@@ -728,6 +732,91 @@ Two more mutants survived, and were dropped:
   without a buffer, whose mutant [reader coverage](#reader-coverage) caught under ASan in CI. Locally the freed
   reactor is reached inside system gRPC only, which AddressSanitizer does not instrument, so both frame tests pass.
 
+### Latest-only buffer coverage
+
+[reactor_coro_latest_reader_test.cpp][coro-latest-reader-test] runs `ListFeatures` through `coro::Reader` over a
+`kPull`, `kContinuous` reactor, which gives it the latest-only buffer, against the same service as the other readers.
+Several tests use a test reactor that holds its second message back until the coroutine has taken the first, so which
+message the first `Read()` gives does not depend on timing, then counts the messages that reached the slot, and says
+when its `OnDone()` begins.
+
+| Test | Checks |
+| ------ | --------- |
+| `ListFeatures_SlowCoroutine_TakesTheNewest_AndCountsTheOverwritten` | 2000 messages: taken + overwritten = sent |
+| `ListFeatures_OneMessage_NoneOverwritten` | A message taken before the next is not counted |
+| `ListFeatures_EmptyStream_FirstReadGivesNothing` | An empty stream ends at the first `Read()` |
+| `ListFeatures_StreamEndsWhileTheCoroutineBlocks_LastMessageIsStillGiven` | The last message outlives the stream |
+| `ListFeatures_ServerErrorMidStream_FinishGivesTheError` | An error is a status, after the last message |
+| `ListFeatures_WaitingRead_ResumesOnTheNextMessage` | A message wakes a waiting `Read()`, the stream still open |
+| `ListFeatures_WaitingRead_ResumesWithNothingAtTheEndOfTheStream` | The end of the stream wakes it too |
+| `ListFeatures_FinishWithAFullSlot_DropsItAndGivesCancelled` | The cancel ends a stream held open, `kDroppedMessage` |
+| `ListFeatures_FinishWithAFullSlotOfAFinishedStream_GivesCancelled` | `CANCELLED`, though the server's OK had arrived |
+| `ListFeatures_FinishWithAnEmptySlotOfAFinishedStream_GivesOk` | Nothing dropped: the server's own OK |
+| `ListFeatures_FrameDestroyedWithAFullSlot_CancelsAndWaitsForOnDone` | Frees nothing under gRPC, posts nothing |
+| `ListFeatures_FrameDestroyedWhileReadWaits_CancelsAndWaitsForOnDone` | The same, with a `Read()` waiting |
+
+Every coroutine records its thread after each `co_await`, and every test that runs one to its end checks that each
+was the loop's. The 2000-message test pauses a millisecond after each message, so the stream overwrites most of them:
+it checks that every message is either taken or overwritten, that the last one taken is the stream's last, and that
+each one taken is the one after those `Overwritten()` reported before it. The last-message test blocks the loop
+thread after the first message until `OnDone()` has begun: the other two then reached the slot while no code of the
+coroutine ran, and `Read()` gives the third, with one overwritten, though the stream has ended.
+
+Four mutants of the latest-only `coro::Reader` were run locally against this suite, each on a pristine copy of
+`reactor_coro.h`:
+
+| Mutant | Caught by |
+| ------ | --------- |
+| `Overwritten()` counted from the start, not since the last message given | `SlowCoroutine_TakesTheNewest` |
+| The end of the stream honoured before the slot is taken | `StreamEndsWhileTheCoroutineBlocks`, `SlowCoroutine` |
+| An early `Finish()` not marking the slot's message dropped | Both `FinishWithAFullSlot` tests |
+| The read callback putting an empty message, not the lent one's copy | Every test that reads a message |
+
+### Bounded buffer coverage
+
+[reactor_coro_bounded_reader_test.cpp][coro-bounded-reader-test] runs `ListFeatures` through `coro::Reader` over a
+`kPush`, `kPerMessage` reactor, which gives it the bounded buffer, against the same service. A test reactor counts the
+messages that reached the reader, and can hold its second message back before the reactor hands it over.
+
+| Test | Checks |
+| ------ | --------- |
+| `ListFeatures_ReadsEveryMessageInOrder_NeverMoreThanTheCapacityQueued` | 2000 messages in order, at most 3 queued |
+| `ListFeatures_EmptyStream_FirstReadGivesNothing` | An empty stream ends at the first `Read()` |
+| `ListFeatures_SlowCoroutine_StreamPausesAtTheCapacity_AndResumesOnRead` | Held at 2: nothing more arrives, then all |
+| `ListFeatures_CapacityOne_WokenReadReleasesTheHold` | A `Read()` woken from an empty queue resumes the stream |
+| `ListFeatures_ErrorWhileHeld_DrainsTheQueueThenFinishGivesTheError` | The end of a held stream comes after its queue |
+| `ListFeatures_FinishWhileHeld_GivesCancelled_WithoutHanging` | An early `Finish()` releases the hold, `CANCELLED` |
+| `ListFeatures_FinishWhileHeldAtCapacityOneOnAnOpenStream_GivesCancelled` | The same at 1, the server holding too |
+| `ListFeatures_MessageInFlightAtAnEarlyFinish_IsDroppedAndGivesCancelled` | A late message is dropped, holds nothing |
+| `ListFeatures_FrameDestroyedWithTheStreamHeld_CancelsAndWaitsForOnDone` | Releases the hold, frees nothing under gRPC |
+| `ListFeatures_FrameDestroyedWhileReadWaits_CancelsAndWaitsForOnDone` | The same, with a `Read()` waiting |
+
+Every coroutine records its thread after each `co_await`, and every test that runs one to its end checks that each
+was the loop's. The pause test blocks the loop thread after the first message until two are queued, then 200 ms more,
+long enough for a stream that is not held to send the rest: still two are queued, and three have reached the reader.
+That window is the one fixed delay of the suite, and only an absence is checked after it. The early `Finish()` tests,
+the case the design plan flagged as the likeliest to hang, check that `Finish()` resumes in well under the five seconds
+`DestroyAfterOnDone()` waits: a hold left in place keeps `OnDone()` from coming at all.
+
+Four mutants of the bounded `coro::Reader` were run locally against this suite, each on a pristine copy of
+`reactor_coro.h`:
+
+| Mutant | Caught by |
+| ------ | --------- |
+| The read callback never holding the stream | `ReadsEveryMessageInOrder`, and `StreamPausesAtTheCapacity`, aborting |
+| A `Read()` woken from an empty queue not releasing the hold | `CapacityOne_WokenReadReleasesTheHold`, stalled |
+| An early `Finish()` cancelling without releasing the hold | Both `FinishWhileHeld` tests, stalled until timeout |
+| A message arriving after an early `Finish()` queued, not dropped | `MessageInFlightAtAnEarlyFinish` |
+
+Under the first, the pause test's coroutine waits for a full queue that never comes, longer than the test waits for
+it, so the test fails, then its frame is destroyed while the coroutine still runs, which aborts the run: a failure
+mode of a mutant only, which the unbounded reader's tests share. The last three stalls are the hangs the design plan
+expected; each test's ten-second wait turns them into failures,
+and the frame's destructor, through `CancelAndWait()`, then releases the hold, so even the mutant run ends cleanly.
+
+All twenty-two tests held in 160 runs each of a Debug build, eight processes at once, and 40 under AddressSanitizer and
+UndefinedBehaviorSanitizer, locally, with system gRPC.
+
 ### Naming convention
 
 Test names have three underscore-separated segments: `RpcMethod_Scenario_Result`. The first and
@@ -977,6 +1066,8 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [coro-reader-test]: /applications/reactor/tests/reactor_coro_reader_test.cpp
 [coro-unbounded-reader-test]: /applications/reactor/tests/reactor_coro_unbounded_reader_test.cpp
 [coro-reader-support]: /applications/reactor/tests/coro_reader_test_support.h
+[coro-latest-reader-test]: /applications/reactor/tests/reactor_coro_latest_reader_test.cpp
+[coro-bounded-reader-test]: /applications/reactor/tests/reactor_coro_bounded_reader_test.cpp
 [reactor-coro]: /applications/reactor/reactor_coro.h
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp
 [callback-smoke-test]: /applications/callback/tests/callback_smoke_test.sh

@@ -54,11 +54,11 @@ using UnboundedReader = Reader<UnboundedReactor>;
 static_assert(BufferFor(Delivery::kPull, ReadPacing::kTurnByTurn) == Buffer::kNone);
 static_assert(BufferFor(Delivery::kPush, ReadPacing::kTurnByTurn) == Buffer::kNone);
 static_assert(BufferFor(Delivery::kPush, ReadPacing::kContinuous) == Buffer::kUnbounded);
-static_assert(!BufferFor(Delivery::kPull, ReadPacing::kContinuous).has_value());
+static_assert(BufferFor(Delivery::kPull, ReadPacing::kContinuous) == Buffer::kLatest);
+static_assert(BufferFor(Delivery::kPush, ReadPacing::kPerMessage) == Buffer::kBounded);
 static_assert(!BufferFor(Delivery::kPull, ReadPacing::kPerMessage).has_value());
-static_assert(!BufferFor(Delivery::kPush, ReadPacing::kPerMessage).has_value());
 static_assert(BufferOf(static_cast<UnboundedReactor*>(nullptr)) == Buffer::kUnbounded);
-static_assert(!BufferOf(static_cast<ListFeaturesReactor<Delivery::kPull, ReadPacing::kContinuous>*>(nullptr)));
+static_assert(!BufferOf(static_cast<ListFeaturesReactor<Delivery::kPull, ReadPacing::kPerMessage>*>(nullptr)));
 static_assert(!BufferOf(static_cast<routeguide::Feature*>(nullptr)));
 // What Read() gives, as for the reader without a buffer.
 static_assert(std::is_same_v<UnboundedReader::MessageT, std::optional<routeguide::Feature>>);
