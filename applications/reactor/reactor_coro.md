@@ -230,7 +230,8 @@ Non-copyable and non-movable, since the reactor's callbacks refer to it. A `Read
 nothing at once. To stop early, await `Finish()` without reading on: while the reactor holds a message, or a read is
 armed, the RPC cannot end, so `Finish()` ends it with the reactor's `CancelAndRelease()`. It cancels the RPC, and
 releases the message held, and any message a read already in flight delivers, without arming a read. The status is
-then `CANCELLED`, unless the RPC had already ended.
+then `CANCELLED`, unless the coroutine had read every message and the server's own status had already arrived. Then
+`Finish()` gives that status, such as OK.
 
 Every message is owned by the coroutine, as a `std::optional<ResponseT>` under both deliveries. `Delivery` decides how
 it becomes owned, and when the next one is read:

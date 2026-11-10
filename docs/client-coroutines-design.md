@@ -355,7 +355,8 @@ Every non-trivial claim needs a test or a demonstrable run:
    `coro::Reader` in `reactor_coro.h`. Its `Read()` gives a `std::optional<ResponseT>` under both deliveries, empty
    at the end of the stream, and its `Finish()` gives the `grpc::Status`. Awaited before the end, `Finish()` ends the
    RPC first, since a held message or an armed read keeps it open: it cancels it and releases what is held, through
-   the reactor's `CancelAndRelease()`, and gives `CANCELLED` unless the RPC had already ended.
+   the reactor's `CancelAndRelease()`, and gives `CANCELLED`, or the server's own status when every message was read
+   and that status had already arrived.
    `ResumeHandover` became re-armable rather than one per read: whatever ends a read on a gRPC thread must find the
    hand-over already in place, so the reader would keep one per read as a member anyway, and one re-armed with
    `Rearm()`, which asserts that the last read has ended, says the same with less. It is re-armed before the call that

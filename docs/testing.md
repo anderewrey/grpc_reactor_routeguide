@@ -571,6 +571,8 @@ client cancels it, so a coroutine waiting in `Read()` is known to wait.
 | `ListFeatures_PushFinishMidStream_EndsTheRpcCancelled` | The same under `kPush`, releasing the message given |
 | `ListFeatures_PullFinishAfterTheLastMessage_EndsTheRpcCancelled` | The same once every message is given |
 | `ListFeatures_PushFinishAfterTheLastMessage_EndsTheRpcCancelled` | The same under `kPush` |
+| `ListFeatures_PullFinishAfterTheLastMessageOfAFinishedStream_GivesOk` | The server's status, once every message is read |
+| `ListFeatures_PushFinishAfterTheLastMessageOfAFinishedStream_GivesOk` | The same under `kPush` |
 
 The two read-ahead tests tell the deliveries apart. The coroutine reads one message, pauses the loop thread for 200
 milliseconds, cancels, then reads what is left. Under `kPull`, the second message arrived during the pause, since
@@ -588,9 +590,13 @@ over separately. A pause of the loop thread before `Finish()` lets `OnDone()` ru
 `OnDone()` sleeps 300 milliseconds before it runs makes `Finish()` come first. Should the timing not hold, both orders
 still give the status, so these tests can lose their power, never fail on correct code.
 
-The four early `Finish()` tests stop reading before the end, on a stream the server holds open after three messages,
-so the cancel `Finish()` sends is the only way it can end. Before `Finish()` ended the RPC itself, each one tripped
-its assert in a debug build, and waited forever with asserts compiled out.
+The first four early `Finish()` tests stop reading before the end, on a stream the server holds open after three
+messages, so the cancel `Finish()` sends is the only way it can end. Before `Finish()` ended the RPC itself, each one
+tripped its assert in a debug build, and waited forever with asserts compiled out. The last two read every message of
+a stream the server finishes OK, and pause 200 milliseconds before `Finish()`, so the server's status has arrived:
+the cancel then changes nothing, and `Finish()` gives OK. Stopping after one message of that finished stream gives
+`CANCELLED` instead, since the client has not received the status behind the unread messages yet. Both held in 100
+local runs each, and the OK tests in 50 more with every core busy.
 
 Whether a `Read()` suspends depends on whether its read ended first, which a test can only arrange by waiting on
 timing. So the re-armed hand-over is tested directly in [coro_task_test.cpp][coro-task-test]:

@@ -542,28 +542,42 @@ TEST_F(ReactorCoroReaderOrderTest, ListFeatures_PushFinishBeforeOnDone_FinishWai
   EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::NOT_FOUND);
 }
 
-/// Reads `reads` messages, then awaits Finish() without reading to the end of the stream.
+/// Reads `reads` messages, then awaits Finish() without reading to the end of the stream, after pausing the loop
+/// thread when `pause` is set, so that a server which finishes on its own has done so by then.
 template <Delivery kDelivery>
-Task<> ReadSomeThenFinish(Executor* executor, routeguide::RouteGuide::Stub* stub, int reads, Seen* seen,
+Task<> ReadSomeThenFinish(Executor* executor, routeguide::RouteGuide::Stub* stub, int reads, bool pause, Seen* seen,
                           std::promise<void>* done) {
   ListFeaturesReader<kDelivery> reader{*executor, *stub, routeguide::Rectangle{}};
   for (int i = 0; i < reads; ++i) {
     if (auto feature = co_await reader.Read()) seen->names.push_back(feature->name());
   }
+  if (pause) std::this_thread::sleep_for(std::chrono::milliseconds(200));
   seen->status = co_await reader.Finish();
   done->set_value();
 }
 
-/// A Finish() awaited before Read() has given nothing ends the RPC: the stream is held open by the server, so it
-/// can only end by the cancel Finish() sends.
+/// A Finish() awaited before Read() has given nothing ends the RPC.
 class ReactorCoroReaderEarlyFinishTest : public ReactorCoroReaderTest {
  protected:
+  /// On a stream the server holds open after three messages, which only the cancel Finish() sends can end.
   template <Delivery kDelivery>
   Seen FinishAfter(int reads) {
     test_service_.HoldAfter(3);
+    return Run<kDelivery>(reads, false);
+  }
+  /// On a stream the server finishes OK after three messages, and has finished by the time Finish() is awaited.
+  template <Delivery kDelivery>
+  Seen FinishOnAFinishedStreamAfter(int reads) {
+    test_service_.Send(3);
+    return Run<kDelivery>(reads, true);
+  }
+
+ private:
+  template <Delivery kDelivery>
+  Seen Run(int reads, bool pause) {
     Seen seen;
     RunToEnd([&](std::promise<void>* done) {
-      return ReadSomeThenFinish<kDelivery>(&executor_, stub_.get(), reads, &seen, done);
+      return ReadSomeThenFinish<kDelivery>(&executor_, stub_.get(), reads, pause, &seen, done);
     });
     return seen;
   }
@@ -603,5 +617,21 @@ TEST_F(ReactorCoroReaderEarlyFinishTest, ListFeatures_PushFinishAfterTheLastMess
 
   EXPECT_EQ(seen.names, ThreeNames());
   EXPECT_EQ(seen.status.error_code(), grpc::StatusCode::CANCELLED);
+}
+/// @test Under kPull, Finish() awaited once every message is read, on a stream the server has finished, gives the
+/// server's OK rather than CANCELLED: the status had arrived before the cancel.
+TEST_F(ReactorCoroReaderEarlyFinishTest, ListFeatures_PullFinishAfterTheLastMessageOfAFinishedStream_GivesOk) {
+  const Seen seen = FinishOnAFinishedStreamAfter<Delivery::kPull>(3);
+
+  EXPECT_EQ(seen.names, ThreeNames());
+  EXPECT_TRUE(seen.status.ok());
+}
+
+/// @test The same under kPush, with the last message's read never armed.
+TEST_F(ReactorCoroReaderEarlyFinishTest, ListFeatures_PushFinishAfterTheLastMessageOfAFinishedStream_GivesOk) {
+  const Seen seen = FinishOnAFinishedStreamAfter<Delivery::kPush>(3);
+
+  EXPECT_EQ(seen.names, ThreeNames());
+  EXPECT_TRUE(seen.status.ok());
 }
 }  // namespace

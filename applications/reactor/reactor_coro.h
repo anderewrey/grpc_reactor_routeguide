@@ -181,7 +181,7 @@ class Unary {
 /// A server-streaming RPC a coroutine reads one message at a time: the request is sent on construction,
 /// `co_await Read()` resumes the coroutine on the application thread with the next message, owned, or with
 /// nothing once the stream has ended, and `co_await Finish()` then gives the RPC's status. A coroutine that
-/// stops reading before the end awaits Finish() all the same: it cancels the RPC, and gives CANCELLED.
+/// stops reading before the end awaits Finish() all the same: it cancels the RPC, and mostly gives CANCELLED.
 ///
 ///     coro::Reader<routeguide::ListFeatures::ClientReactor<Delivery::kPush, ReadPacing::kTurnByTurn>> reader{
 ///         executor, stub, rect};
@@ -282,7 +282,8 @@ class Reader {
 
   /// Awaited exactly once: resumes on the application thread once the RPC has ended. Awaited before Read()
   /// has given nothing, it ends the RPC first: it cancels it, and releases the message the reactor holds,
-  /// which would otherwise keep it open, so the status is CANCELLED unless the RPC had already ended.
+  /// which would otherwise keep it open. The status is then CANCELLED, unless the coroutine had read every
+  /// message and the server's own status had already arrived, which it then gives.
   /// @return an awaitable whose co_await gives the RPC's status
   [[nodiscard]] auto Finish() noexcept {
     struct Awaiter {
