@@ -190,7 +190,8 @@ Task<> ReadOneThenFinish(Executor* executor, routeguide::RouteGuide::Stub* stub,
   if (auto first = co_await reader.Read()) seen->names.push_back(first->name());
   seen->Resumed();
   LatestHookedReactor::ReleaseSecond();
-  EXPECT_TRUE(arrived == kUntilOnDone ? LatestHookedReactor::WaitForOnDone() : LatestHookedReactor::WaitForArrived(arrived));
+  EXPECT_TRUE(arrived == kUntilOnDone ? LatestHookedReactor::WaitForOnDone()
+                                      : LatestHookedReactor::WaitForArrived(arrived));
   seen->status = co_await reader.Finish();
   seen->Resumed();
   done->set_value();
