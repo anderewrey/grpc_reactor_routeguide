@@ -17,6 +17,7 @@
 #include "applications/reactor/reactor_eventloop.h"
 #include "applications/reactor/variants/get_feature_pull_coro.h"
 #include "applications/reactor/variants/list_features_pull_turn_by_turn_coro.h"
+#include "applications/reactor/variants/list_features_push_continuous_coro.h"
 #include "applications/reactor/variants/list_features_push_turn_by_turn_coro.h"
 #include "applications/reactor/demo_support.h"
 #include "rg_service/rg_db.h"
@@ -45,6 +46,9 @@
  *   coro::Reader: each Read() swaps the next message out of the reactor, which arms the following read at once.
  * - rg_demo::push::turn_by_turn::coro::ListFeatures, ListFeatures under kPush and kTurnByTurn through
  *   coro::Reader: each Read() takes the message handed over, and only the next Read() arms the following read.
+ * - rg_demo::push::continuous::coro::ListFeatures, ListFeatures under kPush and kContinuous through coro::Reader
+ *   with its unbounded buffer: the reactor reads on at its own pace, queueing each message in the reader, and each
+ *   Read() takes the oldest one.
  *
  * Reading the output: each scenario logs "rpc started" when its coroutine has sent the request, then, once
  * resumed, its RESPONSE lines and "rpc ended". The thread id in the log pattern shows every line on the
@@ -77,6 +81,7 @@ int main(int argc, char** argv) {
   rg_demo::pull::coro::GetFeature get_feature_pull{executor, *stub};
   rg_demo::pull::turn_by_turn::coro::ListFeatures list_features_pull_turn_by_turn{executor, *stub};
   rg_demo::push::turn_by_turn::coro::ListFeatures list_features_push_turn_by_turn{executor, *stub};
+  rg_demo::push::continuous::coro::ListFeatures list_features_push_continuous{executor, *stub};
 
   // The same input as route_guide_active_reactor_client, so each run compares with its parent's.
   const auto rect = rg_utils::MakeRectangle(400000000, -750000000, 420000000, -730000000);
@@ -88,6 +93,8 @@ int main(int argc, char** argv) {
   list_features_pull_turn_by_turn.Start(rect);
   spdlog::info("-------------- ListFeatures kPush kTurnByTurn, coroutine --------------");
   list_features_push_turn_by_turn.Start(rect);
+  spdlog::info("-------------- ListFeatures kPush kContinuous, coroutine --------------");
+  list_features_push_continuous.Start(rect);
   spdlog::info("-------------- GetFeature kPull, coroutine --------------");
   get_feature_pull.Start(point);
   rg_demo::RunUntilDone();  // Scheduler component: processes queued events on this thread until every scenario ends

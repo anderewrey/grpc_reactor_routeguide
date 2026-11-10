@@ -15,6 +15,7 @@
 #include <memory>
 
 #include "applications/reactor/reactor_eventloop.h"
+#include "applications/reactor/usecases/trip_recorder_coro.h"
 #include "applications/reactor/usecases/turn_by_turn_guidance_coro.h"
 #include "applications/reactor/usecases/whats_here_coro.h"
 #include "applications/reactor/demo_support.h"
@@ -36,11 +37,15 @@
  * - rg_demo::usecase::coro::TurnByTurnGuidance, ListFeatures under kPush and kTurnByTurn through coro::Reader: a
  *   guidance screen shows one stop at a time, and the coroutine reads the next one only once it has awaited the
  *   driver's confirmation.
+ * - rg_demo::usecase::coro::TripRecorder, ListFeatures under kPush and kContinuous through coro::Reader with its
+ *   unbounded buffer: a trip recorder stores every position report, while the feed runs ahead and the reports
+ *   not stored yet queue in the reader.
  *
  * Reading the output: WhatsHere logs the answer, then the card, as its callback twin does. TurnByTurnGuidance
  * logs a "resumed  | #k driver confirmed" line once the driver confirms stop #k, and RESPONSE #k+1 never comes
  * before it, then "stream ended after N messages", the number of stops its callback twin shows. Every line is
- * on the application thread.
+ * on the application thread. TripRecorder logs the backlog after each report it stores, then
+ * "totals" with every report stored and the peak backlog: its callback twin counts the same reports.
  *
  * See docs/client-coroutines-design.md for the design of the coroutine level, and usecases/README.md for the
  * situation behind each use case.
@@ -64,6 +69,7 @@ int main(int argc, char** argv) {
   // The use case roster. The stub and the executor above must outlive every one of them.
   rg_demo::usecase::coro::WhatsHere whats_here{executor, *stub};
   rg_demo::usecase::coro::TurnByTurnGuidance turn_by_turn_guidance{executor, *stub};
+  rg_demo::usecase::coro::TripRecorder trip_recorder{executor, *stub};
 
   // A known place, Patriots Path, as route_guide_reactor_usecases asks about.
   const auto patriots_path = rg_utils::MakePoint(407838351, -746143763);
@@ -74,6 +80,8 @@ int main(int argc, char** argv) {
   whats_here.Start(patriots_path);
   spdlog::info("-------------- Use case: turn-by-turn guidance (ListFeatures kPush kTurnByTurn, coroutine) -------");
   turn_by_turn_guidance.Start(rect);
+  spdlog::info("-------------- Use case: trip recorder (ListFeatures kPush kContinuous, coroutine) --------------");
+  trip_recorder.Start(rect);
   rg_demo::RunUntilDone();  // Scheduler component: processes queued events on this thread until every scenario ends
   spdlog::info("-------------- LEAVING APPLICATION --------------");
   return 0;

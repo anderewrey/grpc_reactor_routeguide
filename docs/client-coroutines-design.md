@@ -378,9 +378,14 @@ Every non-trivial claim needs a test or a demonstrable run:
    time names the EventLoop adapter, and only that.
    [testing.md](/docs/testing.md#reader-coverage) lists what the tests prove.
 4. The buffered readers: their three variants, then `trip_recorder_coro`, `live_vehicle_position_coro` and
-   `offline_map_download_coro`. In progress: the unbounded buffer is done. `coro::Reader` became a class
-   template with one specialization per `Buffer`, chosen by `BufferOf()` the reactor, and its primary template
-   refuses the other combinations with a `static_assert`.
+   `offline_map_download_coro`. In progress. The unbounded buffer is done, with `list_features_push_continuous_coro`
+   and `trip_recorder_coro`: `coro::Reader` became a class template with one specialization per `Buffer`, chosen by
+   `BufferOf()` the reactor, and its primary template refuses the other combinations with a `static_assert`. The
+   latest-only and bounded buffers are to come as two more specializations, and two more lines in `BufferFor()`.
+   Awaited before the end, its `Finish()` drops the messages queued, and those still to come, and gives `CANCELLED`
+   when it dropped one, even after the server's own OK: the coroutine did not read everything the server sent. The
+   reader exposes `Queued()`, the backlog, since `trip_recorder_coro` cannot measure it on the gRPC thread as its
+   callback twin does. [testing.md](/docs/testing.md#unbounded-buffer-coverage) lists what the tests prove.
 5. The writers: their two variants, then `live_route_recording_coro` and `gpx_track_upload_coro`.
 6. The bidirectional join: `route_chat_push_continuous_coro`, then `convoy_chat_coro`.
 7. Teardown and cancellation tests.

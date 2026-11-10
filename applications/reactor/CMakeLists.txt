@@ -121,6 +121,8 @@ add_executable(route_guide_active_reactor_client_coro
     variants/get_feature_pull_coro.cpp
     variants/list_features_pull_turn_by_turn_coro.h
     variants/list_features_pull_turn_by_turn_coro.cpp
+    variants/list_features_push_continuous_coro.h
+    variants/list_features_push_continuous_coro.cpp
     variants/list_features_push_turn_by_turn_coro.h
     variants/list_features_push_turn_by_turn_coro.cpp
 )
@@ -147,6 +149,8 @@ add_executable(route_guide_reactor_usecases_coro
     reactor_eventloop.h
     demo_support.h
     demo_support.cpp
+    usecases/trip_recorder_coro.h
+    usecases/trip_recorder_coro.cpp
     usecases/turn_by_turn_guidance_coro.h
     usecases/turn_by_turn_guidance_coro.cpp
     usecases/whats_here_coro.h
