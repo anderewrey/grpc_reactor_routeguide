@@ -12,6 +12,7 @@
 
 #include <chrono>
 #include <coroutine>
+#include <cstddef>
 #include <cstdint>
 #include <future>
 #include <memory>
@@ -438,6 +439,42 @@ TEST(CoroHandoverTest, Abandoned_TheEndPostsNothing) {
   EXPECT_TRUE(executor.posted.empty());
 }
 
+/// @test Re-armed after each end, one hand-over serves wait after wait, as for each read of a stream: each
+/// coroutine awaiting first suspends again, and each end posts it once.
+TEST(CoroHandoverTest, Rearmed_EachAwaitSuspends_AndEachEndPostsItOnce) {
+  RecordingExecutor executor;
+  ResumeHandover handover;
+  const std::coroutine_handle<> waiter = std::noop_coroutine();
+
+  for (int wait = 1; wait <= 3; ++wait) {
+    if (wait > 1) handover.Rearm();
+    EXPECT_TRUE(handover.Suspend(waiter));
+    handover.Complete(executor);
+    ASSERT_EQ(executor.posted.size(), static_cast<std::size_t>(wait));
+    EXPECT_EQ(executor.posted.back(), waiter);
+  }
+}
+
+/// @test Re-armed, the hand-over starts afresh whichever came first: an operation that ends before its
+/// coroutine awaits it lets the coroutine go on, and the next one, awaited first, suspends it.
+TEST(CoroHandoverTest, Rearmed_EndedFirstThenAwaitedFirst_EachDecidedOnItsOwn) {
+  RecordingExecutor executor;
+  ResumeHandover handover;
+  const std::coroutine_handle<> waiter = std::noop_coroutine();
+
+  handover.Complete(executor);
+  EXPECT_FALSE(handover.Suspend(waiter));
+  handover.Rearm();
+  handover.Complete(executor);
+  EXPECT_FALSE(handover.Suspend(waiter));
+  EXPECT_TRUE(executor.posted.empty());
+
+  handover.Rearm();
+  EXPECT_TRUE(handover.Suspend(waiter));
+  handover.Complete(executor);
+  EXPECT_EQ(executor.posted.size(), 1U);
+}
+
 // =============================================================================
 // CurrentTask, the task number the logs show
 // =============================================================================
@@ -453,6 +490,9 @@ class HandedOverOperation {
 
   /// Ends the operation, from any thread.
   void End() { handover_.Complete(*executor_); }
+
+  /// Starts the operation again once it ended, on the loop, for a coroutine that awaits it once more.
+  void Rearm() { handover_.Rearm(); }
 
  private:
   Executor* executor_;
@@ -559,6 +599,49 @@ TEST(CoroTaskTest, CurrentTask_TaskSuspendedAgain_LeavesTheLoopUnderNoTask) {
   std::promise<std::size_t> left;
   loop.Post([&] { left.set_value(roots.Size()); });
   EXPECT_EQ(left.get_future().get(), 0U);
+}
+
+Task<> WaitAgainAndAgain(HandedOverOperation* operation, std::vector<std::promise<void>>* resumed,
+                         std::vector<CurrentTask::Id>* seen) {
+  for (std::size_t wait = 0; wait < resumed->size(); ++wait) {
+    if (wait > 0) operation->Rearm();
+    co_await *operation;
+    seen->push_back(CurrentTask::Get());
+    (*resumed)[wait].set_value();
+  }
+}
+
+/// @test A task that awaits one re-armed hand-over again and again runs under its own number after each
+/// resumption, and leaves the loop under no task between two, as a coroutine reading a stream does.
+TEST(CoroTaskTest, CurrentTask_RearmedHandover_RestoresTheTaskAtEachResumption) {
+  continuous_use_test::AppLoop loop;
+  AppLoopExecutor executor(&loop);
+  RootTasks roots;
+  HandedOverOperation operation(&executor);
+  std::vector<std::promise<void>> resumed(3);
+  std::vector<CurrentTask::Id> seen;
+  CurrentTask::Id id = CurrentTask::kNone;
+
+  std::promise<void> spawned;
+  loop.Post([&] {
+    id = roots.Spawn(WaitAgainAndAgain(&operation, &resumed, &seen));
+    spawned.set_value();
+  });
+  spawned.get_future().wait();
+  for (auto& resumption : resumed) {
+    // Ended only once the task re-armed the operation, which it does before it awaits it again.
+    operation.End();
+    ASSERT_EQ(resumption.get_future().wait_for(std::chrono::seconds(10)), std::future_status::ready);
+    std::promise<CurrentTask::Id> between;
+    loop.Post([&] { between.set_value(CurrentTask::Get()); });
+    EXPECT_EQ(between.get_future().get(), CurrentTask::kNone);
+  }
+  std::promise<std::size_t> left;
+  loop.Post([&] { left.set_value(roots.Size()); });
+  EXPECT_EQ(left.get_future().get(), 0U);
+
+  EXPECT_NE(id, CurrentTask::kNone);
+  EXPECT_EQ(seen, (std::vector<CurrentTask::Id>{id, id, id}));
 }
 
 }  // namespace

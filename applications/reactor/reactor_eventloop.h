@@ -10,7 +10,9 @@
 
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <coroutine>
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <thread>
@@ -72,6 +74,9 @@ namespace RpcReactor::coro {
 /// EventConnection, turns the address back into a handle and resumes it. The event queue is FIFO, so a
 /// coroutine's resumptions run in the order they were posted, after every event queued before them.
 ///
+/// After() lets a coroutine wait for a delay, with an EventLoop timer, so a scenario never calls EventLoop
+/// itself, as a callback scenario does to wait.
+///
 /// One per process, created in main() before any coroutine starts, and destroyed after EventLoop::Run()
 /// returns: a second registration of kResumeEvent would resume every handle twice, as EventConnection
 /// above explains.
@@ -100,6 +105,34 @@ class EventLoopExecutor final : public Executor {
 
   /// Queues the handle on the event loop. Callable from any thread.
   void Post(std::coroutine_handle<> handle) override { EventLoop::TriggerEvent(kResumeEvent, handle.address()); }
+
+  /// Waits for a delay: `co_await EventLoopExecutor::After(delay)` suspends the coroutine, and the executor's
+  /// resume handler resumes it once an EventLoop timer of that delay has fired, on the application thread. So
+  /// the process's EventLoopExecutor must exist, and the coroutine must be awaiting it on the application
+  /// thread. The frame must outlive the timer, as for any resumption still to come: destroy it only once the
+  /// event loop no longer runs.
+  /// @param delay how long to wait, in milliseconds
+  /// @return an awaitable whose co_await gives nothing
+  [[nodiscard]] static auto After(std::chrono::milliseconds delay) noexcept {
+    class Awaiter {
+     public:
+      explicit Awaiter(std::chrono::milliseconds delay) noexcept : delay_(delay) {}
+      static bool await_ready() noexcept { return false; }
+      bool await_suspend(std::coroutine_handle<> waiter) {
+        assert(live_ && "After() resumes through the EventLoopExecutor's handler");
+        // Records the task for the logs. Nothing but the timer ends the wait, so this always suspends.
+        if (!handover_.Suspend(waiter)) return false;
+        EventLoop::TriggerEvent(kResumeEvent, static_cast<std::size_t>(delay_.count()), waiter.address());
+        return true;
+      }
+      void await_resume() const noexcept { handover_.Resumed(); }
+
+     private:
+      std::chrono::milliseconds delay_;
+      ResumeHandover handover_;
+    };
+    return Awaiter{delay};
+  }
 
  private:
   void Resume(const EventLoop::Event* event) const noexcept {

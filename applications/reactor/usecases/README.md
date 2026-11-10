@@ -66,6 +66,8 @@ a coroutine changes for the same situation, and against its coroutine variant, w
 cd applications/reactor
 diff usecases/whats_here.cpp usecases/whats_here_coro.cpp                # one coroutine instead of a handler
 diff variants/get_feature_pull_coro.cpp usecases/whats_here_coro.cpp     # fills the card
+diff usecases/turn_by_turn_guidance.cpp usecases/turn_by_turn_guidance_coro.cpp   # awaits the confirmation
+diff variants/list_features_push_turn_by_turn_coro.cpp usecases/turn_by_turn_guidance_coro.cpp  # waits for the driver
 ```
 
 The first two are described in the reference, under

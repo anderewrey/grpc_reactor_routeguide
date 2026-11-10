@@ -11,6 +11,7 @@
 #include <chrono>
 #include <coroutine>
 #include <memory>
+#include <optional>
 #include <type_traits>
 #include <utility>
 
@@ -178,6 +179,190 @@ class Unary {
   ResumeHandover handover_;
   std::unique_ptr<ResponseT> pushed_;  // Delivery::kPush only, set by the done callback
   std::unique_ptr<ReactorT> reactor_;  // declared last, so the callback's targets exist before the RPC starts
+};
+
+/// A server-streaming RPC a coroutine reads one message at a time: the request is sent on construction,
+/// `co_await Read()` resumes the coroutine on the application thread with the next message, owned, or with
+/// nothing once the stream has ended, and `co_await Finish()` then gives the RPC's status.
+///
+///     coro::Reader<routeguide::ListFeatures::ClientReactor<Delivery::kPush, ReadPacing::kTurnByTurn>> reader{
+///         executor, stub, rect};
+///     while (auto feature = co_await reader.Read()) Show(*feature);
+///     const grpc::Status status = co_await reader.Finish();
+///
+/// The reader has no buffer: its reactor runs under ReadPacing::kTurnByTurn, so one message at most is in
+/// flight, and the stream waits for the coroutine. Delivery decides how each message becomes owned, and when
+/// the next one is read:
+///
+/// | Delivery | Read() gives                | How                                   | Next read armed            |
+/// |----------|-----------------------------|---------------------------------------|----------------------------|
+/// | kPull    | std::optional<ResponseT>    | Swapped out of the reactor            | At once, by GetResponse()  |
+/// | kPush    | std::unique_ptr<ResponseT>  | The message the read callback hands   | At the next Read(), only   |
+///
+/// So under kPull the next message can arrive while the coroutine works on this one, and under kPush
+/// nothing is read until the coroutine asks for it.
+///
+/// The reactor lives in the Reader, so in the coroutine's frame. Finish() destroys it on the application
+/// thread once its OnDone() has run. A Reader destroyed before, such as in a frame destroyed while
+/// suspended, cancels the RPC and destroys the reactor once OnDone() has run, or leaks it should OnDone()
+/// never come.
+///
+/// Non-copyable and non-movable: the reactor's callbacks refer to it.
+/// @tparam ReactorT a service-specific reactor, deriving from Client::ActiveReadReactor under
+///         ReadPacing::kTurnByTurn, and constructed from a stub, a context, a request and the read callbacks
+template <class ReactorT>
+class Reader {
+  /// The response, the delivery and the pacing of the generic reading reactor ReactorT derives from.
+  template <class ResponseT_, Client::Delivery kDelivery_, Client::ReadPacing kPacing_>
+  struct Traits_ {
+    using ResponseT = ResponseT_;
+    static constexpr Client::Delivery kDelivery = kDelivery_;
+    static constexpr Client::ReadPacing kPacing = kPacing_;
+  };
+  template <class ResponseT_, Client::Delivery kDelivery_, Client::ReadPacing kPacing_>
+  static Traits_<ResponseT_, kDelivery_, kPacing_> TraitsOf(
+      const Client::ActiveReadReactor<ResponseT_, kDelivery_, kPacing_>*);
+
+  using Traits = decltype(TraitsOf(static_cast<ReactorT*>(nullptr)));
+  using ResponseT = Traits::ResponseT;
+  static constexpr Client::Delivery kDelivery = Traits::kDelivery;
+  static constexpr bool kPull = kDelivery == Client::Delivery::kPull;
+  static_assert(Traits::kPacing == Client::ReadPacing::kTurnByTurn,
+                "a reader without a buffer takes one message at a time: ReadPacing::kTurnByTurn");
+
+ public:
+  /// What Read() gives: a message, owned, or nothing once the stream has ended.
+  using MessageT = std::conditional_t<kPull, std::optional<ResponseT>, std::unique_ptr<ResponseT>>;
+
+  /// Constructs the reactor, which sends the request and arms the first read at once.
+  /// @param executor resumes the awaiting coroutine on the application thread, and must outlive this object
+  /// @param stub the service stub, which must outlive the RPC
+  /// @param request to send, serialized before this constructor returns
+  /// @param context of the RPC, for a deadline or metadata: a fresh one by default
+  template <class StubT, class RequestT>
+  Reader(Executor& executor, StubT& stub, const RequestT& request,
+         std::unique_ptr<grpc::ClientContext> context = std::make_unique<grpc::ClientContext>())
+      : executor_(executor),
+        reactor_(std::make_unique<ReactorT>(stub, std::move(context), request, MakeCallbacks())) {}
+
+  /// Cancels an RPC still in flight, and destroys the reactor once its OnDone() has run. A message the
+  /// reactor still holds is released, without arming a read.
+  ~Reader() {
+    read_.Abandon();
+    done_.Abandon();
+    DestroyAfterOnDone(reactor_, kOnDoneTimeout);
+  }
+
+  Reader(const Reader&) = delete;
+  Reader& operator=(const Reader&) = delete;
+  Reader(Reader&&) = delete;
+  Reader& operator=(Reader&&) = delete;
+
+  /// Sends a best-effort cancel. Callable from the application thread at any time: the stream then ends,
+  /// so a Read() gives nothing, and Finish() returns CANCELLED.
+  void TryCancel() {
+    if (reactor_) reactor_->TryCancel();
+  }
+
+  /// Asks for the next message. Under kPush, this is what arms its read: the read the last message left
+  /// unarmed. Awaited once per message, until it gives nothing; awaited again after, it gives nothing at
+  /// once.
+  /// @return an awaitable whose co_await gives the next message, owned, or nothing once the stream has ended
+  [[nodiscard]] auto Read() {
+    struct Awaiter {
+      Reader& reader;
+      bool await_ready() const noexcept { return reader.ended_; }
+      bool await_suspend(std::coroutine_handle<> waiter) const noexcept { return reader.read_.Suspend(waiter); }
+      MessageT await_resume() const { return reader.TakeRead(); }
+    };
+    assert(reactor_ && "Read() comes before Finish()");
+    if constexpr (!kPull) ArmNextRead();
+    return Awaiter{*this};
+  }
+
+  /// Awaited exactly once, once Read() has given nothing: resumes on the application thread once the RPC
+  /// has ended.
+  /// @return an awaitable whose co_await gives the RPC's status
+  [[nodiscard]] auto Finish() noexcept {
+    struct Awaiter {
+      Reader& reader;
+      static bool await_ready() noexcept { return false; }
+      bool await_suspend(std::coroutine_handle<> waiter) const noexcept { return reader.done_.Suspend(waiter); }
+      grpc::Status await_resume() const { return reader.TakeStatus(); }
+    };
+    assert(reactor_ && "Finish() is awaited exactly once");
+    assert(ended_ && "Finish() follows the Read() that gave nothing: the RPC cannot end while a message is held");
+    return Awaiter{*this};
+  }
+
+ private:
+  using Callbacks = Client::ActiveReadCallbacks<ResponseT, kDelivery, Client::ReadPacing::kTurnByTurn>;
+
+  /// The level's own code, on the gRPC thread: records the message under kPush, then hands the coroutine
+  /// to the executor. Under kPull the message stays in the reactor. A read that fails, at the end of the
+  /// stream or on a cancel, hands the coroutine over with no message, and OnDone() has its own hand-over,
+  /// since it can come before the coroutine has resumed from that last read.
+  Callbacks MakeCallbacks() {
+    Callbacks cbs;
+    if constexpr (kPull) {
+      cbs.read_ok = [this](auto*, const ResponseT&) { read_.Complete(executor_); };
+    } else {
+      cbs.read_ok = [this](auto*, std::unique_ptr<ResponseT> response) {
+        pushed_ = std::move(response);
+        read_.Complete(executor_);
+      };
+    }
+    cbs.read_nok = [this](auto*) { read_.Complete(executor_); };
+    cbs.done = [this](auto*, const grpc::Status&) { done_.Complete(executor_); };
+    return cbs;
+  }
+
+  /// Under kPush, on the application thread: arms the read the last message given left unarmed, if any.
+  /// The hand-over is re-armed first, since the read can end on a gRPC thread before ResumeRead() returns.
+  void ArmNextRead() {
+    if (!held_) return;
+    held_ = false;
+    read_.Rearm();
+    // false once the stream is over, so no read is armed, and none will end
+    if (!reactor_->ResumeRead()) ended_ = true;
+  }
+
+  /// On the application thread, once a read has ended: takes its message, owned, or records the end of the
+  /// stream. Under kPull, taking the message arms the next read, so the hand-over is re-armed first.
+  MessageT TakeRead() {
+    if (ended_) return MessageT{};  // await_ready() said so: no suspension to resume from
+    read_.Resumed();
+    if constexpr (kPull) {
+      read_.Rearm();
+      ResponseT response;
+      if (reactor_->GetResponse(response)) return MessageT{std::move(response)};
+    } else {
+      if (pushed_) {
+        held_ = true;
+        return std::move(pushed_);
+      }
+    }
+    ended_ = true;
+    return MessageT{};
+  }
+
+  /// On the application thread, once the RPC has ended: takes the status out of the reactor, then destroys
+  /// the reactor once its OnDone() has returned.
+  grpc::Status TakeStatus() {
+    done_.Resumed();
+    grpc::Status status = reactor_->Status();
+    // OnDone() may still be returning, on its gRPC thread, from the callback that resumed this coroutine.
+    DestroyAfterOnDone(reactor_, kOnDoneTimeout);
+    return status;
+  }
+
+  Executor& executor_;
+  ResumeHandover read_;  // re-armed for each read
+  ResumeHandover done_;
+  bool ended_ = false;  // the stream has ended: no read is armed, and none will end. Application thread only
+  bool held_ = false;   // Delivery::kPush only: a message was given, and its read is not armed yet
+  std::unique_ptr<ResponseT> pushed_;  // Delivery::kPush only, set by the read callback
+  std::unique_ptr<ReactorT> reactor_;  // declared last, so the callbacks' targets exist before the RPC starts
 };
 
 }  // namespace RpcReactor::coro
