@@ -1,10 +1,10 @@
 # Client coroutines: design draft
 
 > [!NOTE]
-> This is a design draft, built step by step. Steps 1 to 3, 5 and 6 of the [suggested order](#suggested-order) exist, and
-> [reactor_coro.md](/applications/reactor/reactor_coro.md) is their reference. Once the level is built and its claims
-> are proven by tests and runs, this draft's reasoning moves into [architecture.md](/docs/architecture.md), and this
-> file goes away.
+> This is a design draft, built step by step. Steps 1 to 3, and 5 to 7, of the [suggested order](#suggested-order)
+> exist, and [reactor_coro.md](/applications/reactor/reactor_coro.md) is their reference. Once the level is built and
+> its claims are proven by tests and runs, this draft's reasoning moves into [architecture.md](/docs/architecture.md),
+> and this file goes away.
 
 ## Goal
 
@@ -329,16 +329,25 @@ boundary rule keeps at the callback level:
 
 ## How the milestone proves it
 
-Every non-trivial claim needs a test or a demonstrable run:
+Every non-trivial claim needs a test or a demonstrable run. Each is in place, and named here:
 
-- **`Task<T>` resumes, transfers and destroys correctly.** Unit tests of the task type, under ASan and TSan.
-- **Every resumption runs on the application thread.** An assert in the executor's resume handler, and in every
-  coroutine scenario.
+- **`Task<T>` resumes, transfers and destroys correctly.** Unit tests of the task type, under ASan and TSan:
+  `CoroTaskTest.Task_BodyEndsOnAnotherThreadDuringStart_AwaiterResumedOnce`,
+  `CoroTaskTest.Task_MillionSynchronousAwaits_StackDoesNotGrow` and
+  `CoroTaskTest.RootTasks_DestroyedWithSuspendedChain_DestroysEveryFrame` lead
+  [coroutine core coverage](/docs/testing.md#coroutine-core-coverage).
+- **Every resumption runs on the application thread.** An assert in the executor's resume handler, which
+  `EventLoopExecutorTest.Executor_ResumptionsFromOtherThreads_AllRunOnTheApplicationThread` drives from other threads,
+  and in every coroutine scenario. Each awaitable's tests record the thread of each resumption, such as
+  `ReactorCoroBidiTest.RouteChat_EveryNoteSent_EveryReplyReceived`.
 - **Each buffer behaves as its callback parent does.** Tests on the `AppLoop` task queue, against the in-process server
   of `continuous_use_support.h`, one per buffer.
-- **Teardown never frees a reactor under gRPC.** A test that halts the loop with RPCs in flight, under ASan.
-- **Each twin does what its parent does.** Each pair of applications runs against a fresh `route_guide_callback_server`,
-  with the same totals: every fix, report, place, point and note counted as by the parent.
+- **Teardown never frees a reactor under gRPC.** `ReactorCoroHaltTest.EveryAwaitableInFlight_HaltThenDestroy_ReleasesEveryReactorAfterOnDone`
+  halts the loop with a coroutine of every awaitable kind suspended mid-RPC, then destroys them, under ASan, which
+  reports a use after free once the reactors are freed without waiting for `OnDone()`.
+- **Each twin does what its parent does.** `smoke_matrix.compare` runs each pair of applications against fresh
+  servers, with the same totals: every fix, report, place, point and note counted as by the parent, see
+  [smoke matrix](/docs/testing.md#smoke-matrix).
 
 ## Suggested order
 
@@ -406,7 +415,11 @@ Every non-trivial claim needs a test or a demonstrable run:
    line per note it sends is compared with its parent on that count. `route_chat_push_continuous` gained a
    `sent     |` line for it.
    [testing.md](/docs/testing.md#bidirectional-join-coverage) lists what the tests prove.
-7. Teardown and cancellation tests.
+7. Teardown and cancellation tests. Done: each awaitable's tests cancel, await `Finish()` early, and destroy a frame
+   suspended mid-RPC, on a running loop. `reactor_coro_halt_test.cpp` adds the application's own shutdown:
+   `EventLoop::Halt()` with a coroutine of every awaitable kind in flight, then their frames destroyed off the loop,
+   as `main()` does once `EventLoop::Run()` returns. It runs in a process of its own, since EventLoop cannot restart.
+   [testing.md](/docs/testing.md#coroutine-teardown-coverage) lists what it proves.
 
 ## The language standard: C++20
 

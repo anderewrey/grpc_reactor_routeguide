@@ -27,6 +27,7 @@ set(REACTOR_TESTS
     reactor_coro_reader_test
     reactor_coro_writer_test
     reactor_coro_bidi_test
+    reactor_coro_halt_test
 )
 
 foreach(test_name IN LISTS REACTOR_TESTS)
@@ -55,12 +56,17 @@ foreach(test_name IN LISTS REACTOR_TESTS)
     )
 endforeach()
 
-# Only the EventLoop integration test and the EventLoop executor's test need the real EventLoop library
+# Only the EventLoop integration test, the EventLoop executor's test and the halt test need the real EventLoop
+# library
 target_link_libraries(client_reactor_integration_test
     PRIVATE
         EventLoop::EventLoop
 )
 target_link_libraries(eventloop_executor_test
+    PRIVATE
+        EventLoop::EventLoop
+)
+target_link_libraries(reactor_coro_halt_test
     PRIVATE
         EventLoop::EventLoop
 )

@@ -122,6 +122,9 @@ the reactor pulls, the same way. Both are described in [writer coverage](#writer
 written by another, joined by `coro::WhenAll()`, the same way. `WhenAll()` itself is tested on its own in
 coro_task_test.cpp. Both are described in [bidirectional join coverage](#bidirectional-join-coverage).
 
+[reactor_coro_halt_test.cpp][coro-halt-test] halts the real EventLoop with every awaitable kind in flight, then
+destroys their frames, as described in [coroutine teardown coverage](#coroutine-teardown-coverage).
+
 ### Callback application smoke test
 
 [callback_smoke_test.sh][callback-smoke-test] runs the callback example applications themselves,
@@ -817,6 +820,33 @@ survived every test: `LastBranchResumedOutsideTheTask` was added for it. The que
 early `Finish()` drops is freed with the `Bidi` once the frame ends, right after, so dropping it earlier shows in no
 test; it stays for the rule that an early `Finish()` releases what is queued.
 
+### Coroutine teardown coverage
+
+[reactor_coro_halt_test.cpp][coro-halt-test] runs the coroutine level's shutdown against the real EventLoop, in a
+process of its own, since EventLoop cannot restart after `Halt()`. Its service holds every RPC open, answering nothing,
+until the client cancels it.
+
+| Test | Checks |
+| ------ | --------- |
+| `EveryAwaitableInFlight_HaltThenDestroy_ReleasesEveryReactorAfterOnDone` | All cancelled, each freed after `OnDone()` |
+
+One coroutine of each awaitable kind is suspended mid-RPC:
+
+- a `Unary` in `Finish()`;
+- a `Reader` in `Read()`;
+- a `Writer` between writes, its write flow open, in `EventLoopExecutor::After()`;
+- a `Source` in `Finish()`;
+- a `Bidi`, joined, with one flow in `Read()` and the other between writes.
+
+The test then halts the loop, which discards the timers and any resumption still to come. It destroys the root tasks
+on its own thread, as `main()` does once `EventLoop::Run()` has returned. It checks that the destruction took well
+under the 5 seconds after which a reactor would be leaked, that the server saw all five RPCs cancelled, and that no
+coroutine resumed. It held in 5 runs under GCC's AddressSanitizer and UndefinedBehaviorSanitizer.
+
+| Mutant | Caught by |
+| ------ | --------- |
+| `DestroyAfterOnDone()` freeing the reactor after `TryCancel()`, without waiting for `OnDone()` | ASan: use after free |
+
 ### Naming convention
 
 Test names have three underscore-separated segments: `RpcMethod_Scenario_Result`. The first and
@@ -1066,6 +1096,7 @@ ctest --test-dir cmake-build-vcpkg-debug-gcc
 [coro-reader-test]: /applications/reactor/tests/reactor_coro_reader_test.cpp
 [coro-writer-test]: /applications/reactor/tests/reactor_coro_writer_test.cpp
 [coro-bidi-test]: /applications/reactor/tests/reactor_coro_bidi_test.cpp
+[coro-halt-test]: /applications/reactor/tests/reactor_coro_halt_test.cpp
 [reactor-coro]: /applications/reactor/reactor_coro.h
 [integration-test]: /applications/reactor/tests/client_reactor_integration_test.cpp
 [callback-smoke-test]: /applications/callback/tests/callback_smoke_test.sh
