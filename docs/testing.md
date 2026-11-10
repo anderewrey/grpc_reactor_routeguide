@@ -571,8 +571,8 @@ client cancels it, so a coroutine waiting in `Read()` is known to wait.
 The two read-ahead tests tell the deliveries apart. The coroutine reads one message, pauses the loop thread for 200
 milliseconds, cancels, then reads what is left. Under `kPull`, the second message arrived during the pause, since
 taking the first one armed its read, so it is still given after the cancel. Under `kPush`, nothing was read during
-the pause, so the read the next `Read()` arms fails, and gives nothing. The pause is the only timing any reader test
-relies on, and only `kPull`'s outcome depends on it.
+the pause, so the read the next `Read()` arms fails, and gives nothing. Of these two, only `kPull`'s outcome depends
+on the pause.
 
 The last test destroys a frame suspended outside `Read()`, while the reactor holds the stream for the message it gave
 under `kPush`. No read is armed then, and the hold suppresses `OnDone()`, so the destruction must release it. Otherwise
