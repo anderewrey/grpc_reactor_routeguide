@@ -68,6 +68,12 @@ diff usecases/whats_here.cpp usecases/whats_here_coro.cpp                # one c
 diff variants/get_feature_pull_coro.cpp usecases/whats_here_coro.cpp     # fills the card
 diff usecases/turn_by_turn_guidance.cpp usecases/turn_by_turn_guidance_coro.cpp   # awaits the confirmation
 diff variants/list_features_push_turn_by_turn_coro.cpp usecases/turn_by_turn_guidance_coro.cpp  # waits for the driver
+diff usecases/trip_recorder.cpp usecases/trip_recorder_coro.cpp                  # the backlog from Queued()
+diff variants/list_features_push_continuous_coro.cpp usecases/trip_recorder_coro.cpp  # stores, reports the backlog
+diff usecases/live_vehicle_position.cpp usecases/live_vehicle_position_coro.cpp  # the slot is the reader's
+diff variants/list_features_pull_continuous_coro.cpp usecases/live_vehicle_position_coro.cpp  # redraws the map
+diff usecases/offline_map_download.cpp usecases/offline_map_download_coro.cpp    # the reader holds the stream
+diff variants/list_features_push_per_message_coro.cpp usecases/offline_map_download_coro.cpp  # saves each place
 ```
 
 The first two are described in the reference, under

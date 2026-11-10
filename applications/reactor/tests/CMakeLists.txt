@@ -25,6 +25,9 @@ set(REACTOR_TESTS
     eventloop_executor_test
     reactor_coro_unary_test
     reactor_coro_reader_test
+    reactor_coro_unbounded_reader_test
+    reactor_coro_latest_reader_test
+    reactor_coro_bounded_reader_test
 )
 
 foreach(test_name IN LISTS REACTOR_TESTS)

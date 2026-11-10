@@ -1,7 +1,7 @@
 # Client coroutines: design draft
 
 > [!NOTE]
-> This is a design draft, built step by step. Steps 1 to 3 of the [suggested order](#suggested-order) exist, and
+> This is a design draft, built step by step. Steps 1 to 4 of the [suggested order](#suggested-order) exist, and
 > [reactor_coro.md](/applications/reactor/reactor_coro.md) is their reference. Once the level is built and its claims
 > are proven by tests and runs, this draft's reasoning moves into [architecture.md](/docs/architecture.md), and this
 > file goes away.
@@ -20,7 +20,7 @@ each `co_await` and resumes on the application thread:
 // Proposed API. Runs on the application thread from start to end.
 coro::Task<void> TripRecorder::Run(routeguide::Rectangle rect) {
   using Reactor = routeguide::ListFeatures::ClientReactor<Delivery::kPush, ReadPacing::kContinuous>;
-  coro::Reader<Reactor, coro::Buffer::kUnbounded> reader{executor_, stub_, std::move(rect)};
+  coro::Reader<Reactor> reader{executor_, stub_, std::move(rect)};  // the reactor's type chooses the buffer
   while (auto report = co_await reader.Read()) {
     Store(*report);  // no lock: the same thread as all application state
   }
@@ -185,14 +185,23 @@ until then. Only a buffered reader, below, holds several messages at once, so on
 ### Pacing as a buffer between the reactor and the coroutine
 
 A coroutine that awaits each read takes one message at a time, which is `kTurnByTurn` by construction. The other
-pacings put a buffer between the reactor and the coroutine:
+pacings put a buffer between the reactor and the coroutine. The reactor's type chooses it, with no parameter of its
+own: `coro::Reader<ReactorT>` reads the reactor's `Delivery` and `ReadPacing`, and `BufferFor()` maps them to a
+`Buffer`. A combination missing from the table does not compile. Naming the buffer as well would only let the two
+disagree:
 
-| Reader | Reactor underneath | Buffer policy |
+| `Buffer` | Reactor underneath | Buffer policy |
 |---|---|---|
-| No buffer | `kTurnByTurn`, either delivery | None: one message in flight |
-| `Buffer::kUnbounded` | `kPush`, `kContinuous` | Every message queued, the stream never waits |
-| `Buffer::kLatest` | `kPull`, `kContinuous`, with a `LatestSlot` | One slot, overwritten, the stream never waits |
-| `Buffer::kBounded` | `kPush`, `kPerMessage` | Holds the stream once a given number of messages wait |
+| `kNone` | `kTurnByTurn`, either delivery | None: one message in flight |
+| `kUnbounded` | `kPush`, `kContinuous` | Every message queued, the stream never waits |
+| `kLatest` | `kPull`, `kContinuous`, with a `LatestSlot` | One slot, overwritten, the stream never waits |
+| `kBounded` | `kPush`, `kPerMessage`, the number as a constructor argument | Holds the stream once that many wait |
+
+The unbounded buffer is a queue guarded by a lock, inside the reader: the read callback fills it on the gRPC thread,
+and `Read()` drains it on the application thread, waking through the reader's `ResumeHandover` when it waits. Posting
+each message as its own event, as the callback level does, was rejected: a frame destroyed without `Finish()` would
+leave queued events pointing at the dead reader, whereas a queue inside the reader dies with it, once `OnDone()` has
+run.
 
 `kLatest` copies each lent message into the slot inside the callback, as `live_vehicle_position` does today. That copy
 is the level's own code, so the boundary rule holds, and it makes `kLatest` the one buffered reader that runs on
@@ -368,7 +377,24 @@ Every non-trivial claim needs a test or a demonstrable run:
    time names the EventLoop adapter, and only that.
    [testing.md](/docs/testing.md#reader-coverage) lists what the tests prove.
 4. The buffered readers: their three variants, then `trip_recorder_coro`, `live_vehicle_position_coro` and
-   `offline_map_download_coro`.
+   `offline_map_download_coro`. Done. The unbounded buffer came first, with `list_features_push_continuous_coro`
+   and `trip_recorder_coro`: `coro::Reader` became a class template with one specialization per `Buffer`, chosen by
+   `BufferOf()` the reactor, and its primary template refuses the other combinations with a `static_assert`.
+   Awaited before the end, its `Finish()` drops the messages queued, and those still to come, and gives `CANCELLED`
+   when it dropped one, even after the server's own OK: the coroutine did not read everything the server sent. The
+   reader exposes `Queued()`, the backlog, since `trip_recorder_coro` cannot measure it on the gRPC thread as its
+   callback twin does. [testing.md](/docs/testing.md#unbounded-buffer-coverage) lists what the tests prove.
+   The latest-only and bounded buffers followed as two more specializations, with the same guarded design and the
+   same early `Finish()` rule. The latest-only reader copies each lent message into a `LatestSlot`, under its own
+   lock, and keeps `std::optional<ResponseT>` as what `Read()` gives: `Overwritten()`, a second accessor, says how
+   many messages were overwritten since the previous one given, so `live_vehicle_position_coro` logs a `skipped`
+   line for each, and counts every fix, as its callback twin does from the gRPC thread. The smoke matrix's digest
+   counts those lines for a coroutine twin too. The bounded reader takes its capacity as a constructor argument, and
+   takes the `kPerMessage` hold decision itself, from its queue, so no scenario code runs in `read_ok`; the `Read()`
+   that takes the queue below the capacity releases the hold, and an early `Finish()` releases it through
+   `CancelAndRelease()`, the case most likely to hang, which its tests provoke.
+   [testing.md](/docs/testing.md#latest-only-buffer-coverage) and
+   [testing.md](/docs/testing.md#bounded-buffer-coverage) list what the tests prove.
 5. The writers: their two variants, then `live_route_recording_coro` and `gpx_track_upload_coro`.
 6. The bidirectional join: `route_chat_push_continuous_coro`, then `convoy_chat_coro`.
 7. Teardown and cancellation tests.

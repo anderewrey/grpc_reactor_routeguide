@@ -15,6 +15,9 @@
 #include <memory>
 
 #include "applications/reactor/reactor_eventloop.h"
+#include "applications/reactor/usecases/live_vehicle_position_coro.h"
+#include "applications/reactor/usecases/offline_map_download_coro.h"
+#include "applications/reactor/usecases/trip_recorder_coro.h"
 #include "applications/reactor/usecases/turn_by_turn_guidance_coro.h"
 #include "applications/reactor/usecases/whats_here_coro.h"
 #include "applications/reactor/demo_support.h"
@@ -36,11 +39,24 @@
  * - rg_demo::usecase::coro::TurnByTurnGuidance, ListFeatures under kPush and kTurnByTurn through coro::Reader: a
  *   guidance screen shows one stop at a time, and the coroutine reads the next one only once it has awaited the
  *   driver's confirmation.
+ * - rg_demo::usecase::coro::TripRecorder, ListFeatures under kPush and kContinuous through coro::Reader with its
+ *   unbounded buffer: a trip recorder stores every position report, while the feed runs ahead and the reports
+ *   not stored yet queue in the reader.
+ * - rg_demo::usecase::coro::LiveVehiclePosition, ListFeatures under kPull and kContinuous through coro::Reader
+ *   with its latest-only buffer: a map draws the newest position fix, and the fixes arriving during a redraw
+ *   replace each other in the reader's slot.
+ * - rg_demo::usecase::coro::OfflineMapDownload, ListFeatures under kPush and kPerMessage through coro::Reader
+ *   with its bounded buffer: every place is saved, and the download pauses once three wait for the writer.
  *
  * Reading the output: WhatsHere logs the answer, then the card, as its callback twin does. TurnByTurnGuidance
  * logs a "resumed  | #k driver confirmed" line once the driver confirms stop #k, and RESPONSE #k+1 never comes
  * before it, then "stream ended after N messages", the number of stops its callback twin shows. Every line is
- * on the application thread.
+ * on the application thread. TripRecorder logs the backlog after each report it stores, then
+ * "totals" with every report stored and the peak backlog: its callback twin counts the same reports.
+ * LiveVehiclePosition logs a "skipped  | #k replaced before drawing" line for each fix it never drew, then
+ * RESPONSE for the one it draws, and "totals" with every fix, drawn or replaced, as its callback twin counts.
+ * OfflineMapDownload logs what waits for the writer after each place it saves, never more than three, then
+ * "totals" with every place saved and the times the download paused.
  *
  * See docs/client-coroutines-design.md for the design of the coroutine level, and usecases/README.md for the
  * situation behind each use case.
@@ -64,6 +80,9 @@ int main(int argc, char** argv) {
   // The use case roster. The stub and the executor above must outlive every one of them.
   rg_demo::usecase::coro::WhatsHere whats_here{executor, *stub};
   rg_demo::usecase::coro::TurnByTurnGuidance turn_by_turn_guidance{executor, *stub};
+  rg_demo::usecase::coro::TripRecorder trip_recorder{executor, *stub};
+  rg_demo::usecase::coro::LiveVehiclePosition live_vehicle_position{executor, *stub};
+  rg_demo::usecase::coro::OfflineMapDownload offline_map_download{executor, *stub};
 
   // A known place, Patriots Path, as route_guide_reactor_usecases asks about.
   const auto patriots_path = rg_utils::MakePoint(407838351, -746143763);
@@ -74,6 +93,12 @@ int main(int argc, char** argv) {
   whats_here.Start(patriots_path);
   spdlog::info("-------------- Use case: turn-by-turn guidance (ListFeatures kPush kTurnByTurn, coroutine) -------");
   turn_by_turn_guidance.Start(rect);
+  spdlog::info("-------------- Use case: trip recorder (ListFeatures kPush kContinuous, coroutine) --------------");
+  trip_recorder.Start(rect);
+  spdlog::info("-------------- Use case: live vehicle position (ListFeatures kPull kContinuous, coroutine) ------");
+  live_vehicle_position.Start(rect);
+  spdlog::info("-------------- Use case: offline map download (ListFeatures kPush kPerMessage, coroutine) -------");
+  offline_map_download.Start(rect);
   rg_demo::RunUntilDone();  // Scheduler component: processes queued events on this thread until every scenario ends
   spdlog::info("-------------- LEAVING APPLICATION --------------");
   return 0;

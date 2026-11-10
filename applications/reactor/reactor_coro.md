@@ -8,8 +8,8 @@ exists, and why each choice was made, is in the [design draft](/docs/client-coro
 > [!NOTE]
 > The level is built step by step, as the design draft's
 > [suggested order](/docs/client-coroutines-design.md#suggested-order) lists. Today it has the task core, the unary
-> awaitable and the reader without a buffer. The buffered readers, the writers and the bidirectional join come next,
-> and each adds its section here.
+> awaitable, and the readers without a buffer and with each of the three buffers: unbounded, latest-only and
+> bounded. The writers and the bidirectional join come next, and each adds its section here.
 
 ## The words you need
 
@@ -33,7 +33,7 @@ The level has two headers of its own, and shares the EventLoop adapter with the 
 | Header | Knows | Holds |
 |--------|-------|-------|
 | [coro_task.h](/applications/reactor/coro_task.h) | C++20 coroutines only | `Task`, `RootTasks`, `Executor`, `ResumeHandover`, `CurrentTask` |
-| [reactor_coro.h](/applications/reactor/reactor_coro.h) | Generic reactors, task core | `Unary`, `UnaryResult`, `Reader`, `DestroyAfterOnDone()` |
+| [reactor_coro.h](/applications/reactor/reactor_coro.h) | Generic reactors, task core | `Unary`, `Reader`, `Buffer`, and helpers |
 | [reactor_eventloop.h](/applications/reactor/reactor_eventloop.h) | EventLoop | `EventLoopExecutor`, beside the callback level's `EventConnection` |
 
 Everything is in the `RpcReactor::coro` namespace. A helper used by one class only is a private member of that class,
@@ -207,9 +207,27 @@ as a `ResponseT` under both deliveries, empty unless the status is OK. `Delivery
 
 ### `Reader<ReactorT>`
 
-A server-streaming RPC a coroutine reads one message at a time, with no buffer. `ReactorT` is a service-specific
-reactor deriving from `ActiveReadReactor` under `ReadPacing::kTurnByTurn`, such as
-`routeguide::ListFeatures::ClientReactor<Delivery::kPush, ReadPacing::kTurnByTurn>`. Another pacing does not compile.
+A server-streaming RPC a coroutine reads. `ReactorT` is a service-specific reactor deriving from `ActiveReadReactor`,
+and its `Delivery` and `ReadPacing` choose the buffer between the reactor and the coroutine, with no parameter of
+their own. `BufferFor(delivery, pacing)` is the one place that maps them, and `Reader` has one specialization per
+`Buffer`:
+
+| `Buffer` | Reactor | Section |
+|----------|---------|---------|
+| `kNone` | `ReadPacing::kTurnByTurn`, either delivery | [Without a buffer](#without-a-buffer) |
+| `kUnbounded` | `Delivery::kPush`, `ReadPacing::kContinuous` | [With an unbounded buffer](#with-an-unbounded-buffer) |
+| `kLatest` | `Delivery::kPull`, `ReadPacing::kContinuous` | [With a latest-only buffer](#with-a-latest-only-buffer) |
+| `kBounded` | `Delivery::kPush`, `ReadPacing::kPerMessage` | [With a bounded buffer](#with-a-bounded-buffer) |
+
+Any other combination does not compile: the primary template's `static_assert` names the ones that do.
+`BufferOf(reactor_pointer)` gives the buffer of a reactor type at compile time, or nothing, which the tests check.
+Every reader's `Read()` gives a `std::optional<ResponseT>`, empty at the end of the stream, and its `Finish()` a
+`grpc::Status`.
+
+#### Without a buffer
+
+A server-streaming RPC a coroutine reads one message at a time. Its reactor runs under `ReadPacing::kTurnByTurn`,
+such as `routeguide::ListFeatures::ClientReactor<Delivery::kPush, ReadPacing::kTurnByTurn>`.
 
 ```cpp
 coro::Reader<routeguide::ListFeatures::ClientReactor<Delivery::kPush, ReadPacing::kTurnByTurn>> reader{
@@ -249,6 +267,121 @@ is ended by `OnDone()`, which can come before the coroutine has resumed from its
 first one. The read hand-over is re-armed before the call that arms the next read: in `Read()` under `kPush`, before
 `ResumeRead()`, and as the message is taken under `kPull`, before `GetResponse()`.
 
+#### With an unbounded buffer
+
+A server-streaming RPC whose reactor reads on at its own pace, while a coroutine takes the messages one at a time, in
+order. Its reactor runs under `Delivery::kPush` and `ReadPacing::kContinuous`, such as
+`routeguide::ListFeatures::ClientReactor<Delivery::kPush, ReadPacing::kContinuous>`.
+
+```cpp
+coro::Reader<routeguide::ListFeatures::ClientReactor<Delivery::kPush, ReadPacing::kContinuous>> reader{
+    executor, stub, rect};
+while (auto report = co_await reader.Read()) Store(*report);
+const grpc::Status status = co_await reader.Finish();
+```
+
+| Member | Use |
+|--------|-----|
+| `Reader(executor, stub, request, context)` | Sends the request, and arms the first read. The context is optional |
+| `co_await Read()` | Resumes with the oldest message queued, owned, or with nothing once the stream has ended |
+| `co_await Finish()` | Resumes once the RPC has ended. Before the end, it drops what is queued and cancels first |
+| `Queued()` | How many messages wait in the queue: a snapshot of how far the coroutine is behind |
+| `TryCancel()` | Cancels an RPC still in flight: `Read()` gives what is queued, then nothing |
+| Destructor | Cancels an RPC in flight, destroys the reactor after `OnDone()`, then frees the queue |
+
+The reactor arms each next read itself, so the stream never waits for the coroutine. The read callback, on the gRPC
+thread, queues each message it is handed, owned, under a lock, and `Read()` takes the oldest one under the same lock,
+with no copy. Nothing bounds the queue: a coroutine slower than the stream lets messages pile up, which `Queued()`
+shows, and which [trip_recorder_coro.cpp](/applications/reactor/usecases/trip_recorder_coro.cpp) logs.
+
+A `Read()` that finds the queue empty marks itself waiting, under the lock, and suspends through a `ResumeHandover`.
+The next callback that queues a message, or ends the stream, finds the mark, clears it, and completes the hand-over,
+out of the lock, so no lock is held while the executor queues the coroutine. So each wait is completed exactly once,
+before or after the coroutine suspends, and `Read()` re-arms the hand-over as it resumes, before it can mark the next
+wait. `OnDone()` has a hand-over of its own, as for the reader without a buffer.
+
+Once the stream has ended, `Read()` gives every message still queued, then nothing. To stop early, await `Finish()`
+without reading on: it drops the messages queued, and any message still to come, then cancels the RPC with
+`CancelAndRelease()`. It gives `CANCELLED` when a message was dropped, even if the server's status, already arrived, was
+OK: the coroutine did not read everything the server sent. Its message is then the reader's `kDroppedMessage`. All of
+that happens when `Finish()` is called, not when it is awaited, so a message arriving in between is dropped too. When
+nothing was dropped, it gives the server's own status once that had arrived, as the reader without a buffer does. That
+reader never needs the first case, since nothing can wait behind it.
+
+#### With a latest-only buffer
+
+A server-streaming RPC whose reactor reads on at its own pace, while a coroutine takes only the newest message, as a
+display of a live feed needs. Its reactor runs under `Delivery::kPull` and `ReadPacing::kContinuous`, such as
+`routeguide::ListFeatures::ClientReactor<Delivery::kPull, ReadPacing::kContinuous>`.
+
+```cpp
+coro::Reader<routeguide::ListFeatures::ClientReactor<Delivery::kPull, ReadPacing::kContinuous>> reader{
+    executor, stub, rect};
+while (auto fix = co_await reader.Read()) Draw(*fix);  // reader.Overwritten(): fixes skipped before this one
+const grpc::Status status = co_await reader.Finish();
+```
+
+| Member | Use |
+|--------|-----|
+| `Reader(executor, stub, request, context)` | Sends the request, and arms the first read. The context is optional |
+| `co_await Read()` | Resumes with the newest message, owned, or with nothing once the stream has ended |
+| `Overwritten()` | How many messages were overwritten, unread, between the last two messages `Read()` gave |
+| `co_await Finish()` | Resumes once the RPC has ended. Before the end, it drops the slot and cancels first |
+| `TryCancel()` | Cancels an RPC still in flight: `Read()` gives the message in the slot, then nothing |
+| Destructor | Cancels an RPC in flight, destroys the reactor after `OnDone()`, then frees the slot |
+
+The reactor lends each message to the read callback, and reads the next one into the same storage as soon as the
+callback returns, so the stream never waits for the coroutine, and a lent message cannot survive the callback. The
+read callback therefore copies it, on the gRPC thread, and puts the copy in a `LatestSlot`, under the reader's lock,
+replacing the message the coroutine has not taken. That copy is the level's own code, and the cost of this buffer:
+one copy per message, taken or not. `Read()` takes the newest message under the same lock, or waits for the next one
+through a `ResumeHandover`, as the unbounded reader does. The slot's own lock is only ever taken under the reader's.
+
+`Read()` gives the message only, as every reader does, and `Overwritten()` says how many were skipped before it, so a
+coroutine that reads to the end has seen every message the server sent as either taken or overwritten:
+[list_features_pull_continuous_coro.cpp](/applications/reactor/variants/list_features_pull_continuous_coro.cpp) logs
+one `skipped` line for each. The newest message is never overwritten: once the stream has ended, `Read()` gives the one
+left in the slot, if any, then nothing. An early `Finish()` follows the unbounded reader's rule: it drops the message in
+the slot, and those still to come, cancels, and gives `CANCELLED` with `kDroppedMessage` when it dropped one.
+
+#### With a bounded buffer
+
+A server-streaming RPC whose reactor reads on while few messages wait for the coroutine, and holds the stream once a
+given number of them do, as a download slower to store than to receive needs. Its reactor runs under `Delivery::kPush`
+and `ReadPacing::kPerMessage`, such as `routeguide::ListFeatures::ClientReactor<Delivery::kPush>`, and the number is
+the constructor's `capacity`, at least 1.
+
+```cpp
+coro::Reader<routeguide::ListFeatures::ClientReactor<Delivery::kPush>> reader{executor, stub, rect, 3};
+while (auto place = co_await reader.Read()) Save(*place);
+const grpc::Status status = co_await reader.Finish();
+```
+
+| Member | Use |
+|--------|-----|
+| `Reader(executor, stub, request, capacity, context)` | Sends the request, and arms the first read |
+| `co_await Read()` | Resumes with the oldest message queued, owned, or with nothing once the stream has ended |
+| `co_await Finish()` | Resumes once the RPC has ended. Before the end, it drops the queue, releases the hold, cancels |
+| `Queued()` | How many messages wait in the queue: never more than the capacity |
+| `Holds()` | How many times the stream was held so far |
+| `TryCancel()` | Cancels an RPC still in flight: `Read()` gives what is queued, then nothing |
+| Destructor | Cancels an RPC in flight, releases a hold, destroys the reactor after `OnDone()`, frees the queue |
+
+Under `kPerMessage`, `read_ok` decides for each message whether the stream waits. The reader takes that decision
+itself, so no code of the coroutine runs on the gRPC thread: the read callback queues the message, owned, under a lock,
+then lets the reactor read on while fewer than `capacity` messages wait, and holds the stream once that many do. The
+`Read()` that takes the queue below `capacity` releases the hold with `ResumeRead()`, out of the lock. While the stream
+is held no read is armed, so no message can come, and the queue never holds more than `capacity`. The hold is recorded
+under the lock after the message is queued, so the `Read()` that releases it always has that message to take; the
+reactor publishes the hold before it calls `read_ok`, so a `ResumeRead()` that reaches it while `read_ok` still returns
+is safe. A `Read()` woken from an empty queue takes the message that woke it, and releases the hold too: at a capacity
+of 1, that is every message.
+
+An early `Finish()` drops the messages queued, and those still to come, then cancels the RPC and releases the hold with
+`CancelAndRelease()`. A hold left in place would keep `OnDone()` from ever coming, and `Finish()` from resuming, which
+the tests provoke. The status follows the unbounded reader's rule. A stream that ends while held, on an error say,
+reports it once a `Read()` has released the hold: the coroutine still reads every message queued, then nothing.
+
 ### `DestroyAfterOnDone(reactor, timeout)`
 
 Cancels a reactor's RPC, and destroys the reactor once its `OnDone()` has run. Should `OnDone()` not come within the
@@ -261,5 +394,9 @@ timeout, it leaks the reactor rather than freeing it under gRPC, and returns fal
   and the two diffs each has.
 - [Coroutine core coverage](/docs/testing.md#coroutine-core-coverage),
   [unary awaitable coverage](/docs/testing.md#unary-awaitable-coverage) and
-  [reader coverage](/docs/testing.md#reader-coverage) list what each test proves, and the mutants each caught.
+  [reader coverage](/docs/testing.md#reader-coverage),
+  [unbounded buffer coverage](/docs/testing.md#unbounded-buffer-coverage),
+  [latest-only buffer coverage](/docs/testing.md#latest-only-buffer-coverage) and
+  [bounded buffer coverage](/docs/testing.md#bounded-buffer-coverage) list what each test proves, and the mutants
+  each caught.
 - [The design draft](/docs/client-coroutines-design.md) explains why each choice was made.
